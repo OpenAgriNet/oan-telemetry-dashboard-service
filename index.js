@@ -11,7 +11,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
 const logger = require('./logger');
-const { verifyToken } = require('./middleware/auth');
+const { verifyToken } = require('./middleware/auth-middleware');
 
 // Load environment variables
 dotenv.config();
