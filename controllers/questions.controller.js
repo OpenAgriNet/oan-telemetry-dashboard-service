@@ -12,7 +12,8 @@ const getQuestions = async (req, res) => {
         uid as user_id,
         created_at,
         event_ets,
-        channel
+        channel,
+        sid as session_id
       FROM flattened_events
       WHERE question_text IS NOT NULL
       ORDER BY created_at DESC

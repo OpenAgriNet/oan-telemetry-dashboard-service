@@ -1,5 +1,4 @@
 const express = require('express');
-const trackingRoutes = require('./routes/trackingRoutes');
 const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
