@@ -5,41 +5,40 @@ const getQuestions = async (req, res) => {
     const query = `
       SELECT 
         id,
-        qid,
-        question_text AS question,
-        answer_text AS answer,
-        question_type,
+        uid as qid,
+        questiontext AS question,
+        answertext AS answer,
         uid AS user_id,
         created_at,
-        event_ets,
+        ets,
         channel,
         sid AS session_id
-      FROM flattened_events
-      WHERE question_text IS NOT NULL
+      FROM questions
+      WHERE questiontext IS NOT NULL AND answertext IS NOT NULL
       ORDER BY created_at DESC
     `;
 
     const result = await pool.query(query);
 
     const formattedData = result.rows.map(row => {
-      console.log('event_ets value:', row.event_ets);
+      console.log('ets value:', row.ets);
       let dateAsked = null;
       try {
-        if (row.event_ets) {
+        if (row.ets) {
           // First try to parse the timestamp if it's in milliseconds
-          const timestamp = parseInt(row.event_ets);
+          const timestamp = parseInt(row.ets);
           console.log('timestamp:', timestamp);
           if (!isNaN(timestamp)) {
             dateAsked = new Date(timestamp).toISOString().slice(0, 19);
             console.log('dateAsked:', dateAsked);
           } else {
             // If not a timestamp, try parsing as a date string
-            dateAsked = new Date(row.event_ets).toISOString().slice(0, 19);
+            dateAsked = new Date(row.ets).toISOString().slice(0, 19);
             console.log('dateAsked:', dateAsked);
           }
         }
       } catch (err) {
-        console.warn('Could not parse date:', row.event_ets);
+        console.warn('Could not parse date:', row.ets);
       }
 
       return {

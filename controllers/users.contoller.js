@@ -7,8 +7,8 @@ const getUsers = async (req, res) => {
       SELECT 
         uid as user_id,
         COUNT(DISTINCT sid) as session_count,
-        MAX(event_ets) as latest_session
-      FROM flattened_events
+        MAX(ets) as latest_session
+      FROM questions
       WHERE uid IS NOT NULL
       GROUP BY uid
       ORDER BY latest_session DESC

@@ -4,13 +4,37 @@ const getSessions = async (req, res) => {
   try {
     console.log('Fetching sessions...');
     const query = `
+      WITH combined_sessions AS (
+        SELECT 
+          sid,
+          uid,
+          questiontext,
+          ets
+        FROM questions
+        WHERE sid IS NOT NULL
+        UNION ALL
+        SELECT 
+          sid,
+          uid,
+          NULL as questiontext,
+          ets
+        FROM feedback
+        WHERE sid IS NOT NULL
+        UNION ALL
+        SELECT 
+          sid,
+          uid,
+          NULL as questiontext,
+          ets
+        FROM errordetails
+        WHERE sid IS NOT NULL
+      )
       SELECT 
         sid as session_id,
         uid as username,
-        COUNT(question_text) as question_count,
-        MAX(event_ets) as session_time
-      FROM flattened_events
-      WHERE sid IS NOT NULL
+        COUNT(questiontext) as question_count,
+        MAX(ets) as session_time
+      FROM combined_sessions
       GROUP BY sid, uid
       ORDER BY session_time DESC
     `;
