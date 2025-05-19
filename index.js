@@ -3,6 +3,8 @@ const cors = require('cors');
 const morgan = require('morgan');
 require('dotenv').config();
 const questionRoutes = require('./routes/questionRoutes');
+const userRoutes = require('./routes/userRoutes');
+const sessionRoutes = require('./routes/sessionRoutes');
 
 const app = express();
 
@@ -20,6 +22,8 @@ app.use(cors({
 
 
 app.use('/api/v1', questionRoutes);
+app.use('/api/v1', userRoutes);
+app.use('/api/v1', sessionRoutes);
 app.use(morgan('combined')); 
 
 const PORT = process.env.PORT;
