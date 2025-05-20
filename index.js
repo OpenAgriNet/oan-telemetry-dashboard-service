@@ -5,7 +5,7 @@ require('dotenv').config();
 const questionRoutes = require('./routes/questionRoutes');
 const userRoutes = require('./routes/userRoutes');
 const sessionRoutes = require('./routes/sessionRoutes');
-
+const feedbackRoutes = require('./routes/feedbackRoutes');
 const app = express();
 
 app.use(express.json());
@@ -24,6 +24,7 @@ app.use(cors({
 app.use('/api/v1', questionRoutes);
 app.use('/api/v1', userRoutes);
 app.use('/api/v1', sessionRoutes);
+app.use('/api/v1', feedbackRoutes);
 app.use(morgan('combined')); 
 
 const PORT = process.env.PORT;
