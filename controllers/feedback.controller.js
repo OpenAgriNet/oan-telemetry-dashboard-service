@@ -3,6 +3,7 @@ const pool = require('../services/db');
 async function fetchAllFeedbackFromDB() {
     const query = `
         SELECT 
+            id,
             qid,
             uid as user_id,
             created_at,
@@ -11,8 +12,7 @@ async function fetchAllFeedbackFromDB() {
             questiontext,
             answertext,
             channel,
-            sid as session_id,
-            qid as question_id
+            sid as session_id
         FROM feedback
         WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
         ORDER BY created_at DESC
@@ -83,7 +83,7 @@ async function fetchFeedbackByidFromDB(id) {
           created_at,
           qid AS question_id
       FROM feedback
-      WHERE qid = $1
+      WHERE id = $1
     `,
     values: [id],
   };
