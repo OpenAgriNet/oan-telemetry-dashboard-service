@@ -1,9 +1,44 @@
 const pool = require('../services/db');
 
-async function fetchQuestionsFromDB(page = 1, limit = 10, search = '') {
-    const offset = (page - 1) * limit;
+// Helper function to parse and validate date range parameters
+function parseDateRange(startDate, endDate) {
+    let startTimestamp = null;
+    let endTimestamp = null;
     
-    // Base query with optional search - using parameterized queries
+    if (startDate) {
+        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
+            // Unix timestamp provided
+            startTimestamp = parseInt(startDate);
+        } else {
+            // ISO date string provided, convert to unix timestamp (milliseconds)
+            const date = new Date(startDate);
+            if (!isNaN(date.getTime())) {
+                startTimestamp = date.getTime();
+            }
+        }
+    }
+    
+    if (endDate) {
+        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
+            // Unix timestamp provided
+            endTimestamp = parseInt(endDate);
+        } else {
+            // ISO date string provided, convert to unix timestamp (milliseconds)
+            const date = new Date(endDate);
+            if (!isNaN(date.getTime())) {
+                endTimestamp = date.getTime();
+            }
+        }
+    }
+    
+    return { startTimestamp, endTimestamp };
+}
+
+async function fetchQuestionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+    const offset = (page - 1) * limit;
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    
+    // Base query with optional search and date filtering - using parameterized queries
     let query = `
         SELECT 
             id,
@@ -20,29 +55,51 @@ async function fetchQuestionsFromDB(page = 1, limit = 10, search = '') {
     `;
     
     const queryParams = [];
+    let paramIndex = 0;
+    
+    // Add date range filtering
+    if (startTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets >= $${paramIndex}`;
+        queryParams.push(startTimestamp);
+    }
+    
+    if (endTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets <= $${paramIndex}`;
+        queryParams.push(endTimestamp);
+    }
     
     // Add search functionality if search term is provided
     if (search && search.trim() !== '') {
+        paramIndex++;
         query += ` AND (
-            questiontext ILIKE $1 OR 
-            answertext ILIKE $1 OR
-            uid ILIKE $1 OR
-            channel ILIKE $1
+            questiontext ILIKE $${paramIndex} OR 
+            answertext ILIKE $${paramIndex} OR
+            uid ILIKE $${paramIndex} OR
+            channel ILIKE $${paramIndex}
         )`;
         queryParams.push(`%${search.trim()}%`);
-        
-        query += ` ORDER BY created_at DESC LIMIT $2 OFFSET $3`;
-        queryParams.push(limit, offset);
-    } else {
-        query += ` ORDER BY created_at DESC LIMIT $1 OFFSET $2`;
-        queryParams.push(limit, offset);
     }
+    
+    query += ` ORDER BY created_at DESC`;
+    
+    // Add pagination
+    paramIndex++;
+    query += ` LIMIT $${paramIndex}`;
+    queryParams.push(limit);
+    
+    paramIndex++;
+    query += ` OFFSET $${paramIndex}`;
+    queryParams.push(offset);
 
     const result = await pool.query(query, queryParams);
     return result.rows;
 }
 
-async function getTotalQuestionsCount(search = '') {
+async function getTotalQuestionsCount(search = '', startDate = null, endDate = null) {
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    
     let query = `
         SELECT COUNT(*) as total
         FROM questions
@@ -50,14 +107,29 @@ async function getTotalQuestionsCount(search = '') {
     `;
     
     const queryParams = [];
+    let paramIndex = 0;
+    
+    // Add date range filtering
+    if (startTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets >= $${paramIndex}`;
+        queryParams.push(startTimestamp);
+    }
+    
+    if (endTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets <= $${paramIndex}`;
+        queryParams.push(endTimestamp);
+    }
     
     // Add search filter to count query if search term is provided
     if (search && search.trim() !== '') {
+        paramIndex++;
         query += ` AND (
-            questiontext ILIKE $1 OR 
-            answertext ILIKE $1 OR
-            uid ILIKE $1 OR
-            channel ILIKE $1
+            questiontext ILIKE $${paramIndex} OR 
+            answertext ILIKE $${paramIndex} OR
+            uid ILIKE $${paramIndex} OR
+            channel ILIKE $${paramIndex}
         )`;
         queryParams.push(`%${search.trim()}%`);
     }
@@ -89,7 +161,8 @@ function formatQuestionData(row) {
         ...row,
         dateAsked,
         hasVoiceInput: false,
-        reaction: "neutral"
+        reaction: "neutral",
+        timestamp: row.ets
     };
 }
 
@@ -99,6 +172,8 @@ const getQuestions = async (req, res) => {
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -107,11 +182,27 @@ const getQuestions = async (req, res) => {
                 error: "Search term too long" 
             });
         }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Start date cannot be after end date" 
+            });
+        }
 
         // Fetch paginated questions data and total count
         const [questionsData, totalCount] = await Promise.all([
-            fetchQuestionsFromDB(page, limit, search),
-            getTotalQuestionsCount(search)
+            fetchQuestionsFromDB(page, limit, search, startDate, endDate),
+            getTotalQuestionsCount(search, startDate, endDate)
         ]);
 
         const formattedData = questionsData.map(formatQuestionData);
@@ -135,7 +226,13 @@ const getQuestions = async (req, res) => {
                 nextPage: hasNextPage ? page + 1 : null,
                 previousPage: hasPreviousPage ? page - 1 : null
             },
-            search: search
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
         });
     } catch (error) {
         console.error('Error fetching questions:', error);
@@ -205,12 +302,14 @@ const getQuestionById = async (req, res) => {
     }
 };
 
-// Get questions by user ID
+// Get questions by user ID with date filtering
 const getQuestionsByUserId = async (req, res) => {
     try {
         const { userId } = req.params;
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         const offset = (page - 1) * limit;
         
         if (!userId || typeof userId !== 'string' || userId.trim() === '') {
@@ -220,7 +319,42 @@ const getQuestionsByUserId = async (req, res) => {
             });
         }
         
-        // Get questions by user ID with pagination
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering for questions query
+        let dateFilter = '';
+        let countDateFilter = '';
+        const queryParams = [userId.trim()];
+        const countParams = [userId.trim()];
+        let paramIndex = 1;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            countDateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+            countParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            countDateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+            countParams.push(endTimestamp);
+        }
+        
+        // Add pagination params
+        queryParams.push(limit, offset);
+        
+        // Get questions by user ID with pagination and date filtering
         const questionsQuery = {
             text: `
                 SELECT 
@@ -237,13 +371,14 @@ const getQuestionsByUserId = async (req, res) => {
                 WHERE uid = $1 
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
+                    ${dateFilter}
                 ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3
+                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
-            values: [userId.trim(), limit, offset],
+            values: queryParams,
         };
         
-        // Get total count for user
+        // Get total count for user with date filtering
         const countQuery = {
             text: `
                 SELECT COUNT(*) as total
@@ -251,8 +386,9 @@ const getQuestionsByUserId = async (req, res) => {
                 WHERE uid = $1 
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
+                    ${countDateFilter}
             `,
-            values: [userId.trim()],
+            values: countParams,
         };
         
         const [questionsResult, countResult] = await Promise.all([
@@ -281,7 +417,13 @@ const getQuestionsByUserId = async (req, res) => {
                 nextPage: hasNextPage ? page + 1 : null,
                 previousPage: hasPreviousPage ? page - 1 : null
             },
-            userId: userId.trim()
+            filters: {
+                userId: userId.trim(),
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
         });
     } catch (error) {
         console.error("Error fetching questions by user ID:", error);

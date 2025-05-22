@@ -31,5 +31,5 @@ const PORT = process.env.PORT;
 
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`xAPI Wrapper is running on port ${PORT}`);
+  console.log(`Service is running on port ${PORT}`);
 });

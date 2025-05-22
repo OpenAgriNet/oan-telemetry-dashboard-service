@@ -1,10 +1,45 @@
 const pool = require('../services/db');
 const { v4: uuidv4 } = require('uuid');
 
-async function fetchUsersFromDB(page = 1, limit = 10, search = '') {
-    const offset = (page - 1) * limit;
+// Helper function to parse and validate date range parameters
+function parseDateRange(startDate, endDate) {
+    let startTimestamp = null;
+    let endTimestamp = null;
     
-    // Base query with comprehensive user statistics - using parameterized queries
+    if (startDate) {
+        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
+            // Unix timestamp provided
+            startTimestamp = parseInt(startDate);
+        } else {
+            // ISO date string provided, convert to unix timestamp (milliseconds)
+            const date = new Date(startDate);
+            if (!isNaN(date.getTime())) {
+                startTimestamp = date.getTime();
+            }
+        }
+    }
+    
+    if (endDate) {
+        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
+            // Unix timestamp provided
+            endTimestamp = parseInt(endDate);
+        } else {
+            // ISO date string provided, convert to unix timestamp (milliseconds)
+            const date = new Date(endDate);
+            if (!isNaN(date.getTime())) {
+                endTimestamp = date.getTime();
+            }
+        }
+    }
+    
+    return { startTimestamp, endTimestamp };
+}
+
+async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+    const offset = (page - 1) * limit;
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    
+    // Base query with comprehensive user statistics and date filtering - using parameterized queries
     let query = `
         WITH user_stats AS (
             SELECT 
@@ -16,6 +51,25 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '') {
                 MAX(created_at) as last_activity
             FROM questions
             WHERE uid IS NOT NULL
+    `;
+    
+    const queryParams = [];
+    let paramIndex = 0;
+    
+    // Add date range filtering to questions
+    if (startTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets >= $${paramIndex}`;
+        queryParams.push(startTimestamp);
+    }
+    
+    if (endTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets <= $${paramIndex}`;
+        queryParams.push(endTimestamp);
+    }
+    
+    query += `
             GROUP BY uid
         ),
         user_feedback AS (
@@ -26,6 +80,18 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '') {
                 COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
             FROM feedback
             WHERE uid IS NOT NULL
+    `;
+    
+    // Add same date filtering to feedback
+    if (startTimestamp !== null) {
+        query += ` AND ets >= $${paramIndex - 1}`;
+    }
+    
+    if (endTimestamp !== null) {
+        query += ` AND ets <= $${paramIndex}`;
+    }
+    
+    query += `
             GROUP BY uid
         )
         SELECT 
@@ -42,25 +108,31 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '') {
         LEFT JOIN user_feedback uf ON us.user_id = uf.user_id
     `;
     
-    const queryParams = [];
-    
     // Add search functionality if search term is provided
     if (search && search.trim() !== '') {
-        query += ` WHERE us.user_id ILIKE $1`;
+        paramIndex++;
+        query += ` WHERE us.user_id ILIKE $${paramIndex}`;
         queryParams.push(`%${search.trim()}%`);
-        
-        query += ` ORDER BY us.latest_session DESC LIMIT $2 OFFSET $3`;
-        queryParams.push(limit, offset);
-    } else {
-        query += ` ORDER BY us.latest_session DESC LIMIT $1 OFFSET $2`;
-        queryParams.push(limit, offset);
     }
+    
+    query += ` ORDER BY us.latest_session DESC`;
+    
+    // Add pagination
+    paramIndex++;
+    query += ` LIMIT $${paramIndex}`;
+    queryParams.push(limit);
+    
+    paramIndex++;
+    query += ` OFFSET $${paramIndex}`;
+    queryParams.push(offset);
 
     const result = await pool.query(query, queryParams);
     return result.rows;
 }
 
-async function getTotalUsersCount(search = '') {
+async function getTotalUsersCount(search = '', startDate = null, endDate = null) {
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    
     let query = `
         SELECT COUNT(DISTINCT uid) as total
         FROM questions
@@ -68,10 +140,25 @@ async function getTotalUsersCount(search = '') {
     `;
     
     const queryParams = [];
+    let paramIndex = 0;
+    
+    // Add date range filtering
+    if (startTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets >= $${paramIndex}`;
+        queryParams.push(startTimestamp);
+    }
+    
+    if (endTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets <= $${paramIndex}`;
+        queryParams.push(endTimestamp);
+    }
     
     // Add search filter to count query if search term is provided
     if (search && search.trim() !== '') {
-        query += ` AND uid ILIKE $1`;
+        paramIndex++;
+        query += ` AND uid ILIKE $${paramIndex}`;
         queryParams.push(`%${search.trim()}%`);
     }
     
@@ -115,7 +202,9 @@ function formatUserData(row) {
         dislikes: parseInt(row.dislikes) || 0,
         latestSession,
         firstSession,
-        lastActivity: row.last_activity
+        lastActivity: row.last_activity,
+        latestTimestamp: row.latest_session,
+        firstTimestamp: row.first_session
     };
 }
 
@@ -125,6 +214,8 @@ const getUsers = async (req, res) => {
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -133,11 +224,27 @@ const getUsers = async (req, res) => {
                 error: "Search term too long" 
             });
         }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Start date cannot be after end date" 
+            });
+        }
 
         // Fetch paginated users data and total count
         const [usersData, totalCount] = await Promise.all([
-            fetchUsersFromDB(page, limit, search),
-            getTotalUsersCount(search)
+            fetchUsersFromDB(page, limit, search, startDate, endDate),
+            getTotalUsersCount(search, startDate, endDate)
         ]);
 
         const formattedData = usersData.map(formatUserData);
@@ -161,7 +268,13 @@ const getUsers = async (req, res) => {
                 nextPage: hasNextPage ? page + 1 : null,
                 previousPage: hasPreviousPage ? page - 1 : null
             },
-            search: search
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
         });
     } catch (error) {
         console.error('Error fetching users:', error);
@@ -172,10 +285,12 @@ const getUsers = async (req, res) => {
     }
 };
 
-// Get single user details by username
+// Get single user details by username with date filtering
 const getUserByUsername = async (req, res) => {
     try {
         const { username } = req.params;
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         
         if (!username || typeof username !== 'string' || username.trim() === '') {
             return res.status(400).json({ 
@@ -184,7 +299,33 @@ const getUserByUsername = async (req, res) => {
             });
         }
         
-        // Get comprehensive user details
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [username.trim()];
+        let paramIndex = 1;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        // Get comprehensive user details with date filtering
         const query = {
             text: `
                 WITH user_questions AS (
@@ -197,7 +338,7 @@ const getUserByUsername = async (req, res) => {
                         MAX(created_at) as last_activity,
                         COUNT(DISTINCT channel) as channels_used
                     FROM questions
-                    WHERE uid = $1
+                    WHERE uid = $1 ${dateFilter}
                     GROUP BY uid
                 ),
                 user_feedback AS (
@@ -207,7 +348,7 @@ const getUserByUsername = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
                     FROM feedback
-                    WHERE uid = $1
+                    WHERE uid = $1 ${dateFilter}
                     GROUP BY uid
                 ),
                 user_channels AS (
@@ -215,9 +356,9 @@ const getUserByUsername = async (req, res) => {
                         uid,
                         array_agg(DISTINCT channel) FILTER (WHERE channel IS NOT NULL) as channels
                     FROM (
-                        SELECT uid, channel FROM questions WHERE uid = $1
+                        SELECT uid, channel FROM questions WHERE uid = $1 ${dateFilter}
                         UNION
-                        SELECT uid, channel FROM feedback WHERE uid = $1
+                        SELECT uid, channel FROM feedback WHERE uid = $1 ${dateFilter}
                     ) combined
                     GROUP BY uid
                 )
@@ -227,7 +368,6 @@ const getUserByUsername = async (req, res) => {
                     uq.total_questions,
                     uq.latest_session,
                     uq.first_session,
-                    uq.last_activity,
                     uq.channels_used,
                     COALESCE(uf.feedback_count, 0) as feedback_count,
                     COALESCE(uf.likes, 0) as likes,
@@ -237,7 +377,7 @@ const getUserByUsername = async (req, res) => {
                 LEFT JOIN user_feedback uf ON uq.uid = uf.uid
                 LEFT JOIN user_channels uc ON uq.uid = uc.uid
             `,
-            values: [username.trim()],
+            values: queryParams,
         };
         
         const result = await pool.query(query);
@@ -245,7 +385,7 @@ const getUserByUsername = async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(404).json({ 
                 success: false,
-                error: "No user found for the given username" 
+                error: "No user found for the given username and date range" 
             });
         }
         
@@ -256,7 +396,13 @@ const getUserByUsername = async (req, res) => {
         
         res.status(200).json({
             success: true,
-            data: userData
+            data: userData,
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
         });
     } catch (error) {
         console.error("Error fetching user by username:", error);
@@ -267,55 +413,102 @@ const getUserByUsername = async (req, res) => {
     }
 };
 
-// Get user statistics and activity summary
+// Get user statistics and activity summary with date filtering
 const getUserStats = async (req, res) => {
     try {
-        const query = `
-            WITH overall_stats AS (
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        let feedbackDateFilter = '';
+        let activityDateFilter = 'WHERE created_at >= CURRENT_DATE - INTERVAL \'30 days\'';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= ${paramIndex}`;
+            feedbackDateFilter += ` AND ets >= ${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= ${paramIndex}`;
+            feedbackDateFilter += ` AND ets <= ${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        // If date filtering is applied, use it for activity as well
+        if (startTimestamp !== null || endTimestamp !== null) {
+            activityDateFilter = 'WHERE true';
+            if (startTimestamp !== null) {
+                activityDateFilter += ` AND ets >= ${paramIndex - 1}`;
+            }
+            if (endTimestamp !== null) {
+                activityDateFilter += ` AND ets <= ${paramIndex}`;
+            }
+        }
+        
+        const query = {
+            text: `
+                WITH overall_stats AS (
+                    SELECT 
+                        COUNT(DISTINCT uid) as total_users,
+                        COUNT(DISTINCT sid) as total_sessions,
+                        COUNT(*) as total_questions,
+                        AVG(EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))) as avg_session_duration
+                    FROM questions
+                    WHERE uid IS NOT NULL ${dateFilter}
+                ),
+                feedback_stats AS (
+                    SELECT 
+                        COUNT(*) as total_feedback,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
+                    FROM feedback
+                    WHERE uid IS NOT NULL ${feedbackDateFilter}
+                ),
+                activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(DISTINCT uid) as active_users,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    ${activityDateFilter}
+                        AND uid IS NOT NULL
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                )
                 SELECT 
-                    COUNT(DISTINCT uid) as total_users,
-                    COUNT(DISTINCT sid) as total_sessions,
-                    COUNT(*) as total_questions,
-                    AVG(EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))) as avg_session_duration
-                FROM questions
-                WHERE uid IS NOT NULL
-            ),
-            feedback_stats AS (
-                SELECT 
-                    COUNT(*) as total_feedback,
-                    COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
-                    COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
-                FROM feedback
-                WHERE uid IS NOT NULL
-            ),
-            activity_by_day AS (
-                SELECT 
-                    DATE(created_at) as activity_date,
-                    COUNT(DISTINCT uid) as active_users,
-                    COUNT(*) as questions_count
-                FROM questions
-                WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
-                    AND uid IS NOT NULL
-                GROUP BY DATE(created_at)
-                ORDER BY activity_date DESC
-                LIMIT 30
-            )
-            SELECT 
-                os.*,
-                fs.*,
-                json_agg(
-                    json_build_object(
-                        'date', abd.activity_date,
-                        'activeUsers', abd.active_users,
-                        'questionsCount', abd.questions_count
-                    ) ORDER BY abd.activity_date DESC
-                ) as daily_activity
-            FROM overall_stats os
-            CROSS JOIN feedback_stats fs
-            LEFT JOIN activity_by_day abd ON true
-            GROUP BY os.total_users, os.total_sessions, os.total_questions, 
-                     os.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes
-        `;
+                    os.*,
+                    fs.*,
+                    json_agg(
+                        json_build_object(
+                            'date', abd.activity_date,
+                            'activeUsers', abd.active_users,
+                            'questionsCount', abd.questions_count
+                        ) ORDER BY abd.activity_date DESC
+                    ) as daily_activity
+                FROM overall_stats os
+                CROSS JOIN feedback_stats fs
+                LEFT JOIN activity_by_day abd ON true
+                GROUP BY os.total_users, os.total_sessions, os.total_questions, 
+                         os.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes
+            `,
+            values: queryParams
+        };
         
         const result = await pool.query(query);
         const stats = result.rows[0];
@@ -331,6 +524,12 @@ const getUserStats = async (req, res) => {
                 totalDislikes: parseInt(stats.total_dislikes) || 0,
                 avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
                 dailyActivity: stats.daily_activity || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
             }
         });
     } catch (error) {
@@ -347,4 +546,3 @@ module.exports = {
     getUserByUsername,
     getUserStats
 };
-
