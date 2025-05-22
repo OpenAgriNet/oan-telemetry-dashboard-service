@@ -21,10 +21,10 @@ app.use(cors({
 }));
 
 
-app.use('/api/v1', questionRoutes);
-app.use('/api/v1', userRoutes);
-app.use('/api/v1', sessionRoutes);
-app.use('/api/v1', feedbackRoutes);
+app.use('/v1', questionRoutes);
+app.use('/v1', userRoutes);
+app.use('/v1', sessionRoutes);
+app.use('/v1', feedbackRoutes);
 app.use(morgan('combined')); 
 
 const PORT = process.env.PORT;
