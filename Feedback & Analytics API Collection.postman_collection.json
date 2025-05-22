@@ -1,0 +1,791 @@
+{
+	"info": {
+		"_postman_id": "0bec7f5d-02e2-4eca-b09f-2d83ac3c3800",
+		"name": "Feedback & Analytics API Collection",
+		"description": "Complete API collection for Feedback, Questions, Sessions, and Users management with pagination and search capabilities",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "14644630"
+	},
+	"item": [
+		{
+			"name": "Feedback APIs",
+			"item": [
+				{
+					"name": "Get All Feedback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1",
+									"description": "Page number (default: 1)"
+								},
+								{
+									"key": "limit",
+									"value": "10",
+									"description": "Items per page (default: 10, max: 100)"
+								}
+							]
+						},
+						"description": "Retrieve all feedback with pagination support"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback with Search",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=20&search=bug",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								},
+								{
+									"key": "search",
+									"value": "bug",
+									"description": "Search in feedback text, question text, and answer text"
+								}
+							]
+						},
+						"description": "Search feedback across text fields with pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback/id/{{sampleFeedbackId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback",
+								"id",
+								"{{sampleFeedbackId}}"
+							]
+						},
+						"description": "Get specific feedback details by UUID"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback - Large Limit",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Test with larger page size"
+					},
+					"response": []
+				}
+			],
+			"description": "Feedback management endpoints with pagination and search"
+		},
+		{
+			"name": "Questions APIs",
+			"item": [
+				{
+					"name": "Get All Questions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=15",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								}
+							]
+						},
+						"description": "Retrieve all questions with pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Questions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=10&search=agri",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "search",
+									"value": "agri",
+									"description": "Search in question text, answer text, user ID, and channel"
+								}
+							]
+						},
+						"description": "Search questions across multiple fields"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Question by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions/{{sampleQuestionId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions",
+								"{{sampleQuestionId}}"
+							],
+							"variable": [
+								{
+									"key": "sampleQuestionId",
+									"value": "{{sampleQuestionId}}"
+								}
+							]
+						},
+						"description": "Get specific question details by UUID"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Questions by User ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}/questions?page=1&limit=5",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}",
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "5"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get all questions asked by a specific user"
+					},
+					"response": []
+				}
+			],
+			"description": "Questions management endpoints with comprehensive search and filtering"
+		},
+		{
+			"name": "Sessions APIs",
+			"item": [
+				{
+					"name": "Get All Sessions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=1&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Retrieve all sessions with aggregated data from questions, feedback, and errors"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Sessions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=1&limit=10&search=jag",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "search",
+									"value": "jag",
+									"description": "Search by session ID or username"
+								}
+							]
+						},
+						"description": "Search sessions by session ID or username"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Session Details by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions/{{sampleSessionId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions",
+								"{{sampleSessionId}}"
+							],
+							"variable": [
+								{
+									"key": "sampleSessionId",
+									"value": "{{sampleSessionId}}"
+								}
+							]
+						},
+						"description": "Get comprehensive session details including questions, feedback, and errors"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sessions by User ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}/sessions?page=1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}",
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get all sessions for a specific user"
+					},
+					"response": []
+				}
+			],
+			"description": "Session management with aggregated data from multiple sources"
+		},
+		{
+			"name": "Users APIs",
+			"item": [
+				{
+					"name": "Get All Users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users?page=1&limit=25",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "25"
+								}
+							]
+						},
+						"description": "Retrieve all users with comprehensive statistics"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users?page=1&limit=15&search=parimal",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								},
+								{
+									"key": "search",
+									"value": "parimal",
+									"description": "Search users by username"
+								}
+							]
+						},
+						"description": "Search users by username with pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User by Username",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}"
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get detailed user profile with comprehensive statistics"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Statistics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/stats",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"stats"
+							]
+						},
+						"description": "Get platform-wide user statistics and analytics including daily activity trends"
+					},
+					"response": []
+				}
+			],
+			"description": "User management and analytics endpoints"
+		},
+		{
+			"name": "Edge Cases & Error Testing",
+			"item": [
+				{
+					"name": "Invalid Page Number",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=-1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "-1",
+									"description": "Should default to 1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Test invalid page number handling"
+					},
+					"response": []
+				},
+				{
+					"name": "Limit Too High",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=150",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "150",
+									"description": "Should be capped at 100"
+								}
+							]
+						},
+						"description": "Test limit validation (max 100)"
+					},
+					"response": []
+				},
+				{
+					"name": "Long Search Term",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?search={{longSearchTerm}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "{{longSearchTerm}}",
+									"description": "Very long search term to test validation"
+								}
+							]
+						},
+						"description": "Test search term length validation"
+					},
+					"response": []
+				},
+				{
+					"name": "Invalid UUID Format",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback/invalid-uuid-format",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback",
+								"invalid-uuid-format"
+							]
+						},
+						"description": "Test UUID validation for feedback ID"
+					},
+					"response": []
+				},
+				{
+					"name": "Non-existent Resource",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/nonexistent_user",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"nonexistent_user"
+							]
+						},
+						"description": "Test 404 handling for non-existent user"
+					},
+					"response": []
+				},
+				{
+					"name": "Empty Search",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?search=",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"description": "Empty search should work like no search"
+								}
+							]
+						},
+						"description": "Test empty search parameter handling"
+					},
+					"response": []
+				}
+			],
+			"description": "Test edge cases and error handling scenarios"
+		},
+		{
+			"name": "Performance Testing",
+			"item": [
+				{
+					"name": "Large Page Request",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=100",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Test maximum allowed page size"
+					},
+					"response": []
+				},
+				{
+					"name": "Deep Pagination",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=50&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "50"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Test performance with deep pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Complex Search Query",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?search=performance optimization database query&page=1&limit=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "performance optimization database query"
+								},
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Test search performance with multi-word query"
+					},
+					"response": []
+				}
+			],
+			"description": "Performance and load testing scenarios"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Set up long search term for testing",
+					"const longTerm = 'a'.repeat(1001);",
+					"pm.variables.set('longSearchTerm', longTerm);"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000/v1",
+			"type": "string"
+		},
+		{
+			"key": "sampleUserId",
+			"value": "jagadish",
+			"type": "string"
+		},
+		{
+			"key": "sampleSessionId",
+			"value": "dc215d2b-8184-4bde-b09b-f80251e7e7e0",
+			"type": "string"
+		},
+		{
+			"key": "sampleQuestionId",
+			"value": "9d0cc3a7-4cab-4698-86ce-f1f2d231e307",
+			"type": "string"
+		},
+		{
+			"key": "sampleFeedbackId",
+			"value": "fad272cc-1214-4602-be49-39f2588ae1f2",
+			"type": "string"
+		}
+	]
+}
