@@ -8,7 +8,7 @@ const pool = new Pool({
   host: process.env.UNIQUE_NAME_PG_HOST,
   port: process.env.UNIQUE_NAME_PG_PORT,
   database: process.env.UNIQUE_NAME_PG_DB,
-  ssl: process.env.UNIQUE_NAME_PG_SSL === 'true'
+  // ssl: process.env.UNIQUE_NAME_PG_SSL === 'true'
 });
 
 
