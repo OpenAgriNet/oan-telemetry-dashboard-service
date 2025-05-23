@@ -137,6 +137,58 @@ async function getTotalFeedbackCount(search = '', startDate = null, endDate = nu
     const result = await pool.query(query, queryParams);
     return parseInt(result.rows[0].total);
 }
+
+async function getTotalLikesDislikesCount(search = '', startDate = null, endDate = null, sessionId = null) {
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    
+    let query = `
+        SELECT 
+            SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
+            SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
+        FROM feedback
+        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+    `;
+    
+    const queryParams = [];
+    let paramIndex = 0;
+    
+    // Add session ID filtering if provided
+    if (sessionId) {
+        paramIndex++;
+        query += ` AND sid = $${paramIndex}`;
+        queryParams.push(sessionId);
+    }
+    
+    // Add date range filtering
+    if (startTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets >= $${paramIndex}`;
+        queryParams.push(startTimestamp);
+    }
+    
+    if (endTimestamp !== null) {
+        paramIndex++;
+        query += ` AND ets <= $${paramIndex}`;
+        queryParams.push(endTimestamp);
+    }
+    
+    // Add search filter if search term is provided
+    if (search && search.trim() !== '') {
+        paramIndex++;
+        query += ` AND (
+            feedbacktext ILIKE $${paramIndex} OR 
+            questiontext ILIKE $${paramIndex} OR 
+            answertext ILIKE $${paramIndex}
+        )`;
+        queryParams.push(`%${search.trim()}%`);
+    }
+    
+    const result = await pool.query(query, queryParams);
+    return {
+        totalLikes: parseInt(result.rows[0].total_likes) || 0,
+        totalDislikes: parseInt(result.rows[0].total_dislikes) || 0
+    };
+}
     
 function formatFeedbackData(feedbackItem) {
     const dateObj = new Date(feedbackItem.created_at);
@@ -197,6 +249,9 @@ async function getAllFeedback(req, res) {
 
         const formattedFeedback = rawFeedbackData.map(formatFeedbackData);
         
+        // Get accurate total likes and dislikes counts for the entire filtered dataset
+        const { totalLikes, totalDislikes } = await getTotalLikesDislikesCount(search, startDate, endDate);
+        
         // Calculate pagination metadata
         const totalPages = Math.ceil(totalCount / limit);
         const hasNextPage = page < totalPages;
@@ -209,6 +264,8 @@ async function getAllFeedback(req, res) {
                 currentPage: page,
                 totalPages: totalPages,
                 totalItems: totalCount,
+                totalLikes: totalLikes,
+                totalDislikes: totalDislikes,
                 itemsPerPage: limit,
                 hasNextPage: hasNextPage,
                 hasPreviousPage: hasPreviousPage,
@@ -383,6 +440,9 @@ const getFeedbackBySessionId = async (req, res) => {
         const totalCount = parseInt(countResult.rows[0].total);
         const formattedData = feedbackResult.rows.map(formatFeedbackData);
         
+        // Get accurate total likes and dislikes counts for the entire filtered session dataset
+        const { totalLikes, totalDislikes } = await getTotalLikesDislikesCount('', startDate, endDate, sessionId.trim());
+        
         // Calculate pagination metadata
         const totalPages = Math.ceil(totalCount / limit);
         const hasNextPage = page < totalPages;
@@ -394,6 +454,8 @@ const getFeedbackBySessionId = async (req, res) => {
                 currentPage: page,
                 totalPages: totalPages,
                 totalItems: totalCount,
+                totalLikes: totalLikes,
+                totalDislikes: totalDislikes,
                 itemsPerPage: limit,
                 hasNextPage: hasNextPage,
                 hasPreviousPage: hasPreviousPage,
