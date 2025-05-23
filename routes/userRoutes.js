@@ -2,7 +2,10 @@ const express = require('express');
 const { 
     getUsers, 
     getUserByUsername,
-    getUserStats 
+    getUserStats,
+    getTotalUsersCount,
+    fetchUsersFromDB,
+    formatUserData
 } = require('../controllers/user.controller');
 
 const router = express.Router();
@@ -15,5 +18,14 @@ router.get('/users/stats', getUserStats);
 
 // Get single user details by username
 router.get('/users/:username', getUserByUsername);
+
+// Get total users count
+router.get('/users/count', getTotalUsersCount);
+
+// Fetch users from DB
+router.get('/users/fetch', fetchUsersFromDB);
+
+// Format user data
+router.get('/users/format', formatUserData);
 
 module.exports = router;

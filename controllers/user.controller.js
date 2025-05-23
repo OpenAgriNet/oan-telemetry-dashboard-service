@@ -544,5 +544,8 @@ const getUserStats = async (req, res) => {
 module.exports = {
     getUsers,
     getUserByUsername,
-    getUserStats
+    getUserStats,
+    getTotalUsersCount,
+    fetchUsersFromDB,
+    formatUserData
 };

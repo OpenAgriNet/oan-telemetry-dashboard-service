@@ -8,4 +8,16 @@ router.get('/feedback', feedbackController.getAllFeedback);
 // Route for getting feedback by QID
 router.get('/feedback/id/:id', feedbackController.getFeedbackByid);
 
+// Route for getting total feedback count
+router.get('/feedback/count', feedbackController.getTotalFeedbackCount);
+
+// Route for fetching feedback from DB
+router.get('/feedback/fetch', feedbackController.fetchAllFeedbackFromDB);
+
+// Route for formatting feedback data
+router.get('/feedback/format', feedbackController.formatFeedbackData);
+
+// Route for getting feedback by session ID
+router.get('/feedback/session/:sessionId', feedbackController.getFeedbackBySessionId);
+
 module.exports = router;    

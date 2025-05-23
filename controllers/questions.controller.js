@@ -1,4 +1,4 @@
-const pool = require('../services/db');
+const pool = require('../services/db'); // Ensure this path is correct
 
 // Helper function to parse and validate date range parameters
 function parseDateRange(startDate, endDate) {
@@ -434,8 +434,144 @@ const getQuestionsByUserId = async (req, res) => {
     }
 };
 
+// Get questions by session ID with date filtering
+const getQuestionsBySessionId = async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const offset = (page - 1) * limit;
+        
+        if (!sessionId || typeof sessionId !== 'string' || sessionId.trim() === '') {
+            return res.status(400).json({ 
+                success: false,
+                error: "Valid Session ID is required" 
+            });
+        }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering for questions query
+        let dateFilter = '';
+        let countDateFilter = '';
+        const queryParams = [sessionId.trim()];
+        const countParams = [sessionId.trim()];
+        let paramIndex = 1;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            countDateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+            countParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            countDateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+            countParams.push(endTimestamp);
+        }
+        
+        // Add pagination params
+        queryParams.push(limit, offset);
+        
+        // Get questions by session ID with pagination and date filtering
+        const questionsQuery = {
+            text: `
+                SELECT 
+                    id,
+                    uid as qid,
+                    questiontext AS question,
+                    answertext AS answer,
+                    uid AS user_id,
+                    created_at,
+                    ets,
+                    channel,
+                    sid AS session_id
+                FROM questions
+                WHERE sid = $1 
+                    AND questiontext IS NOT NULL 
+                    AND answertext IS NOT NULL
+                    ${dateFilter}
+                ORDER BY created_at DESC
+                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+            `,
+            values: queryParams,
+        };
+        
+        // Get total count for session with date filtering
+        const countQuery = {
+            text: `
+                SELECT COUNT(*) as total
+                FROM questions
+                WHERE sid = $1 
+                    AND questiontext IS NOT NULL 
+                    AND answertext IS NOT NULL
+                    ${countDateFilter}
+            `,
+            values: countParams,
+        };
+        
+        const [questionsResult, countResult] = await Promise.all([
+            pool.query(questionsQuery),
+            pool.query(countQuery)
+        ]);
+        
+        const totalCount = parseInt(countResult.rows[0].total);
+        const formattedData = questionsResult.rows.map(formatQuestionData);
+        
+        // Calculate pagination metadata
+        const totalPages = Math.ceil(totalCount / limit);
+        const hasNextPage = page < totalPages;
+        const hasPreviousPage = page > 1;
+        
+        res.status(200).json({
+            success: true,
+            data: formattedData,
+            pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalItems: totalCount,
+                itemsPerPage: limit,
+                hasNextPage: hasNextPage,
+                hasPreviousPage: hasPreviousPage,
+                nextPage: hasNextPage ? page + 1 : null,
+                previousPage: hasPreviousPage ? page - 1 : null
+            },
+            filters: {
+                sessionId: sessionId.trim(),
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching questions by session ID:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching session questions" 
+        });
+    }
+};
+
 module.exports = {
     getQuestions,
     getQuestionById,
-    getQuestionsByUserId
+    getQuestionsByUserId,
+    getQuestionsBySessionId,
+    getTotalQuestionsCount,
+    fetchQuestionsFromDB,
+    formatQuestionData
 };

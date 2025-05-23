@@ -280,7 +280,147 @@ async function getFeedbackByid(req, res) {
     }
 }
 
+// Get feedback by session ID with date filtering
+const getFeedbackBySessionId = async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const offset = (page - 1) * limit;
+        
+        if (!sessionId || typeof sessionId !== 'string' || sessionId.trim() === '') {
+            return res.status(400).json({ 
+                message: "Valid Session ID is required" 
+            });
+        }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                message: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ 
+                message: "Start date cannot be after end date" 
+            });
+        }
+        
+        // Build date filtering for feedback query
+        let dateFilter = '';
+        let countDateFilter = '';
+        const queryParams = [sessionId.trim()];
+        const countParams = [sessionId.trim()];
+        let paramIndex = 1;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            countDateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+            countParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            countDateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+            countParams.push(endTimestamp);
+        }
+        
+        // Add pagination params
+        queryParams.push(limit, offset);
+        
+        // Get feedback by session ID with pagination and date filtering
+        const feedbackQuery = {
+            text: `
+                SELECT 
+                    id,
+                    qid,
+                    uid as user_id,
+                    created_at,
+                    feedbacktype,   
+                    feedbacktext,
+                    questiontext,
+                    answertext,
+                    channel,
+                    sid as session_id,
+                    ets
+                FROM feedback
+                WHERE sid = $1 
+                    AND feedbacktext IS NOT NULL 
+                    AND questiontext IS NOT NULL
+                    ${dateFilter}
+                ORDER BY created_at DESC
+                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+            `,
+            values: queryParams,
+        };
+        
+        // Get total count for session with date filtering
+        const countQuery = {
+            text: `
+                SELECT COUNT(*) as total
+                FROM feedback
+                WHERE sid = $1 
+                    AND feedbacktext IS NOT NULL 
+                    AND questiontext IS NOT NULL
+                    ${countDateFilter}
+            `,
+            values: countParams,
+        };
+        
+        const [feedbackResult, countResult] = await Promise.all([
+            pool.query(feedbackQuery),
+            pool.query(countQuery)
+        ]);
+        
+        const totalCount = parseInt(countResult.rows[0].total);
+        const formattedData = feedbackResult.rows.map(formatFeedbackData);
+        
+        // Calculate pagination metadata
+        const totalPages = Math.ceil(totalCount / limit);
+        const hasNextPage = page < totalPages;
+        const hasPreviousPage = page > 1;
+        
+        res.status(200).json({
+            data: formattedData,
+            pagination: {
+                currentPage: page,
+                totalPages: totalPages,
+                totalItems: totalCount,
+                itemsPerPage: limit,
+                hasNextPage: hasNextPage,
+                hasPreviousPage: hasPreviousPage,
+                nextPage: hasNextPage ? page + 1 : null,
+                previousPage: hasPreviousPage ? page - 1 : null
+            },
+            filters: {
+                sessionId: sessionId.trim(),
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching feedback by session ID:", error);
+        res.status(500).json({ 
+            message: "Error fetching session feedback" 
+        });
+    }
+};
+
 module.exports = {
     getAllFeedback,
     getFeedbackByid,
+    getFeedbackBySessionId,
+    getTotalFeedbackCount,
+    fetchAllFeedbackFromDB,
+    formatFeedbackData
 };

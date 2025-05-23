@@ -630,5 +630,8 @@ const getSessionsByUserId = async (req, res) => {
 module.exports = {
     getSessions,
     getSessionById,
-    getSessionsByUserId
+    getSessionsByUserId,
+    getTotalSessionsCount,
+    fetchSessionsFromDB,
+    formatSessionData
 };
