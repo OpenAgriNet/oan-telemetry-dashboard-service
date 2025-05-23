@@ -78,7 +78,8 @@ async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDa
         query += ` AND (
             feedbacktext ILIKE $${paramIndex} OR 
             questiontext ILIKE $${paramIndex} OR 
-            answertext ILIKE $${paramIndex}
+            answertext ILIKE $${paramIndex} OR
+            uid ILIKE $${paramIndex}
         )`;
         queryParams.push(`%${search.trim()}%`);
     }
@@ -129,7 +130,8 @@ async function getTotalFeedbackCount(search = '', startDate = null, endDate = nu
         query += ` AND (
             feedbacktext ILIKE $${paramIndex} OR 
             questiontext ILIKE $${paramIndex} OR 
-            answertext ILIKE $${paramIndex}
+            answertext ILIKE $${paramIndex} OR
+            uid ILIKE $${paramIndex}
         )`;
         queryParams.push(`%${search.trim()}%`);
     }
