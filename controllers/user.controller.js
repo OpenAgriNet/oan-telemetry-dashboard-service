@@ -50,7 +50,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                 MIN(ets) as first_session,
                 MAX(created_at) as last_activity
             FROM questions
-            WHERE uid IS NOT NULL
+            WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
     
     const queryParams = [];
@@ -79,7 +79,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                 COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes,
                 COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
             FROM feedback
-            WHERE uid IS NOT NULL
+            WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
     
     // Add same date filtering to feedback
@@ -136,7 +136,7 @@ async function getTotalUsersCount(search = '', startDate = null, endDate = null)
     let query = `
         SELECT COUNT(DISTINCT uid) as total
         FROM questions
-        WHERE uid IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
     
     const queryParams = [];
@@ -338,7 +338,7 @@ const getUserByUsername = async (req, res) => {
                         MAX(created_at) as last_activity,
                         COUNT(DISTINCT channel) as channels_used
                     FROM questions
-                    WHERE uid = $1 ${dateFilter}
+                    WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY uid
                 ),
                 user_feedback AS (
@@ -348,7 +348,7 @@ const getUserByUsername = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
                     FROM feedback
-                    WHERE uid = $1 ${dateFilter}
+                    WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY uid
                 ),
                 user_channels AS (
@@ -356,9 +356,9 @@ const getUserByUsername = async (req, res) => {
                         uid,
                         array_agg(DISTINCT channel) FILTER (WHERE channel IS NOT NULL) as channels
                     FROM (
-                        SELECT uid, channel FROM questions WHERE uid = $1 ${dateFilter}
+                        SELECT uid, channel FROM questions WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
                         UNION
-                        SELECT uid, channel FROM feedback WHERE uid = $1 ${dateFilter}
+                        SELECT uid, channel FROM feedback WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
                     ) combined
                     GROUP BY uid
                 )
@@ -469,7 +469,7 @@ const getUserStats = async (req, res) => {
                         COUNT(*) as total_questions,
                         AVG(EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))) as avg_session_duration
                     FROM questions
-                    WHERE uid IS NOT NULL ${dateFilter}
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                 ),
                 feedback_stats AS (
                     SELECT 
@@ -477,7 +477,7 @@ const getUserStats = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                     FROM feedback
-                    WHERE uid IS NOT NULL ${feedbackDateFilter}
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
                 ),
                 activity_by_day AS (
                     SELECT 
@@ -486,7 +486,7 @@ const getUserStats = async (req, res) => {
                         COUNT(*) as questions_count
                     FROM questions
                     ${activityDateFilter}
-                        AND uid IS NOT NULL
+                        AND uid IS NOT NULL AND answertext IS NOT NULL
                     GROUP BY DATE(created_at)
                     ORDER BY activity_date DESC
                     LIMIT 30

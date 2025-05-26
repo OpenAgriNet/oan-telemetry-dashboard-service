@@ -64,7 +64,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -144,7 +144,7 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -353,7 +353,7 @@ const getSessionById = async (req, res) => {
                         channel,
                         'question' as type
                     FROM questions
-                    WHERE sid = $1${dateConditions}
+                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
                 ),
                 session_feedback AS (
                     SELECT 
@@ -367,7 +367,7 @@ const getSessionById = async (req, res) => {
                         channel,
                         'feedback' as type
                     FROM feedback
-                    WHERE sid = $1${dateConditions}
+                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
                 ),
                 session_errors AS (
                     SELECT 
@@ -381,7 +381,7 @@ const getSessionById = async (req, res) => {
                         NULL as channel,
                         'error' as type
                     FROM errordetails
-                    WHERE sid = $1${dateConditions}
+                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
                 )
                 SELECT * FROM session_questions
                 UNION ALL
@@ -519,7 +519,7 @@ const getSessionsByUserId = async (req, res) => {
                         questiontext,
                         ets
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
@@ -560,7 +560,7 @@ const getSessionsByUserId = async (req, res) => {
                         questiontext,
                         ets
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
