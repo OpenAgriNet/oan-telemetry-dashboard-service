@@ -214,7 +214,7 @@ function formatUserData(row) {
         lastActivity: row.last_activity,
         latestTimestamp: row.latest_session,
         firstTimestamp: row.first_session,
-        latestSid: row.session_id || null
+        sessionId: row.session_id || null
     };
 }
 
