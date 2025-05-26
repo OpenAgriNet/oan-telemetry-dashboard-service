@@ -48,7 +48,15 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                 COUNT(*) as total_questions,
                 MAX(ets) as latest_session,
                 MIN(ets) as first_session,
-                MAX(created_at) as last_activity
+                MAX(created_at) as last_activity,
+                (
+                    SELECT sid FROM questions q2
+                    WHERE q2.uid = questions.uid
+                    ${startTimestamp !== null ? 'AND q2.ets >= $' + (paramIndex > 0 ? 1 : 0) : ''}
+                    ${endTimestamp !== null ? 'AND q2.ets <= $' + (paramIndex > 1 ? 2 : 0) : ''}
+                    ORDER BY q2.ets DESC
+                    LIMIT 1
+                ) as latest_sid
             FROM questions
             WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
@@ -101,6 +109,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             us.latest_session,
             us.first_session,
             us.last_activity,
+            us.latest_sid,
             COALESCE(uf.feedback_count, 0) as feedback_count,
             COALESCE(uf.likes, 0) as likes,
             COALESCE(uf.dislikes, 0) as dislikes
@@ -204,7 +213,8 @@ function formatUserData(row) {
         firstSession,
         lastActivity: row.last_activity,
         latestTimestamp: row.latest_session,
-        firstTimestamp: row.first_session
+        firstTimestamp: row.first_session,
+        latestSid: row.latest_sid || null
     };
 }
 
