@@ -56,7 +56,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                     ${endTimestamp !== null ? 'AND q2.ets <= $' + (paramIndex > 1 ? 2 : 0) : ''}
                     ORDER BY q2.ets DESC
                     LIMIT 1
-                ) as latest_sid
+                ) as session_id
             FROM questions
             WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
@@ -109,7 +109,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             us.latest_session,
             us.first_session,
             us.last_activity,
-            us.latest_sid,
+            us.session_id,
             COALESCE(uf.feedback_count, 0) as feedback_count,
             COALESCE(uf.likes, 0) as likes,
             COALESCE(uf.dislikes, 0) as dislikes
@@ -214,7 +214,7 @@ function formatUserData(row) {
         lastActivity: row.last_activity,
         latestTimestamp: row.latest_session,
         firstTimestamp: row.first_session,
-        latestSid: row.latest_sid || null
+        latestSid: row.session_id || null
     };
 }
 
