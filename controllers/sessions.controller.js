@@ -627,10 +627,168 @@ const getSessionsByUserId = async (req, res) => {
     }
 };
 
+// Get comprehensive session statistics with date filtering
+const getSessionStats = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        const query = {
+            text: `
+                WITH session_stats AS (
+                    -- Use consistent session counting logic that matches /sessions endpoint
+                    SELECT 
+                        COUNT(DISTINCT session_user_pair) as total_sessions,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(*) as total_questions,
+                        AVG(questions_per_session) as avg_questions_per_session,
+                        AVG(session_duration_seconds) as avg_session_duration,
+                        MAX(session_duration_seconds) as max_session_duration,
+                        MIN(session_duration_seconds) as min_session_duration
+                    FROM (
+                        SELECT 
+                            CONCAT(sid, '_', uid) as session_user_pair,
+                            sid,
+                            uid,
+                            COUNT(*) as questions_per_session,
+                            EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) as session_duration_seconds
+                        FROM questions
+                        WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        GROUP BY sid, uid
+                    ) session_summaries
+                ),
+                consistent_session_count AS (
+                    -- Get total sessions including those with only feedback or errors
+                    SELECT COUNT(DISTINCT session_user_pair) as total_sessions_all_activity
+                    FROM (
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair
+                        FROM questions
+                        WHERE sid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        UNION
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair
+                        FROM feedback
+                        WHERE sid IS NOT NULL ${dateFilter}
+                        UNION
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair
+                        FROM errordetails
+                        WHERE sid IS NOT NULL ${dateFilter}
+                    ) combined_sessions
+                ),
+                session_activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(DISTINCT sid) as sessions_count,
+                        COUNT(DISTINCT uid) as unique_users_count,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                ),
+                channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(DISTINCT sid) as sessions_count,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY sessions_count DESC
+                )
+                SELECT 
+                    ss.*,
+                    csc.total_sessions_all_activity as total_sessions,
+                    json_agg(
+                        jsonb_build_object(
+                            'date', sabd.activity_date,
+                            'sessionsCount', sabd.sessions_count,
+                            'uniqueUsersCount', sabd.unique_users_count,
+                            'questionsCount', sabd.questions_count
+                        ) ORDER BY sabd.activity_date DESC
+                    ) FILTER (WHERE sabd.activity_date IS NOT NULL) as daily_activity,
+                    json_agg(
+                        jsonb_build_object(
+                            'channel', cs.channel,
+                            'sessionsCount', cs.sessions_count,
+                            'questionsCount', cs.questions_count
+                        ) ORDER BY cs.sessions_count DESC
+                    ) FILTER (WHERE cs.channel IS NOT NULL) as channel_breakdown
+                FROM session_stats ss
+                CROSS JOIN consistent_session_count csc
+                LEFT JOIN session_activity_by_day sabd ON true
+                LEFT JOIN channel_stats cs ON true
+                GROUP BY ss.total_sessions, ss.unique_users, ss.total_questions, 
+                         ss.avg_questions_per_session, ss.avg_session_duration, 
+                         ss.max_session_duration, ss.min_session_duration,
+                         csc.total_sessions_all_activity
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        const stats = result.rows[0];
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalSessions: parseInt(stats.total_sessions) || 0,
+                uniqueUsers: parseInt(stats.unique_users) || 0,
+                totalQuestions: parseInt(stats.total_questions) || 0,
+                avgQuestionsPerSession: parseFloat(stats.avg_questions_per_session) || 0,
+                avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
+                maxSessionDuration: parseFloat(stats.max_session_duration) || 0,
+                minSessionDuration: parseFloat(stats.min_session_duration) || 0,
+                dailyActivity: stats.daily_activity || [],
+                channelBreakdown: stats.channel_breakdown || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching session stats:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching session statistics" 
+        });
+    }
+};
+
 module.exports = {
     getSessions,
     getSessionById,
     getSessionsByUserId,
+    getSessionStats,
     getTotalSessionsCount,
     fetchSessionsFromDB,
     formatSessionData

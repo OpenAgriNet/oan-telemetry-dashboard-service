@@ -213,6 +213,83 @@ function formatUserData(row) {
     };
 }
 
+// Route handler for formatting user data endpoint
+const formatUserDataHandler = async (req, res) => {
+    try {
+        res.status(200).json({
+            success: true,
+            message: "This endpoint is for internal data formatting only",
+            data: {
+                description: "Use GET /users to retrieve formatted user data"
+            }
+        });
+    } catch (error) {
+        console.error("Error in format user data handler:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error in format user data handler" 
+        });
+    }
+};
+
+// Route handler for fetching users from DB endpoint
+const fetchUsersFromDBHandler = async (req, res) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        const usersData = await fetchUsersFromDB(page, limit, search, startDate, endDate);
+        
+        res.status(200).json({
+            success: true,
+            data: usersData,
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate
+            }
+        });
+    } catch (error) {
+        console.error("Error in fetch users from DB handler:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching users from database" 
+        });
+    }
+};
+
+// Route handler for getting total users count endpoint
+const getTotalUsersCountHandler = async (req, res) => {
+    try {
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        const totalCount = await getTotalUsersCount(search, startDate, endDate);
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalCount: totalCount
+            },
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate
+            }
+        });
+    } catch (error) {
+        console.error("Error in get total users count handler:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error getting total users count" 
+        });
+    }
+};
+
 const getUsers = async (req, res) => {
     try {
         // Extract and sanitize pagination parameters from query string
@@ -464,17 +541,29 @@ const getUserStats = async (req, res) => {
                 activityDateFilter += ` AND ets <= $${paramIndex}`;
             }
         }
-        
+
         const query = {
             text: `
-                WITH overall_stats AS (
+                WITH session_durations AS (
+                    SELECT 
+                        sid,
+                        EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) as session_duration_seconds
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY sid
+                ),
+                overall_stats AS (
                     SELECT 
                         COUNT(DISTINCT uid) as total_users,
                         COUNT(DISTINCT sid) as total_sessions,
-                        COUNT(*) as total_questions,
-                        AVG(EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))) as avg_session_duration
+                        COUNT(*) as total_questions
                     FROM questions
                     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                ),
+                avg_session_duration AS (
+                    SELECT 
+                        AVG(session_duration_seconds) as avg_session_duration
+                    FROM session_durations
                 ),
                 feedback_stats AS (
                     SELECT 
@@ -498,6 +587,7 @@ const getUserStats = async (req, res) => {
                 )
                 SELECT 
                     os.*,
+                    asd.avg_session_duration,
                     fs.*,
                     json_agg(
                         json_build_object(
@@ -507,10 +597,11 @@ const getUserStats = async (req, res) => {
                         ) ORDER BY abd.activity_date DESC
                     ) as daily_activity
                 FROM overall_stats os
+                CROSS JOIN avg_session_duration asd
                 CROSS JOIN feedback_stats fs
                 LEFT JOIN activity_by_day abd ON true
                 GROUP BY os.total_users, os.total_sessions, os.total_questions, 
-                         os.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes
+                         asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes
             `,
             values: queryParams
         };
@@ -546,11 +637,477 @@ const getUserStats = async (req, res) => {
     }
 };
 
+// Get comprehensive session statistics with date filtering
+const getSessionStats = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        const query = {
+            text: `
+                WITH session_stats AS (
+                    SELECT 
+                        COUNT(DISTINCT sid) as total_sessions,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(*) as total_questions,
+                        AVG(questions_per_session) as avg_questions_per_session,
+                        AVG(session_duration_seconds) as avg_session_duration,
+                        MAX(session_duration_seconds) as max_session_duration,
+                        MIN(session_duration_seconds) as min_session_duration
+                    FROM (
+                        SELECT 
+                            sid,
+                            uid,
+                            COUNT(*) as questions_per_session,
+                            EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) as session_duration_seconds
+                        FROM questions
+                        WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        GROUP BY sid, uid
+                    ) session_summaries
+                ),
+                session_activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(DISTINCT sid) as sessions_count,
+                        COUNT(DISTINCT uid) as unique_users_count,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                ),
+                channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(DISTINCT sid) as sessions_count,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY sessions_count DESC
+                )
+                SELECT 
+                    ss.*,
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'date', sabd.activity_date,
+                            'sessionsCount', sabd.sessions_count,
+                            'uniqueUsersCount', sabd.unique_users_count,
+                            'questionsCount', sabd.questions_count
+                        ) ORDER BY jsonb_build_object(
+                            'date', sabd.activity_date,
+                            'sessionsCount', sabd.sessions_count,
+                            'uniqueUsersCount', sabd.unique_users_count,
+                            'questionsCount', sabd.questions_count
+                        ) -> 'date' DESC
+                    ) FILTER (WHERE sabd.activity_date IS NOT NULL) as daily_activity,
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'channel', cs.channel,
+                            'sessionsCount', cs.sessions_count,
+                            'questionsCount', cs.questions_count
+                        ) ORDER BY jsonb_build_object(
+                            'channel', cs.channel,
+                            'sessionsCount', cs.sessions_count,
+                            'questionsCount', cs.questions_count
+                        ) -> 'sessionsCount' DESC
+                    ) FILTER (WHERE cs.channel IS NOT NULL) as channel_breakdown
+                FROM session_stats ss
+                LEFT JOIN session_activity_by_day sabd ON true
+                LEFT JOIN channel_stats cs ON true
+                GROUP BY ss.total_sessions, ss.unique_users, ss.total_questions, 
+                         ss.avg_questions_per_session, ss.avg_session_duration, 
+                         ss.max_session_duration, ss.min_session_duration
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        const stats = result.rows[0];
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalSessions: parseInt(stats.total_sessions) || 0,
+                uniqueUsers: parseInt(stats.unique_users) || 0,
+                totalQuestions: parseInt(stats.total_questions) || 0,
+                avgQuestionsPerSession: parseFloat(stats.avg_questions_per_session) || 0,
+                avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
+                maxSessionDuration: parseFloat(stats.max_session_duration) || 0,
+                minSessionDuration: parseFloat(stats.min_session_duration) || 0,
+                dailyActivity: stats.daily_activity || [],
+                channelBreakdown: stats.channel_breakdown || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching session stats:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching session statistics" 
+        });
+    }
+};
+
+// Get comprehensive question statistics with date filtering
+const getQuestionStats = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        const query = {
+            text: `
+                WITH question_stats AS (
+                    SELECT 
+                        COUNT(*) as total_questions,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(DISTINCT sid) as unique_sessions,
+                        COUNT(DISTINCT channel) as unique_channels,
+                        AVG(LENGTH(questiontext)) as avg_question_length,
+                        AVG(LENGTH(answertext)) as avg_answer_length
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                ),
+                question_activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(*) as questions_count,
+                        COUNT(DISTINCT uid) as unique_users_count,
+                        COUNT(DISTINCT sid) as unique_sessions_count,
+                        AVG(LENGTH(questiontext)) as avg_question_length,
+                        AVG(LENGTH(answertext)) as avg_answer_length
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                ),
+                question_channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(*) as questions_count,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(DISTINCT sid) as unique_sessions,
+                        AVG(LENGTH(questiontext)) as avg_question_length
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY questions_count DESC
+                ),
+                hourly_distribution AS (
+                    SELECT 
+                        EXTRACT(HOUR FROM created_at) as hour_of_day,
+                        COUNT(*) as questions_count
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY EXTRACT(HOUR FROM created_at)
+                    ORDER BY hour_of_day
+                )
+                SELECT 
+                    qs.*,
+                    json_agg(
+                        jsonb_build_object(
+                            'date', qabd.activity_date,
+                            'questionsCount', qabd.questions_count,
+                            'uniqueUsersCount', qabd.unique_users_count,
+                            'uniqueSessionsCount', qabd.unique_sessions_count,
+                            'avgQuestionLength', qabd.avg_question_length,
+                            'avgAnswerLength', qabd.avg_answer_length
+                        ) ORDER BY qabd.activity_date DESC
+                    ) FILTER (WHERE qabd.activity_date IS NOT NULL) as daily_activity,
+                    json_agg(
+                        jsonb_build_object(
+                            'channel', qcs.channel,
+                            'questionsCount', qcs.questions_count,
+                            'uniqueUsers', qcs.unique_users,
+                            'uniqueSessions', qcs.unique_sessions,
+                            'avgQuestionLength', qcs.avg_question_length
+                        ) ORDER BY qcs.questions_count DESC
+                    ) FILTER (WHERE qcs.channel IS NOT NULL) as channel_breakdown,
+                    json_agg(
+                        jsonb_build_object(
+                            'hour', hd.hour_of_day,
+                            'questionsCount', hd.questions_count
+                        ) ORDER BY hd.hour_of_day
+                    ) FILTER (WHERE hd.hour_of_day IS NOT NULL) as hourly_distribution
+                FROM question_stats qs
+                LEFT JOIN question_activity_by_day qabd ON true
+                LEFT JOIN question_channel_stats qcs ON true
+                LEFT JOIN hourly_distribution hd ON true
+                GROUP BY qs.total_questions, qs.unique_users, qs.unique_sessions, 
+                         qs.unique_channels, qs.avg_question_length, qs.avg_answer_length
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        const stats = result.rows[0];
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalQuestions: parseInt(stats.total_questions) || 0,
+                uniqueUsers: parseInt(stats.unique_users) || 0,
+                uniqueSessions: parseInt(stats.unique_sessions) || 0,
+                uniqueChannels: parseInt(stats.unique_channels) || 0,
+                avgQuestionLength: parseFloat(stats.avg_question_length) || 0,
+                avgAnswerLength: parseFloat(stats.avg_answer_length) || 0,
+                dailyActivity: stats.daily_activity || [],
+                channelBreakdown: stats.channel_breakdown || [],
+                hourlyDistribution: stats.hourly_distribution || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching question stats:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching question statistics" 
+        });
+    }
+};
+
+// Get comprehensive feedback statistics with date filtering
+const getFeedbackStats = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        const query = {
+            text: `
+                WITH feedback_stats AS (
+                    SELECT 
+                        COUNT(*) as total_feedback,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(DISTINCT sid) as unique_sessions,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as satisfaction_rate,
+                        AVG(LENGTH(feedbacktext)) as avg_feedback_length
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                ),
+                feedback_activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count,
+                        COUNT(DISTINCT uid) as unique_users_count,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as daily_satisfaction_rate
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                ),
+                feedback_channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count,
+                        COUNT(DISTINCT uid) as unique_users,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as channel_satisfaction_rate
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY feedback_count DESC
+                ),
+                top_feedback_users AS (
+                    SELECT 
+                        uid,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY uid
+                    ORDER BY feedback_count DESC
+                    LIMIT 10
+                )
+                SELECT 
+                    fs.*,
+                    json_agg(
+                        jsonb_build_object(
+                            'date', fabd.activity_date,
+                            'feedbackCount', fabd.feedback_count,
+                            'likesCount', fabd.likes_count,
+                            'dislikesCount', fabd.dislikes_count,
+                            'uniqueUsersCount', fabd.unique_users_count,
+                            'satisfactionRate', fabd.daily_satisfaction_rate
+                        ) ORDER BY fabd.activity_date DESC
+                    ) FILTER (WHERE fabd.activity_date IS NOT NULL) as daily_activity,
+                    json_agg(
+                        jsonb_build_object(
+                            'channel', fcs.channel,
+                            'feedbackCount', fcs.feedback_count,
+                            'likesCount', fcs.likes_count,
+                            'dislikesCount', fcs.dislikes_count,
+                            'uniqueUsers', fcs.unique_users,
+                            'satisfactionRate', fcs.channel_satisfaction_rate
+                        ) ORDER BY fcs.feedback_count DESC
+                    ) FILTER (WHERE fcs.channel IS NOT NULL) as channel_breakdown,
+                    json_agg(
+                        jsonb_build_object(
+                            'userId', tfu.uid,
+                            'feedbackCount', tfu.feedback_count,
+                            'likesCount', tfu.likes_count,
+                            'dislikesCount', tfu.dislikes_count
+                        ) ORDER BY tfu.feedback_count DESC
+                    ) FILTER (WHERE tfu.uid IS NOT NULL) as top_feedback_users
+                FROM feedback_stats fs
+                LEFT JOIN feedback_activity_by_day fabd ON true
+                LEFT JOIN feedback_channel_stats fcs ON true
+                LEFT JOIN top_feedback_users tfu ON true
+                GROUP BY fs.total_feedback, fs.total_likes, fs.total_dislikes, 
+                         fs.unique_users, fs.unique_sessions, fs.satisfaction_rate, fs.avg_feedback_length
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        const stats = result.rows[0];
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalFeedback: parseInt(stats.total_feedback) || 0,
+                totalLikes: parseInt(stats.total_likes) || 0,
+                totalDislikes: parseInt(stats.total_dislikes) || 0,
+                uniqueUsers: parseInt(stats.unique_users) || 0,
+                uniqueSessions: parseInt(stats.unique_sessions) || 0,
+                satisfactionRate: parseFloat(stats.satisfaction_rate) || 0,
+                avgFeedbackLength: parseFloat(stats.avg_feedback_length) || 0,
+                dailyActivity: stats.daily_activity || [],
+                channelBreakdown: stats.channel_breakdown || [],
+                topFeedbackUsers: stats.top_feedback_users || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching feedback stats:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching feedback statistics" 
+        });
+    }
+};
+
 module.exports = {
     getUsers,
     getUserByUsername,
     getUserStats,
+    getSessionStats,
+    getQuestionStats,
+    getFeedbackStats,
     getTotalUsersCount,
     fetchUsersFromDB,
-    formatUserData
+    formatUserData,
+    formatUserDataHandler,
+    fetchUsersFromDBHandler,
+    getTotalUsersCountHandler
 };
