@@ -39,68 +39,62 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
     
-    // Base query with comprehensive user statistics and date filtering - using parameterized queries
-    let query = `
-        WITH user_stats AS (
-            SELECT 
-                uid as user_id,
-                COUNT(DISTINCT sid) as session_count,
-                COUNT(*) as total_questions,
-                MAX(ets) as latest_session,
-                MIN(ets) as first_session,
-                MAX(created_at) as last_activity,
-                (
-                    SELECT sid FROM questions q2
-                    WHERE q2.uid = questions.uid
-                    ${startTimestamp !== null ? 'AND q2.ets >= $' + (paramIndex > 0 ? 1 : 0) : ''}
-                    ${endTimestamp !== null ? 'AND q2.ets <= $' + (paramIndex > 1 ? 2 : 0) : ''}
-                    ORDER BY q2.ets DESC
-                    LIMIT 1
-                ) as session_id
-            FROM questions
-            WHERE uid IS NOT NULL AND answertext IS NOT NULL
-    `;
-    
     const queryParams = [];
     let paramIndex = 0;
-    
-    // Add date range filtering to questions
+
+    // Variables to hold SQL conditions for date filtering
+    let questionsDateFilter = '';
+    let feedbackDateFilter = '';
+    let subQuerySessionIdDateFilter = '';
+
+    // Populate date filter conditions and parameters
     if (startTimestamp !== null) {
         paramIndex++;
-        query += ` AND ets >= $${paramIndex}`;
+        questionsDateFilter += ` AND questions.ets >= $${paramIndex}`;
+        feedbackDateFilter += ` AND feedback.ets >= $${paramIndex}`;
+        subQuerySessionIdDateFilter += ` AND q2.ets >= $${paramIndex}`;
         queryParams.push(startTimestamp);
     }
     
     if (endTimestamp !== null) {
         paramIndex++;
-        query += ` AND ets <= $${paramIndex}`;
+        questionsDateFilter += ` AND questions.ets <= $${paramIndex}`;
+        feedbackDateFilter += ` AND feedback.ets <= $${paramIndex}`;
+        subQuerySessionIdDateFilter += ` AND q2.ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
     
-    query += `
-            GROUP BY uid
+    let query = `
+        WITH user_stats AS (
+            SELECT 
+                questions.uid as user_id,
+                COUNT(DISTINCT questions.sid) as session_count,
+                COUNT(questions.id) as total_questions, /* Changed from COUNT(*) */
+                MAX(questions.ets) as latest_session,
+                MIN(questions.ets) as first_session,
+                MAX(questions.created_at) as last_activity,
+                (
+                    SELECT q2.sid FROM questions q2
+                    WHERE q2.uid = questions.uid
+                    ${subQuerySessionIdDateFilter}
+                    ORDER BY q2.ets DESC
+                    LIMIT 1
+                ) as session_id
+            FROM questions
+            WHERE questions.uid IS NOT NULL AND questions.answertext IS NOT NULL
+            ${questionsDateFilter}
+            GROUP BY questions.uid
         ),
         user_feedback AS (
             SELECT 
-                uid as user_id,
-                COUNT(*) as feedback_count,
-                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes,
-                COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
+                feedback.uid as user_id,
+                COUNT(feedback.id) as feedback_count, /* Changed from COUNT(*) */
+                COUNT(CASE WHEN feedback.feedbacktype = 'like' THEN 1 END) as likes,
+                COUNT(CASE WHEN feedback.feedbacktype = 'dislike' THEN 1 END) as dislikes
             FROM feedback
-            WHERE uid IS NOT NULL AND answertext IS NOT NULL
-    `;
-    
-    // Add same date filtering to feedback
-    if (startTimestamp !== null) {
-        query += ` AND ets >= $${paramIndex - 1}`;
-    }
-    
-    if (endTimestamp !== null) {
-        query += ` AND ets <= $${paramIndex}`;
-    }
-    
-    query += `
-            GROUP BY uid
+            WHERE feedback.uid IS NOT NULL AND feedback.answertext IS NOT NULL
+            ${feedbackDateFilter}
+            GROUP BY feedback.uid
         )
         SELECT 
             us.user_id,
@@ -120,7 +114,8 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
     // Add search functionality if search term is provided
     if (search && search.trim() !== '') {
         paramIndex++;
-        query += ` WHERE us.user_id ILIKE $${paramIndex}`;
+        // Assuming search applies to user_id. If it needs to apply after JOIN, this might need adjustment (e.g., HAVING clause or subquery)
+        query += ` WHERE us.user_id ILIKE $${paramIndex}`; 
         queryParams.push(`%${search.trim()}%`);
     }
     
@@ -447,15 +442,15 @@ const getUserStats = async (req, res) => {
         
         if (startTimestamp !== null) {
             paramIndex++;
-            dateFilter += ` AND ets >= ${paramIndex}`;
-            feedbackDateFilter += ` AND ets >= ${paramIndex}`;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            feedbackDateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
         
         if (endTimestamp !== null) {
             paramIndex++;
-            dateFilter += ` AND ets <= ${paramIndex}`;
-            feedbackDateFilter += ` AND ets <= ${paramIndex}`;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            feedbackDateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
         
@@ -463,10 +458,10 @@ const getUserStats = async (req, res) => {
         if (startTimestamp !== null || endTimestamp !== null) {
             activityDateFilter = 'WHERE true';
             if (startTimestamp !== null) {
-                activityDateFilter += ` AND ets >= ${paramIndex - 1}`;
+                activityDateFilter += ` AND ets >= $${paramIndex - 1}`;
             }
             if (endTimestamp !== null) {
-                activityDateFilter += ` AND ets <= ${paramIndex}`;
+                activityDateFilter += ` AND ets <= $${paramIndex}`;
             }
         }
         
