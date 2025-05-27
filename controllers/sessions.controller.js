@@ -381,7 +381,7 @@ const getSessionById = async (req, res) => {
                         NULL as channel,
                         'error' as type
                     FROM errordetails
-                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
+                    WHERE sid = $1${dateConditions}
                 )
                 SELECT * FROM session_questions
                 UNION ALL
