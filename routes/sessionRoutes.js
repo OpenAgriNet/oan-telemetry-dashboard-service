@@ -3,6 +3,7 @@ const {
     getSessions, 
     getSessionById, 
     getSessionsByUserId,
+    getSessionStats,
     getTotalSessionsCount,
     fetchSessionsFromDB,
     formatSessionData
@@ -12,6 +13,9 @@ const router = express.Router();
 
 // Get all sessions with pagination and search
 router.get('/sessions', getSessions);
+
+// Get comprehensive session statistics
+router.get('/sessions/stats', getSessionStats);
 
 // Get single session details by session ID
 router.get('/sessions/:sessionId', getSessionById);

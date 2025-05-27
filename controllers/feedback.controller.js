@@ -480,10 +480,178 @@ const getFeedbackBySessionId = async (req, res) => {
     }
 };
 
+// Get comprehensive feedback statistics with date filtering
+const getFeedbackStats = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        const query = {
+            text: `
+                WITH feedback_stats AS (
+                    SELECT 
+                        COUNT(*) as total_feedback,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes,
+                        COUNT(DISTINCT uid) as unique_users,
+                        COUNT(DISTINCT sid) as unique_sessions,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as satisfaction_rate,
+                        AVG(LENGTH(feedbacktext)) as avg_feedback_length
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                ),
+                feedback_activity_by_day AS (
+                    SELECT 
+                        DATE(created_at) as activity_date,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count,
+                        COUNT(DISTINCT uid) as unique_users_count,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as daily_satisfaction_rate
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY DATE(created_at)
+                    ORDER BY activity_date DESC
+                    LIMIT 30
+                ),
+                feedback_channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count,
+                        COUNT(DISTINCT uid) as unique_users,
+                        ROUND(
+                            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+                            NULLIF(COUNT(*), 0), 2
+                        ) as channel_satisfaction_rate
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY feedback_count DESC
+                ),
+                top_feedback_users AS (
+                    SELECT 
+                        uid,
+                        COUNT(*) as feedback_count,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count
+                    FROM feedback
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY uid
+                    ORDER BY feedback_count DESC
+                    LIMIT 10
+                )
+                SELECT 
+                    fs.*,
+                    json_agg(
+                        jsonb_build_object(
+                            'date', fabd.activity_date,
+                            'feedbackCount', fabd.feedback_count,
+                            'likesCount', fabd.likes_count,
+                            'dislikesCount', fabd.dislikes_count,
+                            'uniqueUsersCount', fabd.unique_users_count,
+                            'satisfactionRate', fabd.daily_satisfaction_rate
+                        ) ORDER BY fabd.activity_date DESC
+                    ) FILTER (WHERE fabd.activity_date IS NOT NULL) as daily_activity,
+                    json_agg(
+                        jsonb_build_object(
+                            'channel', fcs.channel,
+                            'feedbackCount', fcs.feedback_count,
+                            'likesCount', fcs.likes_count,
+                            'dislikesCount', fcs.dislikes_count,
+                            'uniqueUsers', fcs.unique_users,
+                            'satisfactionRate', fcs.channel_satisfaction_rate
+                        ) ORDER BY fcs.feedback_count DESC
+                    ) FILTER (WHERE fcs.channel IS NOT NULL) as channel_breakdown,
+                    json_agg(
+                        jsonb_build_object(
+                            'userId', tfu.uid,
+                            'feedbackCount', tfu.feedback_count,
+                            'likesCount', tfu.likes_count,
+                            'dislikesCount', tfu.dislikes_count
+                        ) ORDER BY tfu.feedback_count DESC
+                    ) FILTER (WHERE tfu.uid IS NOT NULL) as top_feedback_users
+                FROM feedback_stats fs
+                LEFT JOIN feedback_activity_by_day fabd ON true
+                LEFT JOIN feedback_channel_stats fcs ON true
+                LEFT JOIN top_feedback_users tfu ON true
+                GROUP BY fs.total_feedback, fs.total_likes, fs.total_dislikes, 
+                         fs.unique_users, fs.unique_sessions, fs.satisfaction_rate, fs.avg_feedback_length
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        const stats = result.rows[0];
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                totalFeedback: parseInt(stats.total_feedback) || 0,
+                totalLikes: parseInt(stats.total_likes) || 0,
+                totalDislikes: parseInt(stats.total_dislikes) || 0,
+                uniqueUsers: parseInt(stats.unique_users) || 0,
+                uniqueSessions: parseInt(stats.unique_sessions) || 0,
+                satisfactionRate: parseFloat(stats.satisfaction_rate) || 0,
+                avgFeedbackLength: parseFloat(stats.avg_feedback_length) || 0,
+                dailyActivity: stats.daily_activity || [],
+                channelBreakdown: stats.channel_breakdown || [],
+                topFeedbackUsers: stats.top_feedback_users || []
+            },
+            filters: {
+                startDate: startDate,
+                endDate: endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching feedback stats:", error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error fetching feedback statistics" 
+        });
+    }
+};
+
 module.exports = {
     getAllFeedback,
     getFeedbackByid,
     getFeedbackBySessionId,
+    getFeedbackStats,
     getTotalFeedbackCount,
     fetchAllFeedbackFromDB,
     formatFeedbackData

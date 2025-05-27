@@ -6,7 +6,7 @@ const questionRoutes = require('./routes/questionRoutes');
 const userRoutes = require('./routes/userRoutes');
 const sessionRoutes = require('./routes/sessionRoutes');
 const feedbackRoutes = require('./routes/feedbackRoutes');
-const dashboardRoutes = require('./routes/dashboad.Routes');
+const dashboardRoutes = require('./routes/dashboard.Routes');
 const app = express();
 
 app.use(express.json());
