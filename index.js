@@ -6,6 +6,7 @@ const questionRoutes = require('./routes/questionRoutes');
 const userRoutes = require('./routes/userRoutes');
 const sessionRoutes = require('./routes/sessionRoutes');
 const feedbackRoutes = require('./routes/feedbackRoutes');
+const dashboardRoutes = require('./routes/dashboad.Routes');
 const app = express();
 
 app.use(express.json());
@@ -25,6 +26,7 @@ app.use('/v1', questionRoutes);
 app.use('/v1', userRoutes);
 app.use('/v1', sessionRoutes);
 app.use('/v1', feedbackRoutes);
+app.use('/v1', dashboardRoutes);
 app.use(morgan('combined')); 
 
 const PORT = process.env.PORT;
