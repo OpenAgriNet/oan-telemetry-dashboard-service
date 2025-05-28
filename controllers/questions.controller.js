@@ -816,7 +816,8 @@ const getQuestionsGraph = async (req, res) => {
                     COUNT(DISTINCT channel) as uniqueChannelsCount,
                     AVG(LENGTH(questiontext)) as avgQuestionLength,
                     AVG(LENGTH(answertext)) as avgAnswerLength,
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp
+                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM questions
                 WHERE questiontext IS NOT NULL 
                     AND answertext IS NOT NULL 
@@ -841,7 +842,9 @@ const getQuestionsGraph = async (req, res) => {
             avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
             avgAnswerLength: parseFloat(row.avganswerLength) || 0,
             // Add formatted values for different time periods
-            ...(granularity === 'hourly' && { hour: parseInt(row.date.split(' ')[1].split(':')[0]) }),
+            ...(granularity === 'hourly' && { 
+                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
+            }),
             ...(granularity === 'weekly' && { week: row.date }),
             ...(granularity === 'monthly' && { month: row.date })
         }));
