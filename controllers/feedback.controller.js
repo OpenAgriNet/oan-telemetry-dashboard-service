@@ -1,4 +1,5 @@
 const pool = require('../services/db');
+const { formatUTCToISTDate } = require('../utils/dateUtils');
 
 // Helper function to parse and validate date range parameters
 function parseDateRange(startDate, endDate) {
@@ -194,11 +195,9 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
     
 function formatFeedbackData(feedbackItem) {
     const dateObj = new Date(feedbackItem.created_at);
-    const formattedDate = dateObj.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-    });
+    
+    // Use utility function to format UTC to IST date
+    const formattedDate = formatUTCToISTDate(dateObj);
 
     return {
         qid: feedbackItem.qid,

@@ -6,6 +6,7 @@ const questionRoutes = require('./routes/questionRoutes');
 const userRoutes = require('./routes/userRoutes');
 const sessionRoutes = require('./routes/sessionRoutes');
 const feedbackRoutes = require('./routes/feedbackRoutes');
+const errorRoutes = require('./routes/errorRoutes');
 const dashboardRoutes = require('./routes/dashboard.Routes');
 const app = express();
 
@@ -26,6 +27,7 @@ app.use('/v1', questionRoutes);
 app.use('/v1', userRoutes);
 app.use('/v1', sessionRoutes);
 app.use('/v1', feedbackRoutes);
+app.use('/v1', errorRoutes);
 app.use('/v1', dashboardRoutes);
 app.use(morgan('combined')); 
 
