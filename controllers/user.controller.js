@@ -1098,14 +1098,13 @@ const getFeedbackStats = async (req, res) => {
 };
 
 const getUserGraph = async (req, res) => {
-    console.log("getUserGraph");
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
         const search = req.query.search ? String(req.query.search).trim() : '';
         
-        // Validate granularity parameter   
+        // Validate granularity parameter
         if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
             return res.status(400).json({ 
                 success: false,
@@ -1192,9 +1191,12 @@ const getUserGraph = async (req, res) => {
                 SELECT 
                     ${dateFormat} as date,
                     ${dateGrouping} as ${orderBy},
+                   
                     COUNT(DISTINCT uid) as uniqueUsersCount,
                     COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp
+                    
+                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM (
                     SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
                     UNION ALL
@@ -1216,18 +1218,16 @@ const getUserGraph = async (req, res) => {
             timestamp: parseInt(row.timestamp),
             uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
             uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
-           // errorsCount: parseInt(row.errorscount) || 0,        
             // Add formatted values for different time periods
-            ...(granularity === 'hourly' && { hour: parseInt(row.date.split(' ')[1].split(':')[0]) }),
+            ...(granularity === 'hourly' && { 
+                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
+            }),
             ...(granularity === 'weekly' && { week: row.date }),
             ...(granularity === 'monthly' && { month: row.date })
         }));
         
         // Calculate summary statistics
-        const totalQuestions = graphData.reduce((sum, item) => sum + item.questionsCount, 0);
         const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        const avgQuestionsPerPeriod = totalQuestions / Math.max(graphData.length, 1);
-        
         // Find peak activity period
         const peakPeriod = graphData.reduce((max, item) => 
             item.uniqueUsersCount > max.uniqueUsersCount ? item : max, 
@@ -1246,7 +1246,6 @@ const getUserGraph = async (req, res) => {
                 },
                 summary: {
                     totalUniqueUsers: totalUniqueUsers,
-                    avgQuestionsPerPeriod: Math.round(avgQuestionsPerPeriod * 100) / 100,
                     peakActivity: {
                         date: peakPeriod.date,
                         uniqueUsersCount: peakPeriod.uniqueUsersCount
@@ -1263,13 +1262,16 @@ const getUserGraph = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Error fetching user graph data:', error);
+        console.error('Error fetching questions graph data:', error);
         res.status(500).json({
             success: false,
             error: 'Internal server error'
         });
     }
 };
+
+
+
 
 module.exports = {
     getUsers,

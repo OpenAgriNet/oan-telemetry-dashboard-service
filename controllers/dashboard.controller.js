@@ -289,9 +289,24 @@ const getDashboardStats = async (req, res) => {
         });
     }
 };
+const getUserGraph = async (req, res) => {
+    console.log("getUserGraph");
+    try {
+        res.status(200).json({
+            success: true,
+            data: 'test'
+        });
+    } catch (error) {
+        console.error("Error fetching user graph:", error);
+        res.status(500).json({
+            success: false,
+            error: "Error fetching user graph"
+        });
+    }
+};
 
 module.exports = {
     getUserLoginAnalytics,
     getDashboardStats,
-    // ... existing exports ...
+    getUserGraph
 };
