@@ -5,7 +5,8 @@ const {
     getUserStats,
     getTotalUsersCountHandler,
     fetchUsersFromDBHandler,
-    formatUserDataHandler
+    formatUserDataHandler,
+    getUserGraph
 } = require('../controllers/user.controller');
 
 const router = express.Router();
@@ -17,7 +18,7 @@ router.get('/users', getUsers);
 router.get('/users/stats', getUserStats);
 
 // Get single user details by username
-router.get('/users/:username', getUserByUsername);
+router.get('/users/name/:username', getUserByUsername);
 
 // Get total users count
 router.get('/users/count', getTotalUsersCountHandler);

@@ -784,11 +784,245 @@ const getSessionStats = async (req, res) => {
     }
 };
 
+// Get sessions graph data for time-series visualization
+const getSessionsGraph = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        
+        // Validate granularity parameter
+        if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'" 
+            });
+        }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Start date cannot be after end date" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        // Add search filter if provided
+        if (search && search.trim() !== '') {
+            paramIndex++;
+            dateFilter += ` AND (
+                sid ILIKE $${paramIndex} OR 
+                uid ILIKE $${paramIndex}
+            )`;
+            queryParams.push(`%${search.trim()}%`);
+        }
+        
+        // Define the date truncation and formatting based on granularity
+        let dateGrouping;
+        let dateFormat;
+        let orderBy;
+        
+        switch (granularity) {
+            case 'hourly':
+                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                orderBy = "hour_bucket";
+                break;
+            case 'weekly':
+                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                orderBy = "week_bucket";
+                break;
+            case 'monthly':
+                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                orderBy = "month_bucket";
+                break;
+            case 'daily':
+            default:
+                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                orderBy = "day_bucket";
+                break;
+        }
+        
+        const query = {
+            text: `
+                WITH combined_sessions AS (
+                    SELECT 
+                        sid,
+                        uid,
+                        ets,
+                        ${dateGrouping} as time_bucket,
+                        ${dateFormat} as date,
+                        'question' as activity_type
+                    FROM questions
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    UNION ALL
+                    SELECT 
+                        sid,
+                        uid,
+                        ets,
+                        ${dateGrouping} as time_bucket,
+                        ${dateFormat} as date,
+                        'feedback' as activity_type
+                    FROM feedback
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    UNION ALL
+                    SELECT 
+                        sid,
+                        uid,
+                        ets,
+                        ${dateGrouping} as time_bucket,
+                        ${dateFormat} as date,
+                        'error' as activity_type
+                    FROM errordetails
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                ),
+                session_aggregates AS (
+                    SELECT 
+                        date,
+                        time_bucket,
+                        COUNT(DISTINCT CONCAT(sid, '_', uid)) as sessionsCount,
+                        COUNT(DISTINCT uid) as uniqueUsersCount,
+                        COUNT(DISTINCT sid) as uniqueSessionIdsCount,
+                        COUNT(CASE WHEN activity_type = 'question' THEN 1 END) as questionsCount,
+                        COUNT(CASE WHEN activity_type = 'feedback' THEN 1 END) as feedbackCount,
+                        COUNT(CASE WHEN activity_type = 'error' THEN 1 END) as errorsCount,
+                        EXTRACT(EPOCH FROM time_bucket) * 1000 as timestamp,
+                        ${granularity === 'hourly' ? `EXTRACT(HOUR FROM time_bucket) as hour_of_day` : 'NULL as hour_of_day'}
+                    FROM combined_sessions
+                    GROUP BY time_bucket, date
+                )
+                SELECT 
+                    date,
+                    timestamp,
+                    hour_of_day,
+                    sessionsCount,
+                    uniqueUsersCount,
+                    uniqueSessionIdsCount,
+                    questionsCount,
+                    feedbackCount,
+                    errorsCount,
+                    CASE 
+                        WHEN sessionsCount > 0 THEN ROUND(questionsCount::decimal / sessionsCount, 2)
+                        ELSE 0 
+                    END as avgQuestionsPerSession,
+                    CASE 
+                        WHEN sessionsCount > 0 THEN ROUND(feedbackCount::decimal / sessionsCount, 2)
+                        ELSE 0 
+                    END as avgFeedbackPerSession
+                FROM session_aggregates
+                ORDER BY time_bucket ASC
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        
+        // Format the data for frontend consumption
+        const graphData = result.rows.map(row => ({
+            date: row.date,
+            timestamp: parseInt(row.timestamp),
+            sessionsCount: parseInt(row.sessionscount) || 0,
+            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+            uniqueSessionIdsCount: parseInt(row.uniquesessionidscount) || 0,
+            questionsCount: parseInt(row.questionscount) || 0,
+            feedbackCount: parseInt(row.feedbackcount) || 0,
+            errorsCount: parseInt(row.errorscount) || 0,
+            avgQuestionsPerSession: parseFloat(row.avgquestionspersession) || 0,
+            avgFeedbackPerSession: parseFloat(row.avgfeedbackpersession) || 0,
+            // Add formatted values for different time periods
+            ...(granularity === 'hourly' && { 
+                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
+            }),
+            ...(granularity === 'weekly' && { week: row.date }),
+            ...(granularity === 'monthly' && { month: row.date })
+        }));
+        
+        // Calculate summary statistics
+        const totalSessions = graphData.reduce((sum, item) => sum + item.sessionsCount, 0);
+        const totalQuestions = graphData.reduce((sum, item) => sum + item.questionsCount, 0);
+        const totalUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
+        const avgSessionsPerPeriod = totalSessions / Math.max(graphData.length, 1);
+        
+        // Find peak activity period
+        const peakPeriod = graphData.reduce((max, item) => 
+            item.sessionsCount > max.sessionsCount ? item : max, 
+            { sessionsCount: 0, date: null }
+        );
+        
+        res.status(200).json({
+            success: true,
+            data: graphData,
+            metadata: {
+                granularity: granularity,
+                totalDataPoints: graphData.length,
+                dateRange: {
+                    start: graphData.length > 0 ? graphData[0].date : null,
+                    end: graphData.length > 0 ? graphData[graphData.length - 1].date : null
+                },
+                summary: {
+                    totalSessions: totalSessions,
+                    totalQuestions: totalQuestions,
+                    totalUsers: totalUsers,
+                    avgSessionsPerPeriod: Math.round(avgSessionsPerPeriod * 100) / 100,
+                    peakActivity: {
+                        date: peakPeriod.date,
+                        sessionsCount: peakPeriod.sessionsCount
+                    }
+                }
+            },
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate,
+                granularity: granularity,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching sessions graph data:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
+    }
+};
+
 module.exports = {
     getSessions,
     getSessionById,
     getSessionsByUserId,
     getSessionStats,
+    getSessionsGraph,
     getTotalSessionsCount,
     fetchSessionsFromDB,
     formatSessionData

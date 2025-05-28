@@ -1285,5 +1285,6 @@ module.exports = {
     formatUserData,
     formatUserDataHandler,
     fetchUsersFromDBHandler,
-    getTotalUsersCountHandler
+    getTotalUsersCountHandler,
+    getUserGraph
 };

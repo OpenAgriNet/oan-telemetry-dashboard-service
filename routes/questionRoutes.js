@@ -5,6 +5,7 @@ const {
     getQuestionsByUserId,
     getQuestionsBySessionId,
     getQuestionStats,
+    getQuestionsGraph,
     getTotalQuestionsCount,
     fetchQuestionsFromDB,
     formatQuestionData
@@ -17,6 +18,9 @@ router.get('/questions', getQuestions);
 
 // Get comprehensive question statistics
 router.get('/questions/stats', getQuestionStats);
+
+// Get questions graph data for time-series visualization
+router.get('/questions/graph', getQuestionsGraph);
 
 // Get single question by ID
 router.get('/questions/:id', getQuestionById);

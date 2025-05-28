@@ -4,6 +4,7 @@ const {
     getSessionById, 
     getSessionsByUserId,
     getSessionStats,
+    getSessionsGraph,
     getTotalSessionsCount,
     fetchSessionsFromDB,
     formatSessionData
@@ -16,6 +17,9 @@ router.get('/sessions', getSessions);
 
 // Get comprehensive session statistics
 router.get('/sessions/stats', getSessionStats);
+
+// Get sessions graph data for time-series visualization
+router.get('/sessions/graph', getSessionsGraph);
 
 // Get single session details by session ID
 router.get('/sessions/:sessionId', getSessionById);
