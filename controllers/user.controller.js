@@ -1097,6 +1097,182 @@ const getFeedbackStats = async (req, res) => {
     }
 };
 
+const getUserGraph = async (req, res) => {
+    try {
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        
+        // Validate granularity parameter
+        if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'" 
+            });
+        }
+        
+        // Validate date range
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+            });
+        }
+        
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Start date cannot be after end date" 
+            });
+        }
+        
+        // Build date filtering
+        let dateFilter = '';
+        const queryParams = [];
+        let paramIndex = 0;
+        
+        if (startTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets >= $${paramIndex}`;
+            queryParams.push(startTimestamp);
+        }
+        
+        if (endTimestamp !== null) {
+            paramIndex++;
+            dateFilter += ` AND ets <= $${paramIndex}`;
+            queryParams.push(endTimestamp);
+        }
+        
+        // Add search filter if provided
+        if (search && search.trim() !== '') {
+            paramIndex++;
+            dateFilter += ` AND (
+                questiontext ILIKE $${paramIndex} OR 
+                answertext ILIKE $${paramIndex} OR
+                uid ILIKE $${paramIndex} OR
+                channel ILIKE $${paramIndex}
+            )`;
+            queryParams.push(`%${search.trim()}%`);
+        }
+        
+        // Define the date truncation and formatting based on granularity
+        let dateGrouping;
+        let dateFormat;
+        let orderBy;
+        
+        switch (granularity) {
+            case 'hourly':
+                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                orderBy = "hour_bucket";
+                break;
+            case 'weekly':
+                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                orderBy = "week_bucket";
+                break;
+            case 'monthly':
+                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                orderBy = "month_bucket";
+                break;
+            case 'daily':
+            default:
+                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                orderBy = "day_bucket";
+                break;
+        }
+        
+        const query = {
+            text: `
+                SELECT 
+                    ${dateFormat} as date,
+                    ${dateGrouping} as ${orderBy},
+                   
+                    COUNT(DISTINCT uid) as uniqueUsersCount,
+                    COUNT(DISTINCT sid) as uniqueSessionsCount,
+                    
+                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
+                FROM (
+                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    UNION ALL
+                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                ) AS combined
+                WHERE 1=1
+                    ${dateFilter}
+                GROUP BY ${dateGrouping}
+                ORDER BY ${orderBy} ASC
+            `,
+            values: queryParams
+        };
+        
+        const result = await pool.query(query);
+        
+        // Format the data for frontend consumption
+        const graphData = result.rows.map(row => ({
+            date: row.date,
+            timestamp: parseInt(row.timestamp),
+            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+            uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+            // Add formatted values for different time periods
+            ...(granularity === 'hourly' && { 
+                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
+            }),
+            ...(granularity === 'weekly' && { week: row.date }),
+            ...(granularity === 'monthly' && { month: row.date })
+        }));
+        
+        // Calculate summary statistics
+        const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
+        // Find peak activity period
+        const peakPeriod = graphData.reduce((max, item) => 
+            item.uniqueUsersCount > max.uniqueUsersCount ? item : max, 
+            { uniqueUsersCount: 0, date: null }
+        );
+        
+        res.status(200).json({
+            success: true,
+            data: graphData,
+            metadata: {
+                granularity: granularity,
+                totalDataPoints: graphData.length,
+                dateRange: {
+                    start: graphData.length > 0 ? graphData[0].date : null,
+                    end: graphData.length > 0 ? graphData[graphData.length - 1].date : null
+                },
+                summary: {
+                    totalUniqueUsers: totalUniqueUsers,
+                    peakActivity: {
+                        date: peakPeriod.date,
+                        uniqueUsersCount: peakPeriod.uniqueUsersCount
+                    }
+                }
+            },
+            filters: {
+                search: search,
+                startDate: startDate,
+                endDate: endDate,
+                granularity: granularity,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching questions graph data:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error'
+        });
+    }
+};
+
+
+
+
 module.exports = {
     getUsers,
     getUserByUsername,

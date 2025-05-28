@@ -28,4 +28,7 @@ router.get('/users/fetch', fetchUsersFromDBHandler);
 // Format user data
 router.get('/users/format', formatUserDataHandler);
 
+// Get user graph
+router.get('/userss/graph-user', getUserGraph);
+
 module.exports = router;
