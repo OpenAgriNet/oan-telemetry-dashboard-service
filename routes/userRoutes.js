@@ -5,7 +5,8 @@ const {
     getUserStats,
     getTotalUsersCountHandler,
     fetchUsersFromDBHandler,
-    formatUserDataHandler
+    formatUserDataHandler,
+    getUserGraph
 } = require('../controllers/user.controller');
 
 const router = express.Router();
@@ -27,5 +28,8 @@ router.get('/users/fetch', fetchUsersFromDBHandler);
 
 // Format user data
 router.get('/users/format', formatUserDataHandler);
+
+// Get user graph
+router.get('/users/graph', getUserGraph);
 
 module.exports = router;

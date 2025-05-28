@@ -84,37 +84,52 @@ const getUserLoginAnalytics = async (req, res) => {
         } else {
             // Last 12 hours including current hour
             const result = await pool.query(`
-                SELECT 
-                    to_char(date_trunc('hour', to_timestamp(ets / 1000)), 'YYYY-MM-DD HH24:00') as hour,
-                    COUNT(DISTINCT uid) as unique_logins
-                FROM (
+                WITH combined AS (
                     SELECT uid, ets FROM questions WHERE uid IS NOT NULL
                     UNION ALL
                     SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
-                ) 
-                WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
+                ),
+                logins AS (
+                    SELECT 
+                        date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
+                        uid
+                    FROM combined
+                    WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
+                )
+                SELECT 
+                    hour,
+                    COUNT(DISTINCT uid) AS unique_logins
+                FROM logins
                 GROUP BY hour
                 ORDER BY hour DESC
-
             `);
-
-            // Fill missing hours with 0
+            console.log(result.rows);
+        
+            // Get current time and generate past 12 hourly time slots
             const now = new Date();
             const hours = [];
             for (let i = 11; i >= 0; i--) {
                 const h = new Date(now);
                 h.setHours(now.getHours() - i, 0, 0, 0);
-                hours.push(h.toISOString().slice(0, 13) + ':00');
+                hours.push(h.toISOString().slice(0, 13) + ':00'); // Format: YYYY-MM-DD HH:00
             }
+        
+            // Build a map of hour => unique login count
             const dataMap = {};
-            result.rows.forEach(row => { dataMap[row.hour] = parseInt(row.unique_logins); });
+            result.rows.forEach(row => {
+                const hour = new Date(row.hour).toISOString().slice(0, 13) + ':00';
+                dataMap[hour] = parseInt(row.unique_logins, 10);
+            });
+        
+            // Map all 12 hours, filling missing hours with 0
             const data = hours.map(hour => ({
                 hour,
                 uniqueLogins: dataMap[hour] || 0
             }));
-
-            return res.json({ success: true, granularity, data });
+        
+            return res.json({ success: true, granularity: 'hourly', data });
         }
+        
     } catch (error) {
         console.error('Error in getUserLoginAnalytics:', error);
         res.status(500).json({ success: false, error: 'Internal server error' });
