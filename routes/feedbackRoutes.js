@@ -8,6 +8,9 @@ router.get('/feedback', feedbackController.getAllFeedback);
 // Route for getting comprehensive feedback statistics
 router.get('/feedback/stats', feedbackController.getFeedbackStats);
 
+// Route for getting feedback graph data for time-series visualization
+router.get('/feedback/graph', feedbackController.getFeedbackGraph);
+
 // Route for getting feedback by QID
 router.get('/feedback/id/:id', feedbackController.getFeedbackByid);
 
