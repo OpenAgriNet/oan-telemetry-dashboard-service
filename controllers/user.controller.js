@@ -1,6 +1,10 @@
 const pool = require('../services/db');
 const { v4: uuidv4 } = require('uuid');
 
+// Simple in-memory cache for user stats
+const userStatsCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+
 // Helper function to parse and validate date range parameters
 function parseDateRange(startDate, endDate) {
     let startTimestamp = null;
@@ -39,104 +43,143 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
     
+    // Create cache key for this specific query
+    const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}`;
+    const cachedResult = userStatsCache.get(cacheKey);
+    
+    if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
+        return cachedResult.data;
+    }
+    
     const queryParams = [];
     let paramIndex = 0;
 
-    // Variables to hold SQL conditions for date filtering
-    let questionsDateFilter = '';
-    let feedbackDateFilter = '';
-    let subQuerySessionIdDateFilter = '';
-
-    // Populate date filter conditions and parameters
+    // Build WHERE conditions efficiently
+    let whereConditions = ['uid IS NOT NULL', 'answertext IS NOT NULL'];
+    
     if (startTimestamp !== null) {
         paramIndex++;
-        questionsDateFilter += ` AND questions.ets >= $${paramIndex}`;
-        feedbackDateFilter += ` AND feedback.ets >= $${paramIndex}`;
-        subQuerySessionIdDateFilter += ` AND q2.ets >= $${paramIndex}`;
+        whereConditions.push(`ets >= $${paramIndex}`);
         queryParams.push(startTimestamp);
     }
     
     if (endTimestamp !== null) {
         paramIndex++;
-        questionsDateFilter += ` AND questions.ets <= $${paramIndex}`;
-        feedbackDateFilter += ` AND feedback.ets <= $${paramIndex}`;
-        subQuerySessionIdDateFilter += ` AND q2.ets <= $${paramIndex}`;
+        whereConditions.push(`ets <= $${paramIndex}`);
         queryParams.push(endTimestamp);
     }
     
-    let query = `
-        WITH user_stats AS (
-            SELECT 
-                questions.uid as user_id,
-                COUNT(DISTINCT questions.sid) as session_count,
-                COUNT(questions.id) as total_questions, /* Changed from COUNT(*) */
-                MAX(questions.ets) as latest_session,
-                MIN(questions.ets) as first_session,
-                MAX(questions.created_at) as last_activity,
-                (
-                    SELECT q2.sid FROM questions q2
-                    WHERE q2.uid = questions.uid
-                    ${subQuerySessionIdDateFilter}
-                    ORDER BY q2.ets DESC
-                    LIMIT 1
-                ) as session_id
-            FROM questions
-            WHERE questions.uid IS NOT NULL AND questions.answertext IS NOT NULL
-            ${questionsDateFilter}
-            GROUP BY questions.uid
-        ),
-        user_feedback AS (
-            SELECT 
-                feedback.uid as user_id,
-                COUNT(feedback.id) as feedback_count, /* Changed from COUNT(*) */
-                COUNT(CASE WHEN feedback.feedbacktype = 'like' THEN 1 END) as likes,
-                COUNT(CASE WHEN feedback.feedbacktype = 'dislike' THEN 1 END) as dislikes
-            FROM feedback
-            WHERE feedback.uid IS NOT NULL AND feedback.answertext IS NOT NULL
-            ${feedbackDateFilter}
-            GROUP BY feedback.uid
-        )
-        SELECT 
-            us.user_id,
-            us.session_count,
-            us.total_questions,
-            us.latest_session,
-            us.first_session,
-            us.last_activity,
-            us.session_id,
-            COALESCE(uf.feedback_count, 0) as feedback_count,
-            COALESCE(uf.likes, 0) as likes,
-            COALESCE(uf.dislikes, 0) as dislikes
-        FROM user_stats us
-        LEFT JOIN user_feedback uf ON us.user_id = uf.user_id
-    `;
-    
-    // Add search functionality if search term is provided
     if (search && search.trim() !== '') {
         paramIndex++;
-        // Assuming search applies to user_id. If it needs to apply after JOIN, this might need adjustment (e.g., HAVING clause or subquery)
-        query += ` WHERE us.user_id ILIKE $${paramIndex}`; 
+        whereConditions.push(`uid ILIKE $${paramIndex}`);
         queryParams.push(`%${search.trim()}%`);
     }
     
-    query += ` ORDER BY us.latest_session DESC`;
+    const baseWhere = whereConditions.join(' AND ');
     
-    // Add pagination
-    paramIndex++;
-    query += ` LIMIT $${paramIndex}`;
-    queryParams.push(limit);
+    // Optimized query - fetch users first, then join stats
+    const query = `
+        WITH base_users AS (
+            SELECT DISTINCT uid
+            FROM questions
+            WHERE ${baseWhere}
+            ORDER BY uid
+            LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+        ),
+        user_questions AS (
+            SELECT 
+                bu.uid as user_id,
+                COUNT(DISTINCT q.sid) as session_count,
+                COUNT(q.id) as total_questions,
+                MAX(q.ets) as latest_session,
+                MIN(q.ets) as first_session,
+                MAX(q.created_at) as last_activity
+            FROM base_users bu
+            JOIN questions q ON q.uid = bu.uid AND q.uid IS NOT NULL AND q.answertext IS NOT NULL
+            ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ''}
+            ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ''}
+            GROUP BY bu.uid
+        ),
+        latest_sessions AS (
+            SELECT DISTINCT ON (bu.uid)
+                bu.uid as user_id,
+                q.sid as session_id
+            FROM base_users bu
+            JOIN questions q ON q.uid = bu.uid AND q.uid IS NOT NULL AND q.answertext IS NOT NULL
+            ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ''}
+            ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ''}
+            ORDER BY bu.uid, q.ets DESC
+        ),
+        user_feedback AS (
+            SELECT 
+                bu.uid as user_id,
+                COUNT(f.id) as feedback_count,
+                COUNT(CASE WHEN f.feedbacktype = 'like' THEN 1 END) as likes,
+                COUNT(CASE WHEN f.feedbacktype = 'dislike' THEN 1 END) as dislikes
+            FROM base_users bu
+            LEFT JOIN feedback f ON f.uid = bu.uid AND f.uid IS NOT NULL AND f.answertext IS NOT NULL
+            ${startTimestamp ? `AND f.ets >= ${startTimestamp}` : ''}
+            ${endTimestamp ? `AND f.ets <= ${endTimestamp}` : ''}
+            GROUP BY bu.uid
+        )
+        SELECT 
+            uq.user_id,
+            uq.session_count,
+            uq.total_questions,
+            uq.latest_session,
+            uq.first_session,
+            uq.last_activity,
+            ls.session_id,
+            COALESCE(uf.feedback_count, 0) as feedback_count,
+            COALESCE(uf.likes, 0) as likes,
+            COALESCE(uf.dislikes, 0) as dislikes
+        FROM user_questions uq
+        LEFT JOIN latest_sessions ls ON ls.user_id = uq.user_id
+        LEFT JOIN user_feedback uf ON uf.user_id = uq.user_id
+        ORDER BY uq.latest_session DESC NULLS LAST
+    `;
     
-    paramIndex++;
-    query += ` OFFSET $${paramIndex}`;
-    queryParams.push(offset);
+    // Add pagination parameters
+    queryParams.push(limit, offset);
 
-    const result = await pool.query(query, queryParams);
-    return result.rows;
+    try {
+        const result = await pool.query(query, queryParams);
+        
+        // Cache the result
+        userStatsCache.set(cacheKey, {
+            data: result.rows,
+            timestamp: Date.now()
+        });
+        
+        // Clean up old cache entries periodically
+        if (userStatsCache.size > 500) {
+            const now = Date.now();
+            for (const [key, value] of userStatsCache.entries()) {
+                if (now - value.timestamp > CACHE_TTL) {
+                    userStatsCache.delete(key);
+                }
+            }
+        }
+        
+        return result.rows;
+    } catch (error) {
+        console.error('Error in fetchUsersFromDB:', error);
+        throw error;
+    }
 }
 
 async function getTotalUsersCount(search = '', startDate = null, endDate = null) {
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
     
+    // Create cache key for count query
+    const cacheKey = `count_${search}_${startTimestamp}_${endTimestamp}`;
+    const cachedResult = userStatsCache.get(cacheKey);
+    
+    if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
+        return cachedResult.data;
+    }
+    
+    // Optimized count query with early filtering
     let query = `
         SELECT COUNT(DISTINCT uid) as total
         FROM questions
@@ -166,8 +209,21 @@ async function getTotalUsersCount(search = '', startDate = null, endDate = null)
         queryParams.push(`%${search.trim()}%`);
     }
     
-    const result = await pool.query(query, queryParams);
-    return parseInt(result.rows[0].total);
+    try {
+        const result = await pool.query(query, queryParams);
+        const totalCount = parseInt(result.rows[0].total);
+        
+        // Cache the result
+        userStatsCache.set(cacheKey, {
+            data: totalCount,
+            timestamp: Date.now()
+        });
+        
+        return totalCount;
+    } catch (error) {
+        console.error('Error in getTotalUsersCount:', error);
+        throw error;
+    }
 }
 
 function formatUserData(row) {
