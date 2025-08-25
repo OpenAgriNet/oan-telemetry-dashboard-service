@@ -557,8 +557,14 @@ const getUserStats = async (req, res) => {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         
-        // Validate date range
-        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        // Validate date range and apply default start date
+        let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        
+        // Default to May 1st, 2025 if no start date provided
+        if (!startDate) {
+            startTimestamp = new Date('2025-05-01').getTime();
+        }
+        
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
             return res.status(400).json({ 
                 success: false,
@@ -569,7 +575,6 @@ const getUserStats = async (req, res) => {
         // Build date filtering
         let dateFilter = '';
         let feedbackDateFilter = '';
-        let activityDateFilter = 'WHERE created_at >= CURRENT_DATE - INTERVAL \'30 days\'';
         const queryParams = [];
         let paramIndex = 0;
         
@@ -587,16 +592,14 @@ const getUserStats = async (req, res) => {
             queryParams.push(endTimestamp);
         }
         
-        // If date filtering is applied, use it for activity as well
-        if (startTimestamp !== null || endTimestamp !== null) {
-            activityDateFilter = 'WHERE true';
-            if (startTimestamp !== null) {
-                activityDateFilter += ` AND ets >= $${paramIndex - 1}`;
-            }
-            if (endTimestamp !== null) {
-                activityDateFilter += ` AND ets <= $${paramIndex}`;
-            }
-        }
+        // No default date window when none is provided
+
+        // Add parameters for cohort metrics boundaries
+        const paramsStartIndex = queryParams.length;
+        queryParams.push(startTimestamp);
+        queryParams.push(endTimestamp);
+        const startParam = `$${paramsStartIndex + 1}`;
+        const endParam = `$${paramsStartIndex + 2}`;
 
         const query = {
             text: `
@@ -635,16 +638,54 @@ const getUserStats = async (req, res) => {
                         COUNT(DISTINCT uid) as active_users,
                         COUNT(*) as questions_count
                     FROM questions
-                    ${activityDateFilter}
-                        AND uid IS NOT NULL AND answertext IS NOT NULL
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY DATE(created_at)
                     ORDER BY activity_date DESC
                     LIMIT 30
+                ),
+                all_question_firsts AS (
+                    SELECT uid, MIN(ets) AS first_question_ets
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL
+                    GROUP BY uid
+                ),
+                activity_in_range AS (
+                    SELECT DISTINCT uid
+                    FROM (
+                        SELECT uid FROM questions WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        UNION ALL
+                        SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
+                    ) x
+                ),
+                new_users_cte AS (
+                    SELECT CASE WHEN (${startParam}::bigint IS NULL AND ${endParam}::bigint IS NULL) THEN 0 ELSE COUNT(*) END AS new_users
+                    FROM all_question_firsts aqf
+                    WHERE (${startParam}::bigint IS NULL OR aqf.first_question_ets >= ${startParam}::bigint)
+                      AND (${endParam}::bigint IS NULL OR aqf.first_question_ets <= ${endParam}::bigint)
+                ),
+                returning_users_cte AS (
+                    SELECT CASE WHEN (${startParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT air.uid) END AS returning_users
+                    FROM activity_in_range air
+                    WHERE ${startParam}::bigint IS NOT NULL AND (
+                        EXISTS (SELECT 1 FROM questions q2 WHERE q2.uid = air.uid AND q2.answertext IS NOT NULL AND q2.ets < ${startParam}::bigint)
+                        OR EXISTS (SELECT 1 FROM feedback f2 WHERE f2.uid = air.uid AND f2.ets < ${startParam}::bigint)
+                    )
+                ),
+                active_cumulative_cte AS (
+                    SELECT CASE WHEN (${startParam}::bigint IS NULL AND ${endParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT u.uid) END AS active_cumulative
+                    FROM (
+                        SELECT uid FROM questions WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        UNION ALL
+                        SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
+                    ) u
                 )
                 SELECT 
                     os.*,
                     asd.avg_session_duration,
                     fs.*,
+                    nuc.new_users,
+                    ruc.returning_users,
+                    ac.active_cumulative,
                     json_agg(
                         json_build_object(
                             'date', abd.activity_date,
@@ -655,9 +696,13 @@ const getUserStats = async (req, res) => {
                 FROM overall_stats os
                 CROSS JOIN avg_session_duration asd
                 CROSS JOIN feedback_stats fs
+                CROSS JOIN new_users_cte nuc
+                CROSS JOIN returning_users_cte ruc
+                CROSS JOIN active_cumulative_cte ac
                 LEFT JOIN activity_by_day abd ON true
                 GROUP BY os.total_users, os.total_sessions, os.total_questions, 
-                         asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes
+                         asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes,
+                         nuc.new_users, ruc.returning_users, ac.active_cumulative
             `,
             values: queryParams
         };
@@ -675,7 +720,10 @@ const getUserStats = async (req, res) => {
                 totalLikes: parseInt(stats.total_likes) || 0,
                 totalDislikes: parseInt(stats.total_dislikes) || 0,
                 avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
-                dailyActivity: stats.daily_activity || []
+                dailyActivity: stats.daily_activity || [],
+                newUsers: parseInt(stats.new_users) || 0,
+                returningUsers: parseInt(stats.returning_users) || 0,
+                activeCumulative: parseInt(stats.active_cumulative) || 0
             },
             filters: {
                 startDate: startDate,
