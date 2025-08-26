@@ -142,8 +142,15 @@ const getDashboardStats = async (req, res) => {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         
-        // Validate date range
-        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        // Validate date range and apply default start date logic (same as user controller)
+        let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        
+        // Default to May 1st, 2025 if no start date provided (matching user controller logic)
+        // Note: Frontend can override this by passing a startDate parameter
+        if (!startDate) {
+            startTimestamp = new Date('2025-05-01').getTime();
+        }
+        
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
             return res.status(400).json({ 
                 success: false,
@@ -151,7 +158,7 @@ const getDashboardStats = async (req, res) => {
             });
         }
         
-        // Build date filtering
+        // Build date filtering (same as user controller)
         let dateFilter = '';
         let feedbackDateFilter = '';
         const queryParams = [];
@@ -171,19 +178,43 @@ const getDashboardStats = async (req, res) => {
             queryParams.push(endTimestamp);
         }
         
-        // Simplified query to test basic functionality
+        // Use the exact same logic as user controller for consistency
         const query = {
             text: `
-                WITH combined_stats AS (
+                WITH session_durations AS (
+                    SELECT 
+                        sid,
+                        EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) as session_duration_seconds
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    GROUP BY sid
+                ),
+                all_user_activity AS (
+                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    UNION ALL
+                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                ),
+                overall_stats AS (
                     SELECT 
                         COUNT(DISTINCT uid) as total_users,
                         COUNT(DISTINCT sid) as total_sessions,
+                        COUNT(*) as total_activity_records
+                    FROM all_user_activity
+                    WHERE 1=1 ${dateFilter}
+                ),
+                question_stats AS (
+                    SELECT 
                         COUNT(*) as total_questions,
                         COALESCE(AVG(LENGTH(questiontext)), 0) as avg_question_length,
                         COALESCE(AVG(LENGTH(answertext)), 0) as avg_answer_length,
                         COUNT(DISTINCT channel) as unique_channels
                     FROM questions
                     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                ),
+                avg_session_duration AS (
+                    SELECT 
+                        AVG(session_duration_seconds) as avg_session_duration
+                    FROM session_durations
                 ),
                 feedback_stats AS (
                     SELECT 
@@ -196,38 +227,78 @@ const getDashboardStats = async (req, res) => {
                             NULLIF(COUNT(*), 0), 2
                         ), 0) as satisfaction_rate
                     FROM feedback
-                    WHERE uid IS NOT NULL ${feedbackDateFilter}
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
                 ),
-                daily_trends AS (
+                activity_by_day AS (
                     SELECT 
                         DATE(created_at) as activity_date,
-                        COUNT(DISTINCT uid) as daily_users,
-                        COUNT(DISTINCT sid) as daily_sessions,
-                        COUNT(*) as daily_questions
+                        COUNT(DISTINCT uid) as active_users,
+                        COUNT(*) as questions_count
                     FROM questions
                     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY DATE(created_at)
                     ORDER BY activity_date DESC
                     LIMIT 7
+                ),
+                channel_stats AS (
+                    SELECT 
+                        channel,
+                        COUNT(DISTINCT uid) as users,
+                        COUNT(DISTINCT sid) as sessions,
+                        COUNT(*) as questions
+                    FROM questions
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    GROUP BY channel
+                    ORDER BY users DESC
+                    LIMIT 5
                 )
                 SELECT 
-                    cs.*,
-                    fs.*,
-                    COALESCE(json_agg(
-                        jsonb_build_object(
-                            'date', dt.activity_date,
-                            'users', dt.daily_users,
-                            'sessions', dt.daily_sessions,
-                            'questions', dt.daily_questions
-                        ) ORDER BY dt.activity_date DESC
-                    ) FILTER (WHERE dt.activity_date IS NOT NULL), '[]'::json) as recent_trends
-                FROM combined_stats cs
+                    os.total_users,
+                    os.total_sessions,
+                    qs.total_questions,
+                    asd.avg_session_duration,
+                    fs.total_feedback,
+                    fs.total_likes,
+                    fs.total_dislikes,
+                    fs.satisfaction_rate,
+                    qs.avg_question_length,
+                    qs.avg_answer_length,
+                    qs.unique_channels,
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'date', abd.activity_date,
+                            'users', abd.active_users,
+                            'sessions', abd.active_users, -- Approximation for now
+                            'questions', abd.questions_count
+                        ) ORDER BY jsonb_build_object(
+                            'date', abd.activity_date,
+                            'users', abd.active_users,
+                            'sessions', abd.active_users,
+                            'questions', abd.questions_count
+                        ) -> 'date' DESC
+                    ) FILTER (WHERE abd.activity_date IS NOT NULL) as recent_trends,
+                    json_agg(
+                        DISTINCT jsonb_build_object(
+                            'channel', cs.channel,
+                            'users', cs.users,
+                            'sessions', cs.sessions,
+                            'questions', cs.questions
+                        ) ORDER BY jsonb_build_object(
+                            'channel', cs.channel,
+                            'users', cs.users,
+                            'sessions', cs.sessions,
+                            'questions', cs.questions
+                        ) -> 'users' DESC
+                    ) FILTER (WHERE cs.channel IS NOT NULL) as top_channels
+                FROM overall_stats os
+                CROSS JOIN question_stats qs
+                CROSS JOIN avg_session_duration asd
                 CROSS JOIN feedback_stats fs
-                LEFT JOIN daily_trends dt ON true
-                GROUP BY cs.total_users, cs.total_sessions, cs.total_questions, 
-                         cs.avg_question_length, cs.avg_answer_length, cs.unique_channels,
-                         fs.total_feedback, fs.total_likes, fs.total_dislikes,
-                         fs.feedback_unique_users, fs.satisfaction_rate
+                LEFT JOIN activity_by_day abd ON true
+                LEFT JOIN channel_stats cs ON true
+                GROUP BY os.total_users, os.total_sessions, qs.total_questions, 
+                         asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes,
+                         fs.satisfaction_rate, qs.avg_question_length, qs.avg_answer_length, qs.unique_channels
             `,
             values: queryParams
         };
@@ -235,20 +306,20 @@ const getDashboardStats = async (req, res) => {
         const result = await pool.query(query);
         const stats = result.rows[0];
         
-        // Calculate derived metrics
+        // Calculate derived metrics (consistent with user controller)
         const engagementRate = stats.total_users > 0 ? 
             Math.round((stats.feedback_unique_users / stats.total_users) * 100) : 0;
         
         const avgQuestionsPerUser = stats.total_users > 0 ? 
-            Math.round(stats.total_questions / stats.total_users) : 0;
+            parseFloat((stats.total_questions / stats.total_users).toFixed(2)) : 0;
         
         const avgQuestionsPerSession = stats.total_sessions > 0 ? 
-            Math.round(stats.total_questions / stats.total_sessions) : 0;
+            parseFloat((stats.total_questions / stats.total_sessions).toFixed(2)) : 0;
 
         res.status(200).json({
             success: true,
             data: {
-                // Core Metrics
+                // Core Metrics (using same logic as user controller)
                 totalUsers: parseInt(stats.total_users) || 0,
                 totalSessions: parseInt(stats.total_sessions) || 0,
                 totalQuestions: parseInt(stats.total_questions) || 0,
@@ -263,7 +334,7 @@ const getDashboardStats = async (req, res) => {
                 engagementRate: engagementRate,
                 avgQuestionsPerUser: avgQuestionsPerUser,
                 avgQuestionsPerSession: avgQuestionsPerSession,
-                avgSessionDuration: 0, // Simplified for now
+                avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
                 
                 // Content Metrics
                 avgQuestionLength: parseFloat(stats.avg_question_length) || 0,
@@ -272,7 +343,7 @@ const getDashboardStats = async (req, res) => {
                 
                 // Trends and Breakdowns
                 recentTrends: stats.recent_trends || [],
-                topChannels: [] // Simplified for now
+                topChannels: stats.top_channels || []
             },
             filters: {
                 startDate: startDate,

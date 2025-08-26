@@ -611,10 +611,21 @@ const getUserStats = async (req, res) => {
                     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY sid
                 ),
+                all_user_activity AS (
+                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    UNION ALL
+                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                ),
                 overall_stats AS (
                     SELECT 
                         COUNT(DISTINCT uid) as total_users,
                         COUNT(DISTINCT sid) as total_sessions,
+                        COUNT(*) as total_activity_records
+                    FROM all_user_activity
+                    WHERE 1=1 ${dateFilter}
+                ),
+                question_stats AS (
+                    SELECT 
                         COUNT(*) as total_questions
                     FROM questions
                     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
@@ -645,14 +656,19 @@ const getUserStats = async (req, res) => {
                 ),
                 all_question_firsts AS (
                     SELECT uid, MIN(ets) AS first_question_ets
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL
+                    FROM (
+                        SELECT uid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                        UNION ALL
+                        SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    ) all_first_activity
                     GROUP BY uid
                 ),
                 activity_in_range AS (
                     SELECT DISTINCT uid
                     FROM (
-                        SELECT uid FROM questions WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        SELECT uid FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
+                        UNION ALL
+                        SELECT uid FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
                         UNION ALL
                         SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
                     ) x
@@ -667,22 +683,29 @@ const getUserStats = async (req, res) => {
                     SELECT CASE WHEN (${startParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT air.uid) END AS returning_users
                     FROM activity_in_range air
                     WHERE ${startParam}::bigint IS NOT NULL AND (
-                        EXISTS (SELECT 1 FROM questions q2 WHERE q2.uid = air.uid AND q2.answertext IS NOT NULL AND q2.ets < ${startParam}::bigint)
+                        EXISTS (SELECT 1 FROM questions q2 WHERE q2.uid = air.uid AND q2.ets IS NOT NULL AND q2.ets < ${startParam}::bigint)
+                        OR EXISTS (SELECT 1 FROM errordetails e2 WHERE e2.uid = air.uid AND e2.ets IS NOT NULL AND e2.ets < ${startParam}::bigint)
                         OR EXISTS (SELECT 1 FROM feedback f2 WHERE f2.uid = air.uid AND f2.ets < ${startParam}::bigint)
                     )
                 ),
                 active_cumulative_cte AS (
                     SELECT CASE WHEN (${startParam}::bigint IS NULL AND ${endParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT u.uid) END AS active_cumulative
                     FROM (
-                        SELECT uid FROM questions WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        SELECT uid FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
+                        UNION ALL
+                        SELECT uid FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
                         UNION ALL
                         SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
                     ) u
                 )
                 SELECT 
-                    os.*,
+                    os.total_users,
+                    os.total_sessions,
+                    qs.total_questions,
                     asd.avg_session_duration,
-                    fs.*,
+                    fs.total_feedback,
+                    fs.total_likes,
+                    fs.total_dislikes,
                     nuc.new_users,
                     ruc.returning_users,
                     ac.active_cumulative,
@@ -694,13 +717,14 @@ const getUserStats = async (req, res) => {
                         ) ORDER BY abd.activity_date DESC
                     ) as daily_activity
                 FROM overall_stats os
+                CROSS JOIN question_stats qs
                 CROSS JOIN avg_session_duration asd
                 CROSS JOIN feedback_stats fs
                 CROSS JOIN new_users_cte nuc
                 CROSS JOIN returning_users_cte ruc
                 CROSS JOIN active_cumulative_cte ac
                 LEFT JOIN activity_by_day abd ON true
-                GROUP BY os.total_users, os.total_sessions, os.total_questions, 
+                GROUP BY os.total_users, os.total_sessions, qs.total_questions, 
                          asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes,
                          nuc.new_users, ruc.returning_users, ac.active_cumulative
             `,
@@ -1265,25 +1289,30 @@ const getUserGraph = async (req, res) => {
         let dateGrouping;
         let dateFormat;
         let orderBy;
+        let truncUnit; // For use in DATE_TRUNC functions
         
         switch (granularity) {
             case 'hourly':
+                truncUnit = 'hour';
                 dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
                 dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
                 orderBy = "hour_bucket";
                 break;
             case 'weekly':
+                truncUnit = 'week';
                 dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
                 dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
                 orderBy = "week_bucket";
                 break;
             case 'monthly':
+                truncUnit = 'month';
                 dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
                 dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
                 orderBy = "month_bucket";
                 break;
             case 'daily':
             default:
+                truncUnit = 'day';
                 dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
                 dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
                 orderBy = "day_bucket";
@@ -1292,23 +1321,59 @@ const getUserGraph = async (req, res) => {
         
         const query = {
             text: `
+                WITH user_first_activity AS (
+                    SELECT 
+                        uid,
+                        MIN(ets) as first_activity_timestamp
+                    FROM (
+                        SELECT uid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                        UNION ALL
+                        SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    ) AS all_activity
+                    GROUP BY uid
+                ),
+                time_period_activity AS (
+                    SELECT 
+                        ${dateFormat} as date,
+                        ${dateGrouping} as ${orderBy},
+                        uid,
+                        sid,
+                        ets,
+                        EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp
+                    FROM (
+                        SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                        UNION ALL
+                        SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    ) AS combined
+                    WHERE 1=1
+                        ${dateFilter}
+                ),
+                user_categorization AS (
+                    SELECT 
+                        tpa.date,
+                        tpa.${orderBy},
+                        tpa.timestamp,
+                        tpa.uid,
+                        tpa.sid,
+                        ufa.first_activity_timestamp,
+                        CASE 
+                            WHEN ${dateGrouping} = DATE_TRUNC('${truncUnit}', TO_TIMESTAMP(ufa.first_activity_timestamp/1000))
+                            THEN 'new'
+                            ELSE 'returning'
+                        END as user_type
+                    FROM time_period_activity tpa
+                    JOIN user_first_activity ufa ON tpa.uid = ufa.uid
+                )
                 SELECT 
-                    ${dateFormat} as date,
-                    ${dateGrouping} as ${orderBy},
-                   
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
+                    date,
+                    ${orderBy},
+                    timestamp,
+                    COUNT(DISTINCT CASE WHEN user_type = 'new' THEN uid END) as newUsers,
+                    COUNT(DISTINCT CASE WHEN user_type = 'returning' THEN uid END) as returningUsers,
                     COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
-                FROM (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ) AS combined
-                WHERE 1=1
-                    ${dateFilter}
-                GROUP BY ${dateGrouping}
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${orderBy}) as hour_of_day` : 'NULL as hour_of_day'}
+                FROM user_categorization
+                GROUP BY date, ${orderBy}, timestamp
                 ORDER BY ${orderBy} ASC
             `,
             values: queryParams
@@ -1320,7 +1385,8 @@ const getUserGraph = async (req, res) => {
         const graphData = result.rows.map(row => ({
             date: row.date,
             timestamp: parseInt(row.timestamp),
-            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+            newUsers: parseInt(row.newusers) || 0,
+            returningUsers: parseInt(row.returningusers) || 0,
             uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
             // Add formatted values for different time periods
             ...(granularity === 'hourly' && { 
@@ -1331,11 +1397,18 @@ const getUserGraph = async (req, res) => {
         }));
         
         // Calculate summary statistics
-        const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        // Find peak activity period
-        const peakPeriod = graphData.reduce((max, item) => 
-            item.uniqueUsersCount > max.uniqueUsersCount ? item : max, 
-            { uniqueUsersCount: 0, date: null }
+        const totalNewUsers = graphData.reduce((sum, item) => sum + item.newUsers, 0);
+        const totalReturningUsers = Math.max(...graphData.map(item => item.returningUsers), 0);
+        
+        // Find peak activity periods
+        const peakNewUsersPeriod = graphData.reduce((max, item) => 
+            item.newUsers > max.newUsers ? item : max, 
+            { newUsers: 0, date: null }
+        );
+        
+        const peakReturningUsersPeriod = graphData.reduce((max, item) => 
+            item.returningUsers > max.returningUsers ? item : max, 
+            { returningUsers: 0, date: null }
         );
         
         res.status(200).json({
@@ -1349,10 +1422,15 @@ const getUserGraph = async (req, res) => {
                     end: graphData.length > 0 ? graphData[graphData.length - 1].date : null
                 },
                 summary: {
-                    totalUniqueUsers: totalUniqueUsers,
-                    peakActivity: {
-                        date: peakPeriod.date,
-                        uniqueUsersCount: peakPeriod.uniqueUsersCount
+                    totalNewUsers: totalNewUsers,
+                    totalReturningUsers: totalReturningUsers,
+                    peakNewUsersActivity: {
+                        date: peakNewUsersPeriod.date,
+                        newUsers: peakNewUsersPeriod.newUsers
+                    },
+                    peakReturningUsersActivity: {
+                        date: peakReturningUsersPeriod.date,
+                        returningUsers: peakReturningUsersPeriod.returningUsers
                     }
                 }
             },
