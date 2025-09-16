@@ -270,25 +270,9 @@ function formatUserData(row) {
 }
 
 // Route handler for formatting user data endpoint
-const formatUserDataHandler = async (req, res) => {
-    try {
-        res.status(200).json({
-            success: true,
-            message: "This endpoint is for internal data formatting only",
-            data: {
-                description: "Use GET /users to retrieve formatted user data"
-            }
-        });
-    } catch (error) {
-        console.error("Error in format user data handler:", error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error in format user data handler" 
-        });
-    }
-};
+// Duplicate getUserGraph removed (kept earlier implementation)
 
-// Route handler for fetching users from DB endpoint
+// Return raw rows from DB (unformatted) for diagnostics / admin usage
 const fetchUsersFromDBHandler = async (req, res) => {
     try {
         const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -296,24 +280,46 @@ const fetchUsersFromDBHandler = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
-        const usersData = await fetchUsersFromDB(page, limit, search, startDate, endDate);
-        
+
+        const rows = await fetchUsersFromDB(page, limit, search, startDate, endDate);
         res.status(200).json({
             success: true,
-            data: usersData,
-            filters: {
-                search: search,
-                startDate: startDate,
-                endDate: endDate
-            }
+            data: rows,
+            pagination: {
+                currentPage: page,
+                itemsPerPage: limit
+            },
+            filters: { search, startDate, endDate }
         });
     } catch (error) {
-        console.error("Error in fetch users from DB handler:", error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error fetching users from database" 
+        console.error('Error in fetchUsersFromDBHandler:', error);
+        res.status(500).json({ success: false, error: 'Error fetching users' });
+    }
+};
+
+// Return formatted user objects (legacy front-end expectation) using formatUserData
+const formatUserDataHandler = async (req, res) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+        const rows = await fetchUsersFromDB(page, limit, search, startDate, endDate);
+        const formatted = rows.map(formatUserData);
+        res.status(200).json({
+            success: true,
+            data: formatted,
+            pagination: {
+                currentPage: page,
+                itemsPerPage: limit
+            },
+            filters: { search, startDate, endDate }
         });
+    } catch (error) {
+        console.error('Error in formatUserDataHandler:', error);
+        res.status(500).json({ success: false, error: 'Error formatting users' });
     }
 };
 
@@ -551,217 +557,217 @@ const getUserByUsername = async (req, res) => {
     }
 };
 
-// Get user statistics and activity summary with date filtering
+// Get user statistics and activity summary with date filtering (fixed parameter handling)
 const getUserStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
-        // Validate date range and apply default start date
+
         let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-        
-        // Default to May 1st, 2025 if no start date provided
+
         if (!startDate) {
             startTimestamp = new Date('2025-05-01').getTime();
         }
-        
+
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: 'Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp'
             });
         }
-        
-        // Build date filtering
-        let dateFilter = '';
-        let feedbackDateFilter = '';
+
+        const cacheKey = `stats_${startTimestamp}_${endTimestamp}`;
+        const cachedResult = userStatsCache.get(cacheKey);
+        if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
+            return res.status(200).json({
+                success: true,
+                data: cachedResult.data,
+                filters: {
+                    startDate,
+                    endDate,
+                    appliedStartTimestamp: startTimestamp,
+                    appliedEndTimestamp: endTimestamp
+                }
+            });
+        }
+
+        let questionFilter = '';
+        let feedbackFilter = '';
+        let errorFilter = '';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
-            dateFilter += ` AND ets >= $${paramIndex}`;
-            feedbackDateFilter += ` AND ets >= $${paramIndex}`;
+            questionFilter += ` AND q.ets >= $${paramIndex}`;
+            feedbackFilter += ` AND f.ets >= $${paramIndex}`;
+            errorFilter += ` AND e.ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
         if (endTimestamp !== null) {
             paramIndex++;
-            dateFilter += ` AND ets <= $${paramIndex}`;
-            feedbackDateFilter += ` AND ets <= $${paramIndex}`;
+            questionFilter += ` AND q.ets <= $${paramIndex}`;
+            feedbackFilter += ` AND f.ets <= $${paramIndex}`;
+            errorFilter += ` AND e.ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
-        // No default date window when none is provided
 
-        // Add parameters for cohort metrics boundaries
-        const paramsStartIndex = queryParams.length;
-        queryParams.push(startTimestamp);
-        queryParams.push(endTimestamp);
-        const startParam = `$${paramsStartIndex + 1}`;
-        const endParam = `$${paramsStartIndex + 2}`;
+        // Always allocate start/end parameters (even if null) for cohort logic
+        const startParamIndex = ++paramIndex; queryParams.push(startTimestamp); // may be null
+        const endParamIndex = ++paramIndex; queryParams.push(endTimestamp);     // may be null
 
         const query = {
             text: `
-                WITH session_durations AS (
-                    SELECT 
-                        sid,
-                        EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at))) as session_duration_seconds
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                WITH filtered_questions AS (
+                    SELECT uid, sid, ets, created_at
+                    FROM questions q
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${questionFilter}
+                ),
+                filtered_feedback AS (
+                    SELECT uid, ets, feedbacktype
+                    FROM feedback f
+                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackFilter}
+                ),
+                filtered_errors AS (
+                    SELECT uid, sid, ets
+                    FROM errordetails e
+                    WHERE uid IS NOT NULL AND ets IS NOT NULL ${errorFilter}
+                ),
+                session_bounds AS (
+                    SELECT sid, MIN(created_at) AS min_time, MAX(created_at) AS max_time
+                    FROM filtered_questions
                     GROUP BY sid
                 ),
-                all_user_activity AS (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ),
-                overall_stats AS (
+                base_stats AS (
                     SELECT 
-                        COUNT(DISTINCT uid) as total_users,
-                        COUNT(DISTINCT sid) as total_sessions,
-                        COUNT(*) as total_activity_records
-                    FROM all_user_activity
-                    WHERE 1=1 ${dateFilter}
-                ),
-                question_stats AS (
-                    SELECT 
-                        COUNT(*) as total_questions
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-                ),
-                avg_session_duration AS (
-                    SELECT 
-                        AVG(session_duration_seconds) as avg_session_duration
-                    FROM session_durations
+                        COUNT(DISTINCT fq.uid) AS total_users,
+                        COUNT(DISTINCT fq.sid) AS total_sessions,
+                        COUNT(*) AS total_questions,
+                        AVG(EXTRACT(EPOCH FROM (sb.max_time - sb.min_time))) AS avg_session_duration
+                    FROM filtered_questions fq
+                    JOIN session_bounds sb ON fq.sid = sb.sid
                 ),
                 feedback_stats AS (
                     SELECT 
-                        COUNT(*) as total_feedback,
-                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
-                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
-                    FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
+                        COUNT(*) AS total_feedback,
+                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+                    FROM filtered_feedback
                 ),
-                activity_by_day AS (
-                    SELECT 
-                        DATE(created_at) as activity_date,
-                        COUNT(DISTINCT uid) as active_users,
-                        COUNT(*) as questions_count
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-                    GROUP BY DATE(created_at)
-                    ORDER BY activity_date DESC
-                    LIMIT 30
-                ),
-                all_question_firsts AS (
-                    SELECT uid, MIN(ets) AS first_question_ets
+                user_firsts AS (
+                    SELECT uid, MIN(ets) AS first_activity_ets
                     FROM (
                         SELECT uid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
                         UNION ALL
                         SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    ) all_first_activity
+                    ) ua
                     GROUP BY uid
                 ),
-                activity_in_range AS (
-                    SELECT DISTINCT uid
-                    FROM (
-                        SELECT uid FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
-                        UNION ALL
-                        SELECT uid FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
-                        UNION ALL
-                        SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
-                    ) x
+                user_firsts_date AS (
+                    SELECT uid, (to_timestamp(first_activity_ets / 1000)::date) AS first_activity_date
+                    FROM user_firsts
                 ),
-                new_users_cte AS (
-                    SELECT CASE WHEN (${startParam}::bigint IS NULL AND ${endParam}::bigint IS NULL) THEN 0 ELSE COUNT(*) END AS new_users
-                    FROM all_question_firsts aqf
-                    WHERE (${startParam}::bigint IS NULL OR aqf.first_question_ets >= ${startParam}::bigint)
-                      AND (${endParam}::bigint IS NULL OR aqf.first_question_ets <= ${endParam}::bigint)
+                daily_activity AS (
+                    SELECT 
+                        day AS activity_date,
+                        COUNT(DISTINCT fq.uid) AS active_users,
+                        COUNT(*) AS questions_count,
+                        COUNT(DISTINCT fq.sid) AS unique_sessions_count,
+                        COUNT(DISTINCT CASE WHEN ufd.first_activity_date = day THEN fq.uid END) AS new_users,
+                        (COUNT(DISTINCT fq.uid) - COUNT(DISTINCT CASE WHEN ufd.first_activity_date = day THEN fq.uid END)) AS returning_users,
+                        (EXTRACT(EPOCH FROM (day::timestamp))::bigint * 1000) AS activity_timestamp_ms
+                    FROM filtered_questions fq
+                    JOIN LATERAL (VALUES (DATE(fq.created_at))) AS d(day) ON true
+                    LEFT JOIN user_firsts_date ufd ON ufd.uid = fq.uid
+                    GROUP BY day
+                    ORDER BY day DESC
+                    LIMIT 30
                 ),
-                returning_users_cte AS (
-                    SELECT CASE WHEN (${startParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT air.uid) END AS returning_users
-                    FROM activity_in_range air
-                    WHERE ${startParam}::bigint IS NOT NULL AND (
-                        EXISTS (SELECT 1 FROM questions q2 WHERE q2.uid = air.uid AND q2.ets IS NOT NULL AND q2.ets < ${startParam}::bigint)
-                        OR EXISTS (SELECT 1 FROM errordetails e2 WHERE e2.uid = air.uid AND e2.ets IS NOT NULL AND e2.ets < ${startParam}::bigint)
-                        OR EXISTS (SELECT 1 FROM feedback f2 WHERE f2.uid = air.uid AND f2.ets < ${startParam}::bigint)
-                    )
+                filtered_active_uids AS (
+                    SELECT DISTINCT uid FROM filtered_questions
+                    UNION
+                    SELECT DISTINCT uid FROM filtered_errors
+                    UNION
+                    SELECT DISTINCT uid FROM filtered_feedback
                 ),
-                active_cumulative_cte AS (
-                    SELECT CASE WHEN (${startParam}::bigint IS NULL AND ${endParam}::bigint IS NULL) THEN 0 ELSE COUNT(DISTINCT u.uid) END AS active_cumulative
-                    FROM (
-                        SELECT uid FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
-                        UNION ALL
-                        SELECT uid FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL ${dateFilter}
-                        UNION ALL
-                        SELECT uid FROM feedback WHERE uid IS NOT NULL ${feedbackDateFilter}
-                    ) u
+                cohort_stats AS (
+                    SELECT 
+                        CASE WHEN $${startParamIndex}::bigint IS NULL THEN 0
+                             ELSE COUNT(DISTINCT uf.uid) FILTER (WHERE uf.first_activity_ets >= $${startParamIndex}::bigint 
+                                 AND ($${endParamIndex}::bigint IS NULL OR uf.first_activity_ets <= $${endParamIndex}::bigint))
+                        END AS new_users,
+                        CASE WHEN $${startParamIndex}::bigint IS NULL THEN 0
+                             ELSE COUNT(DISTINCT fa.uid) FILTER (WHERE uf.first_activity_ets < $${startParamIndex}::bigint)
+                        END AS returning_users
+                    FROM filtered_active_uids fa
+                    JOIN user_firsts uf ON uf.uid = fa.uid
+                ),
+                active_users AS (
+                    SELECT COUNT(DISTINCT uid) AS active_cumulative FROM filtered_active_uids
                 )
                 SELECT 
-                    os.total_users,
-                    os.total_sessions,
-                    qs.total_questions,
-                    asd.avg_session_duration,
-                    fs.total_feedback,
-                    fs.total_likes,
-                    fs.total_dislikes,
-                    nuc.new_users,
-                    ruc.returning_users,
-                    ac.active_cumulative,
-                    json_agg(
-                        json_build_object(
-                            'date', abd.activity_date,
-                            'activeUsers', abd.active_users,
-                            'questionsCount', abd.questions_count
-                        ) ORDER BY abd.activity_date DESC
-                    ) as daily_activity
-                FROM overall_stats os
-                CROSS JOIN question_stats qs
-                CROSS JOIN avg_session_duration asd
+                    bs.total_users,
+                    bs.total_sessions,
+                    bs.total_questions,
+                    COALESCE(bs.avg_session_duration, 0) AS avg_session_duration,
+                    COALESCE(fs.total_feedback, 0) AS total_feedback,
+                    COALESCE(fs.total_likes, 0) AS total_likes,
+                    COALESCE(fs.total_dislikes, 0) AS total_dislikes,
+                    COALESCE(cs.new_users, 0) AS new_users,
+                    COALESCE(cs.returning_users, 0) AS returning_users,
+                    COALESCE(au.active_cumulative, 0) AS active_cumulative,
+                    COALESCE(json_agg(json_build_object(
+                        'date', da.activity_date,
+                        'timestamp', da.activity_timestamp_ms,
+                        'activeUsers', da.active_users,
+                        'questionsCount', da.questions_count,
+                        'uniqueSessionsCount', da.unique_sessions_count,
+                        'newUsers', da.new_users,
+                        'returningUsers', da.returning_users
+                    ) ORDER BY da.activity_date DESC) FILTER (WHERE da.activity_date IS NOT NULL), '[]'::json) AS daily_activity
+                FROM base_stats bs
                 CROSS JOIN feedback_stats fs
-                CROSS JOIN new_users_cte nuc
-                CROSS JOIN returning_users_cte ruc
-                CROSS JOIN active_cumulative_cte ac
-                LEFT JOIN activity_by_day abd ON true
-                GROUP BY os.total_users, os.total_sessions, qs.total_questions, 
-                         asd.avg_session_duration, fs.total_feedback, fs.total_likes, fs.total_dislikes,
-                         nuc.new_users, ruc.returning_users, ac.active_cumulative
+                CROSS JOIN cohort_stats cs
+                CROSS JOIN active_users au
+                LEFT JOIN daily_activity da ON true
+                GROUP BY bs.total_users, bs.total_sessions, bs.total_questions, bs.avg_session_duration,
+                         fs.total_feedback, fs.total_likes, fs.total_dislikes,
+                         cs.new_users, cs.returning_users, au.active_cumulative
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
-        const stats = result.rows[0];
-        
+        const stats = result.rows[0] || {};
+        const responseData = {
+            totalUsers: parseInt(stats.total_users) || 0,
+            totalSessions: parseInt(stats.total_sessions) || 0,
+            totalQuestions: parseInt(stats.total_questions) || 0,
+            totalFeedback: parseInt(stats.total_feedback) || 0,
+            totalLikes: parseInt(stats.total_likes) || 0,
+            totalDislikes: parseInt(stats.total_dislikes) || 0,
+            avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
+            dailyActivity: stats.daily_activity || [],
+            newUsers: parseInt(stats.new_users) || 0,
+            returningUsers: parseInt(stats.returning_users) || 0,
+            activeCumulative: parseInt(stats.active_cumulative) || 0
+        };
+
+        userStatsCache.set(cacheKey, { data: responseData, timestamp: Date.now() });
+
         res.status(200).json({
             success: true,
-            data: {
-                totalUsers: parseInt(stats.total_users) || 0,
-                totalSessions: parseInt(stats.total_sessions) || 0,
-                totalQuestions: parseInt(stats.total_questions) || 0,
-                totalFeedback: parseInt(stats.total_feedback) || 0,
-                totalLikes: parseInt(stats.total_likes) || 0,
-                totalDislikes: parseInt(stats.total_dislikes) || 0,
-                avgSessionDuration: parseFloat(stats.avg_session_duration) || 0,
-                dailyActivity: stats.daily_activity || [],
-                newUsers: parseInt(stats.new_users) || 0,
-                returningUsers: parseInt(stats.returning_users) || 0,
-                activeCumulative: parseInt(stats.active_cumulative) || 0
-            },
+            data: responseData,
             filters: {
-                startDate: startDate,
-                endDate: endDate,
+                startDate,
+                endDate,
                 appliedStartTimestamp: startTimestamp,
                 appliedEndTimestamp: endTimestamp
             }
         });
     } catch (error) {
-        console.error("Error fetching user stats:", error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error fetching user statistics" 
-        });
+        console.error('Error fetching user stats:', error);
+        res.status(500).json({ success: false, error: 'Error fetching user statistics' });
     }
 };
 
@@ -1468,5 +1474,7 @@ module.exports = {
     formatUserDataHandler,
     fetchUsersFromDBHandler,
     getTotalUsersCountHandler,
-    getUserGraph
+    getUserGraph,
+    // Test utility (sanity tests): clear in-memory cache
+    __clearUserStatsCache: () => userStatsCache.clear()
 };
