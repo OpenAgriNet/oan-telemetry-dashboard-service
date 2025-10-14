@@ -1,3 +1,8 @@
+const { webcrypto } = require("node:crypto");
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto;
+}
+
 let joseModulePromise = null;
 function getJoseModule() {
   if (!joseModulePromise) {
