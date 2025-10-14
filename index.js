@@ -24,12 +24,6 @@ app.use(
   })
 );
 
-app.use("/", (req, res, next) => {
-  console.log("API is running");
-  res.send("API is running");
-  next();
-});
-
 app.use("/v1", authController, questionRoutes);
 app.use("/v1", authController, userRoutes);
 app.use("/v1", authController, sessionRoutes);
