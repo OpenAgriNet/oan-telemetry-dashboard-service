@@ -5,17 +5,17 @@ WORKDIR /usr/src/app
 
 # Install app dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install
 
-# Bundle app source
+# Copy application code
 COPY . .
 
 # Set environment variables
-ENV NODE_ENV=production
-ENV PORT=4000
+ENV NODE_ENV=development
+ENV PORT=3000
 
 # Expose port
-EXPOSE 4000
+EXPOSE 3000
 
 # Run the application
-CMD ["node", "index.js"]
+CMD ["npm", "start"]
