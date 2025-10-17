@@ -9,6 +9,9 @@ const feedbackRoutes = require("./routes/feedbackRoutes");
 const errorRoutes = require("./routes/errorRoutes");
 const dashboardRoutes = require("./routes/dashboard.Routes");
 const authController = require("./controllers/auth.controller");
+const leaderboardRoutes = require("./routes/leaderboard.Routes");
+const villageRoutes = require("./routes/villageRoutes");
+const leaderboardAuthController = require("./controllers/leaderboardAuth.controller");
 const app = express();
 
 app.use(express.json());
@@ -24,11 +27,17 @@ app.use(
   })
 );
 
+app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
+// app.use("/", authController, (req, res) => {
+//   res.send("hi welcome");
+// });
+
 app.use("/v1", authController, questionRoutes);
 app.use("/v1", authController, userRoutes);
 app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
+app.use("/v1/api/villages", authController, villageRoutes);
 app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
