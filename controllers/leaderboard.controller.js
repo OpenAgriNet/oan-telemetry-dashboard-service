@@ -41,6 +41,7 @@ const getTop50ByLocation = async (req, res) => {
         last_updated
       FROM leaderboard
       WHERE registered_location->>'lgd_code' = ANY($1::text[])
+        AND farmer_id IS NOT NULL
       ORDER BY record_count DESC
       LIMIT 50
     `;
