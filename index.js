@@ -25,10 +25,6 @@ app.use(
   })
 );
 
-app.use("/", authController, (req, res) => {
-  res.send("hi welcome");
-});
-
 app.use("/v1", authController, questionRoutes);
 app.use("/v1", authController, userRoutes);
 app.use("/v1", authController, sessionRoutes);
