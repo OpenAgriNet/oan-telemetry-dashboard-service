@@ -1,4 +1,15 @@
-const jose = require("jose");
+const { webcrypto } = require("node:crypto");
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto;
+}
+
+let joseModulePromise = null;
+function getJoseModule() {
+  if (!joseModulePromise) {
+    joseModulePromise = import("jose");
+  }
+  return joseModulePromise;
+}
 const publicKeyPem = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6cqy+hechjriXqjWRe/a
 nHyk76Iz4x7SpE06jioTaaXpp9kn9/cyVMkJmclN6QZUB7eLyIRTEPZhjr89IFBf
@@ -9,7 +20,10 @@ gc+4HxCOvHaPqLar11tBNaaMKXcyHOa6Sl5uJR7CZZBwqoIFFlrEhTxpPNwRxe6+
 6QIDAQAB
 -----END PUBLIC KEY-----`;
 // Pre-import the RSA public key for RS256 verification
-const publicKeyPromise = jose.importSPKI(publicKeyPem, "RS256");
+const publicKeyPromise = (async () => {
+  const { importSPKI } = await getJoseModule();
+  return importSPKI(publicKeyPem, "RS256");
+})();
 async function authController(req, res, next) {
   try {
     const authHeader = req.headers.authorization || "";
@@ -20,7 +34,8 @@ async function authController(req, res, next) {
     }
 
     const publicKey = await publicKeyPromise;
-    const { payload } = await jose.jwtVerify(jwt, publicKey, {
+    const { jwtVerify } = await getJoseModule();
+    const { payload } = await jwtVerify(jwt, publicKey, {
       algorithms: ["RS256"],
     });
 
