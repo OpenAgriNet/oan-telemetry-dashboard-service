@@ -1336,7 +1336,7 @@ const getUserGraph = async (req, res) => {
         .json({ success: false, error: "Start date cannot be after end date" });
     }
 
-    // Build date filtering for main graph query
+    // Build date filtering for main graph query (we'll inject this into inner subquery where `ets` exists)
     let dateFilter = "";
     const queryParams = [];
     let paramIndex = 0;
@@ -1396,7 +1396,8 @@ const getUserGraph = async (req, res) => {
         break;
     }
 
-    // Main graph query: per-period buckets (activity rows come only from questions with answertext)
+    // Graph SQL — note: dateFilter injected inside inner SELECT so 'ets' is available there.
+    // Also: compare using the alias (tpa.${orderBy}) in user_categorization instead of the raw ${dateGrouping}.
     const graphSql = {
       text: `
         WITH user_first_activity AS (
@@ -1420,19 +1421,19 @@ const getUserGraph = async (req, res) => {
             SELECT uid, sid, ets
             FROM questions
             WHERE uid IS NOT NULL AND ets IS NOT NULL AND answertext IS NOT NULL
-          ) AS combined
-          WHERE 1=1
             ${dateFilter}
+          ) AS combined
         ),
         user_categorization AS (
           SELECT
             tpa.date,
-            tpa.${orderBy},
+            tpa.${orderBy} AS ${orderBy},
             tpa.timestamp,
             tpa.uid,
             tpa.sid,
             ufa.first_activity_timestamp,
-            CASE WHEN ${dateGrouping} = DATE_TRUNC('${truncUnit}', TO_TIMESTAMP(ufa.first_activity_timestamp/1000))
+            -- compare using the bucket alias (tpa.${orderBy}) to determine new vs returning
+            CASE WHEN tpa.${orderBy} = DATE_TRUNC('${truncUnit}', TO_TIMESTAMP(ufa.first_activity_timestamp::double precision/1000))
               THEN 'new' ELSE 'returning' END AS user_type
           FROM time_period_activity tpa
           JOIN user_first_activity ufa ON tpa.uid = ufa.uid
@@ -1443,7 +1444,7 @@ const getUserGraph = async (req, res) => {
                COUNT(DISTINCT sid) AS uniqueSessionsCount,
                ${
                  granularity === "hourly"
-                   ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
+                   ? `EXTRACT(HOUR FROM ${orderBy}) as hour_of_day`
                    : "NULL as hour_of_day"
                }
         FROM user_categorization
@@ -1472,6 +1473,7 @@ const getUserGraph = async (req, res) => {
       ...(granularity === "monthly" && { month: row.date }),
     }));
 
+    // Cohort totals (distinct users) — same logic as getUserStats
     let cohortNew = 0;
     let cohortReturning = 0;
     if (startTimestamp !== null && endTimestamp !== null) {
@@ -1509,12 +1511,11 @@ const getUserGraph = async (req, res) => {
       cohortNew = parseInt(cohortRes.rows[0].new_users) || 0;
       cohortReturning = parseInt(cohortRes.rows[0].returning_users) || 0;
     } else {
-      // Fallback: sum bucket values (only if no start/end provided) — not ideal, but safe fallback
       cohortNew = graphData.reduce((s, it) => s + it.newUsers, 0);
       cohortReturning = graphData.reduce((s, it) => s + it.returningUsers, 0);
     }
 
-    // Find peaks for metadata (still based on bucket data)
+    // Peaks
     const peakNewUsersPeriod = graphData.reduce(
       (max, item) => (item.newUsers > max.newUsers ? item : max),
       { newUsers: 0, date: null }
