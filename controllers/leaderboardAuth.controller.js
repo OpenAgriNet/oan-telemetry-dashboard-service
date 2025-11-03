@@ -30,7 +30,9 @@ const publicKeyPromise = (async () => {
 async function leaderboardAuthController(req, res, next) {
   try {
     const authHeader = req.headers.authorization || "";
-    const tokenFromHeader = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+    const tokenFromHeader = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : null;
     const jwt = tokenFromHeader || req.query.token;
     if (!jwt) {
       return res.status(401).json({ status: "error", message: "Unauthorized" });
@@ -45,18 +47,12 @@ async function leaderboardAuthController(req, res, next) {
     // Attach full payload as user
     req.user = payload;
 
-    // Check if farmer_id exists and is not null or empty in the JWT payload
-    if (!payload.farmer_id || payload.farmer_id === null || payload.farmer_id === "") {
-      return res.status(403).json({ 
-        status: "error", 
-        message: "Access denied. Only users with farmer_id can access this resource." 
-      });
-    }
-
     // Extract lgd_code from the registered_location (if present)
     let registeredLgd = null;
     if (Array.isArray(payload.locations)) {
-      const regLoc = payload.locations.find((l) => l && l.location_type === "registered_location");
+      const regLoc = payload.locations.find(
+        (l) => l && l.location_type === "registered_location"
+      );
       if (regLoc && regLoc.lgd_code !== undefined && regLoc.lgd_code !== "") {
         registeredLgd = regLoc.lgd_code;
       }
