@@ -97,6 +97,7 @@ const getTop50ByLocationAndFarmer = async (req, res) => {
         username,
         registered_location,
         record_count,
+        farmer_id
       FROM leaderboard
       WHERE registered_location->>'lgd_code' = ANY($1::text[])
         AND farmer_id IS NOT NULL
