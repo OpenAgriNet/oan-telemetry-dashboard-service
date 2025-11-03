@@ -1,5 +1,5 @@
 const pool = require("../services/db");
-const { getVillagesByTalukaUtil } = require("../middleware/villageMiddleware");
+const { getVillagesByTalukaUtil, getVillagesByDistrictUtil} = require("../middleware/villageMiddleware");
 const { get } = require("../routes/leaderboard.Routes");
 
 // Get top 10 users by taluka location  without farmer ID filter
