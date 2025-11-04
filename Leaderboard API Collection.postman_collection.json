@@ -122,7 +122,7 @@
 	"variable": [
 		{
 			"key": "baseUrl",
-			"value": "http://localhost:3000",
+			"value": "https://proddashbaordvistaar.mahapocra.gov.in/v1",
 			"type": "string"
 		},
 		{
