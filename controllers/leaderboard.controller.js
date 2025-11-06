@@ -10,8 +10,6 @@ const getTop10ByTaluka = async (req, res) => {
     const registeredLgdCode =
       req.registeredLgdCode || req.user.registered_lgd_code;
 
-    const farmerId = req.query.farmer_id;
-
     if (!registeredLgdCode) {
       return res.status(400).json({
         success: false,
@@ -32,7 +30,7 @@ const getTop10ByTaluka = async (req, res) => {
     // Extract village codes (lgd_codes) for the entire taluka
     const villageCodes = talukaInfo.data.village_codes;
 
-    query = `
+    const query = `
       SELECT 
         unique_id,
         username,
@@ -45,23 +43,6 @@ const getTop10ByTaluka = async (req, res) => {
       ORDER BY record_count DESC
       LIMIT 10
     `;
-
-    if (farmerId) {
-      query = `
-       SELECT 
-        unique_id,
-        username,
-        registered_location,
-        record_count,
-        farmer_id
-      FROM leaderboard
-      WHERE registered_location->>'lgd_code' = ANY($1::text[])
-        AND unique_id IS NOT NULL
-        AND unique_id <> ''
-        AND farmer_id IS NOT NULL AND farmer_id <> ''
-      ORDER BY record_count DESC
-      LIMIT 10`;
-    }
 
     const result = await pool.query(query, [villageCodes.map(String)]);
 
@@ -91,8 +72,6 @@ const getTop10ByDistrict = async (req, res) => {
     const registeredLgdCode =
       req.registeredLgdCode || req.user.registered_lgd_code;
 
-    const farmerId = req.query.farmer_id;
-
     if (!registeredLgdCode) {
       return res.status(400).json({
         success: false,
@@ -113,7 +92,7 @@ const getTop10ByDistrict = async (req, res) => {
     // Extract village codes (lgd_codes) for the entire district
     const villageCodes = districtInfo.data.village_codes.map(String); // ensure strings
 
-    let query = `
+    const query = `
       SELECT 
         unique_id,
         username,
@@ -126,26 +105,6 @@ const getTop10ByDistrict = async (req, res) => {
       ORDER BY record_count DESC
       LIMIT 10
     `;
-
-    // If farmer filter requested
-    if (farmerId) {
-      query = `
-        SELECT 
-          unique_id,
-          username,
-          registered_location,
-          record_count,
-          farmer_id
-        FROM leaderboard
-        WHERE registered_location->>'lgd_code' = ANY($1::text[])
-          AND unique_id IS NOT NULL
-          AND unique_id <> ''
-          AND farmer_id IS NOT NULL
-          AND farmer_id <> '' 
-        ORDER BY record_count DESC
-        LIMIT 10
-      `;
-    }
 
     const result = await pool.query(query, [villageCodes]);
 
@@ -174,8 +133,6 @@ const getTop10ByState = async (req, res) => {
     const registeredLgdCode =
       req.registeredLgdCode || req.user.registered_lgd_code;
 
-    const farmerId = req.query.farmer_id;
-
     if (!registeredLgdCode) {
       return res.status(400).json({
         success: false,
@@ -183,7 +140,7 @@ const getTop10ByState = async (req, res) => {
       });
     }
 
-    let query = `
+    const query = `
       SELECT 
         unique_id,
         username,
@@ -195,24 +152,6 @@ const getTop10ByState = async (req, res) => {
       ORDER BY record_count DESC
       LIMIT 10
     `;
-
-    // If farmer filter requested
-    if (farmerId) {
-      query = `
-        SELECT 
-          unique_id,
-          username,
-          registered_location,
-          record_count,
-          farmer_id
-        FROM leaderboard
-        WHERE unique_id IS NOT NULL
-          AND unique_id <> ''
-          AND farmer_id IS NOT NULL AND farmer_id <> ''
-        ORDER BY record_count DESC
-        LIMIT 10
-      `;
-    }
 
     const result = await pool.query(query);
 
