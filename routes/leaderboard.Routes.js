@@ -4,7 +4,12 @@ const leaderboardController = require("../controllers/leaderboard.controller");
 
 // Route for getting top 10 users by state, taluka, and district
 router.get("/top10/state", leaderboardController.getTop10ByState);
-router.get("/top10/taluka", leaderboardController.getTop10ByTaluka);
 router.get("/top10/district", leaderboardController.getTop10ByDistrict);
+router.get("/top10/taluka", leaderboardController.getTop10ByTaluka);
+
+// Route for getting users by taluka, district and village
+router.get("/district", leaderboardController.getUsersByDistrict);
+router.get("/taluka", leaderboardController.getUsersByTaluka);
+router.get("/village", leaderboardController.getUsersByVillage);
 
 module.exports = router;
