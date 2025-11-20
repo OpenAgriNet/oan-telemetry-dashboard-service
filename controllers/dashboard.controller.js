@@ -142,13 +142,8 @@ const getDashboardStats = async (req, res) => {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
-        // Validate date range and apply default start date logic (same as user controller)
+        // Validate date range - no default start date to ensure consistency across all pages
         let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-
-        // Default to May 1st, 2025 if no start date provided (matching user controller logic)
-        if (!startDate) {
-            startTimestamp = new Date('2025-05-01').getTime();
-        }
 
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
             return res.status(400).json({

@@ -57,7 +57,7 @@ async function fetchQuestionsFromDB(
             channel,
             sid AS session_id
         FROM questions
-        WHERE questiontext IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
 
   const queryParams = [];
@@ -115,7 +115,7 @@ async function getTotalQuestionsCount(
   let query = `
         SELECT COUNT(*) as total
         FROM questions
-        WHERE questiontext IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
 
   const queryParams = [];
