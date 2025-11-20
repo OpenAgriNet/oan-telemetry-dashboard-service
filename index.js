@@ -43,6 +43,7 @@ app.use("/v1", authController, userRoutes);
 app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
+app.use("/v1", authController, dashboardRoutes);
 app.use("/v1/api/villages", authController, villageRoutes);
 app.use(morgan("combined"));
 
