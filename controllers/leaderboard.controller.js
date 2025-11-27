@@ -351,6 +351,113 @@ const getUsersByVillage = async (req, res) => {
   }
 };
 
+const getTop10Month = async (req, res) => {
+  try {
+    const registeredLgdCode =
+      req.registeredLgdCode || req.user.registered_lgd_code;
+    // const registeredLgdCode = req.query.lgd_code;
+    if (!registeredLgdCode) {
+      return res.status(400).json({
+        success: false,
+        message: "Registered location lgd_code not found in user token",
+      });
+    }
+
+    // --- Date handling ---
+    // If user passed start_date/end_date, try to use them (expecting YYYY-MM-DD or ISO)
+    // Otherwise compute defaults: start = first day of current month, end = today.
+    const parseDate = (v) => {
+      if (!v) return null;
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return null;
+      return d;
+    };
+
+    const now = new Date(); // server current date/time
+    const userStart = parseDate(req.query.start_date);
+    const userEnd = parseDate(req.query.end_date);
+
+    // start = either userStart or first day of current month at 00:00:00
+    const start =
+      userStart ?? new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    // end = either userEnd or today at 23:59:59.999 (so whole day is included)
+    const end =
+      userEnd ??
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        23,
+        59,
+        59,
+        999
+      );
+
+    // if start > end, swap or return error
+    let startTs = start;
+    let endTs = end;
+    if (startTs > endTs) {
+      const tmp = startTs;
+      startTs = endTs;
+      endTs = tmp;
+    }
+
+    // Convert to ISO strings acceptable by Postgres (or pass Date objects directly)
+    // const startIso = startTs.toISOString(); // e.g. 2025-10-01T00:00:00.000Z
+    // const endIso = endTs.toISOString(); // e.g. 2025-10-28T23:59:59.999Z
+
+    const startIso = new Date(startTs.getTime() + 5.5 * 60 * 60 * 1000)
+      .toISOString()
+      .replace("Z", "+05:30");
+
+    const endIso = new Date(endTs.getTime() + 5.5 * 60 * 60 * 1000)
+      .toISOString()
+      .replace("Z", "+05:30");
+
+    // console.log(
+    //   `getTop10Month: Querying from ${startIso} to ${endIso} for lgd_code ${registeredLgdCode}`
+    // );
+
+    const query = `
+    SELECT
+    unique_id,
+    username,
+    registered_location,
+    COUNT(*) FILTER (WHERE answertext IS NOT NULL) AS record_count
+    FROM questions
+    WHERE registered_location->>'lgd_code' = $1
+      AND unique_id IS NOT NULL
+      AND unique_id <> ''
+      AND created_at BETWEEN $2 AND $3
+    GROUP BY unique_id, username, registered_location
+    ORDER BY record_count DESC
+    LIMIT 10
+    `;
+
+    const result = await pool.query(query, [
+      registeredLgdCode,
+      startIso,
+      endIso,
+    ]);
+
+    return res.json({
+      success: true,
+      count: result.rows.length,
+      start_date: startIso,
+      end_date: endIso,
+      data: result.rows,
+    });
+  } catch (err) {
+    console.error("Error in getTop10Month:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: err.message,
+    });
+  }
+};
+
 module.exports = {
   getTop10ByTaluka,
   getTop10ByDistrict,
@@ -358,4 +465,5 @@ module.exports = {
   getUsersByDistrict,
   getUsersByTaluka,
   getUsersByVillage,
+  getTop10Month,
 };
