@@ -1,4 +1,8 @@
 const pool = require('../services/db'); // adjust path as needed
+const { getTotalFeedbackCount, getTotalLikesDislikesCount } = require('./feedback.controller');
+const { getTotalQuestionsCount } = require('./questions.controller');
+const { getTotalSessionsCount } = require('./sessions.controller');
+const { getTotalUsersCount } = require('./user.controller');
 
 // Helper function to parse and validate date range parameters
 function parseDateRange(startDate, endDate) {
@@ -144,7 +148,7 @@ const getDashboardStats = async (req, res) => {
 
         // Validate date range - no default start date to ensure consistency across all pages
         let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-
+        
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
             return res.status(400).json({
                 success: false,
@@ -173,61 +177,82 @@ const getDashboardStats = async (req, res) => {
         }
 
         // SIMPLIFIED QUERY - Only compute essential metrics actually used by the frontend
-        const query = {
-            text: `
-                WITH all_user_activity AS (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ),
-                overall_stats AS (
-                    SELECT 
-                        COUNT(DISTINCT uid) as total_users,
-                        COUNT(DISTINCT sid) as total_sessions
-                    FROM all_user_activity
-                    WHERE 1=1 ${dateFilter}
-                ),
-                question_stats AS (
-                    SELECT 
-                        COUNT(*) as total_questions
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-                ),
-                feedback_stats AS (
-                    SELECT 
-                        COUNT(*) as total_feedback,
-                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
-                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
-                    FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
-                )
-                SELECT 
-                    os.total_users,
-                    os.total_sessions,
-                    qs.total_questions,
-                    fs.total_feedback,
-                    fs.total_likes,
-                    fs.total_dislikes
-                FROM overall_stats os
-                CROSS JOIN question_stats qs
-                CROSS JOIN feedback_stats fs
-            `,
-            values: queryParams
-        };
+    //     const query = {
+    //         text: `
+    //                 WITH all_user_activity AS (
+    //     SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+    //     UNION ALL
+    //     SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+    // ),
+    // overall_stats AS (
+    //     SELECT 
+    //         COUNT(DISTINCT uid) as total_users
+    //     FROM all_user_activity
+    //     WHERE 1=1 ${dateFilter}
+    // ),
+    // session_groups AS (
+    //     SELECT 
+    //         sid as session_id,
+    //         uid as username,
+    //         COUNT(questiontext) as question_count,
+    //         MAX(ets) as session_time
+    //     FROM questions
+    //     WHERE sid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+    //     GROUP BY sid, uid
+    // ),
+    // session_stats AS (
+    //     SELECT COUNT(*) as total_sessions
+    //     FROM session_groups
+    // ),
+    // question_stats AS (
+    //     SELECT 
+    //         COUNT(*) as total_questions
+    //     FROM questions
+    //     WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+    // ),
+    // feedback_stats AS (
+    //     SELECT 
+    //         COUNT(*) as total_feedback,
+    //         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
+    //         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
+    //     FROM feedback
+    //     WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL ${feedbackDateFilter}
+    // )
+    // SELECT 
+    //     os.total_users,
+    //     ss.total_sessions,
+    //     qs.total_questions,
+    //     fs.total_feedback,
+    //     fs.total_likes,
+    //     fs.total_dislikes
+    // FROM overall_stats os
+    // CROSS JOIN session_stats ss
+    // CROSS JOIN question_stats qs
+    // CROSS JOIN feedback_stats fs
+    //         `,
+    //         values: queryParams
+    //     };
 
-        const result = await pool.query(query);
-        const stats = result.rows[0];
+      const total_questions = await getTotalQuestionsCount(null, startDate, endDate);
+      const total_users = await getTotalUsersCount(null, startDate, endDate);
+      const total_sessions = await getTotalSessionsCount(null, startDate, endDate);
+      const total_feedback = await getTotalFeedbackCount(null, startDate, endDate);
+      const feedbacks = await getTotalLikesDislikesCount(null, startDate, endDate);
+
+        // const result = await pool.query(query);
+        // const stats = result.rows[0];
+    
 
         res.status(200).json({
             success: true,
             data: {
                 // Core Metrics - only what's actually used by the frontend
-                totalUsers: parseInt(stats.total_users) || 0,
-                totalSessions: parseInt(stats.total_sessions) || 0,
-                totalQuestions: parseInt(stats.total_questions) || 0,
-                totalFeedback: parseInt(stats.total_feedback) || 0,
-                totalLikes: parseInt(stats.total_likes) || 0,
-                totalDislikes: parseInt(stats.total_dislikes) || 0
+                totalUsers: parseInt(total_users) || 0,
+                totalSessions: parseInt(total_sessions) || 0,
+                totalQuestions: parseInt(total_questions) || 0,
+                totalFeedback: parseInt(total_feedback) || 0,
+                totalLikes: parseInt(feedbacks?.totalLikes) || 0,
+                totalDislikes: parseInt(feedbacks?.totalDislikes) || 0
             },
             filters: {
                 startDate: startDate,
