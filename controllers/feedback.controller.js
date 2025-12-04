@@ -759,5 +759,6 @@ module.exports = {
     getFeedbackGraph,
     getTotalFeedbackCount,
     fetchAllFeedbackFromDB,
-    formatFeedbackData
+    formatFeedbackData,
+    getTotalLikesDislikesCount
 };
