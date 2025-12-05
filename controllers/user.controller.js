@@ -1244,18 +1244,20 @@ const getUserGraph = async (req, res) => {
                    
                     COUNT(DISTINCT uid) as uniqueUsersCount,
                     COUNT(DISTINCT sid) as uniqueSessionsCount,
+                    COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS newUsersCount,
+                    (COUNT(DISTINCT uid) - COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END)) AS returningUsersCount,
                     
                     EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
                     ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    SELECT uid, sid, ets, is_new FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
                     UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    SELECT uid, sid, ets, NULL::int AS is_new  FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
                 ) AS combined
                 WHERE 1=1
                     ${dateFilter}
                 GROUP BY ${dateGrouping}
-                ORDER BY ${orderBy} ASC
+                ORDER BY ${orderBy} ASC 
             `,
             values: queryParams
         };
@@ -1268,6 +1270,8 @@ const getUserGraph = async (req, res) => {
             timestamp: parseInt(row.timestamp),
             uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
             uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+            newUsersCount: parseInt(row.newuserscount) || 0,
+            returningUsersCount: parseInt(row.returninguserscount) || 0,
             // Add formatted values for different time periods
             ...(granularity === 'hourly' && { 
                 hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
