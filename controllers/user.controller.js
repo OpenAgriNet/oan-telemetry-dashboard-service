@@ -183,7 +183,7 @@ async function getTotalUsersCount(search = '', startDate = null, endDate = null)
     let query = `
         SELECT COUNT(DISTINCT uid) as total
         FROM questions
-        WHERE uid IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL
     `;
     
     const queryParams = [];
