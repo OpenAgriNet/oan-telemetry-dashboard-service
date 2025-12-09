@@ -551,204 +551,348 @@ const getFeedbackStats = async (req, res) => {
 };
 
 // Get feedback graph data for time-series visualization
+// const getFeedbackGraph = async (req, res) => {
+//     try {
+//         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+//         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+//         const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
+//         const search = req.query.search ? String(req.query.search).trim() : '';
+
+//         // Validate granularity parameter
+//         if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'"
+//             });
+//         }
+
+//         // Validate date range
+//         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+//         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
+//             });
+//         }
+
+//         if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: "Start date cannot be after end date"
+//             });
+//         }
+
+//         // Build date filtering
+//         let dateFilter = '';
+//         const queryParams = [];
+//         let paramIndex = 0;
+
+//         if (startTimestamp !== null) {
+//             paramIndex++;
+//             dateFilter += ` AND ets >= $${paramIndex}`;
+//             queryParams.push(startTimestamp);
+//         }
+
+//         if (endTimestamp !== null) {
+//             paramIndex++;
+//             dateFilter += ` AND ets <= $${paramIndex}`;
+//             queryParams.push(endTimestamp);
+//         }
+
+//         // Add search filter if provided
+//         if (search && search.trim() !== '') {
+//             paramIndex++;
+//             dateFilter += ` AND (
+//                 feedbacktext ILIKE $${paramIndex} OR 
+//                 questiontext ILIKE $${paramIndex} OR 
+//                 answertext ILIKE $${paramIndex} OR
+//                 uid ILIKE $${paramIndex} OR
+//                 channel ILIKE $${paramIndex}
+//             )`;
+//             queryParams.push(`%${search.trim()}%`);
+//         }
+
+//         // Define the date truncation and formatting based on granularity
+//         let dateGrouping;
+//         let dateFormat;
+//         let orderBy;
+
+//         switch (granularity) {
+//             case 'hourly':
+//                 dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
+//                 dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+//                 orderBy = "hour_bucket";
+//                 break;
+//             case 'weekly':
+//                 dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
+//                 dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+//                 orderBy = "week_bucket";
+//                 break;
+//             case 'monthly':
+//                 dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
+//                 dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+//                 orderBy = "month_bucket";
+//                 break;
+//             case 'daily':
+//             default:
+//                 dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
+//                 dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+//                 orderBy = "day_bucket";
+//                 break;
+//         }
+
+//         const query = {
+//             text: `
+//                 SELECT 
+//                     ${dateFormat} as date,
+//                     ${dateGrouping} as ${orderBy},
+//                     COUNT(*) as feedbackCount,
+//                     COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
+//                     COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
+//                     COUNT(DISTINCT uid) as uniqueUsersCount,
+//                     COUNT(DISTINCT sid) as uniqueSessionsCount,
+//                     COUNT(DISTINCT channel) as uniqueChannelsCount,
+//                     AVG(LENGTH(feedbacktext)) as avgFeedbackLength,
+//                     AVG(LENGTH(questiontext)) as avgQuestionLength,
+//                     AVG(LENGTH(answertext)) as avgAnswerLength,
+//                     ROUND(
+//                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+//                         NULLIF(COUNT(*), 0), 2
+//                     ) as satisfactionRate,
+//                     EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+//                     ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
+//                 FROM feedback
+//                 WHERE feedbacktext IS NOT NULL 
+//                     AND questiontext IS NOT NULL 
+//                     AND ets IS NOT NULL
+//                     ${dateFilter}
+//                 GROUP BY ${dateGrouping}
+//                 ORDER BY ${orderBy} ASC
+//             `,
+//             values: queryParams
+//         };
+
+//         const result = await pool.query(query);
+
+//         // Format the data for frontend consumption
+//         const graphData = result.rows.map(row => ({
+//             date: row.date,
+//             timestamp: parseInt(row.timestamp),
+//             feedbackCount: parseInt(row.feedbackcount) || 0,
+//             likesCount: parseInt(row.likescount) || 0,
+//             dislikesCount: parseInt(row.dislikescount) || 0,
+//             uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+//             uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+//             uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
+//             avgFeedbackLength: parseFloat(row.avgfeedbacklength) || 0,
+//             avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
+//             avgAnswerLength: parseFloat(row.avganswerLength) || 0,
+//             satisfactionRate: parseFloat(row.satisfactionrate) || 0,
+//             // Add formatted values for different time periods
+//             ...(granularity === 'hourly' && {
+//                 hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
+//             }),
+//             ...(granularity === 'weekly' && { week: row.date }),
+//             ...(granularity === 'monthly' && { month: row.date })
+//         }));
+
+//         // Calculate summary statistics
+//         const totalFeedback = graphData.reduce((sum, item) => sum + item.feedbackCount, 0);
+//         const totalLikes = graphData.reduce((sum, item) => sum + item.likesCount, 0);
+//         const totalDislikes = graphData.reduce((sum, item) => sum + item.dislikesCount, 0);
+//         const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
+//         const avgFeedbackPerPeriod = totalFeedback / Math.max(graphData.length, 1);
+//         const overallSatisfactionRate = totalFeedback > 0 ? (totalLikes * 100.0 / totalFeedback) : 0;
+
+//         // Find peak activity period
+//         const peakPeriod = graphData.reduce((max, item) =>
+//             item.feedbackCount > max.feedbackCount ? item : max,
+//             { feedbackCount: 0, date: null }
+//         );
+
+//         res.status(200).json({
+//             success: true,
+//             data: graphData,
+//             metadata: {
+//                 granularity: granularity,
+//                 totalDataPoints: graphData.length,
+//                 dateRange: {
+//                     start: graphData.length > 0 ? graphData[0].date : null,
+//                     end: graphData.length > 0 ? graphData[graphData.length - 1].date : null
+//                 },
+//                 summary: {
+//                     totalFeedback: totalFeedback,
+//                     totalLikes: totalLikes,
+//                     totalDislikes: totalDislikes,
+//                     totalUniqueUsers: totalUniqueUsers,
+//                     avgFeedbackPerPeriod: Math.round(avgFeedbackPerPeriod * 100) / 100,
+//                     overallSatisfactionRate: Math.round(overallSatisfactionRate * 100) / 100,
+//                     peakActivity: {
+//                         date: peakPeriod.date,
+//                         feedbackCount: peakPeriod.feedbackCount
+//                     }
+//                 }
+//             },
+//             filters: {
+//                 search: search,
+//                 startDate: startDate,
+//                 endDate: endDate,
+//                 granularity: granularity,
+//                 appliedStartTimestamp: startTimestamp,
+//                 appliedEndTimestamp: endTimestamp
+//             }
+//         });
+//     } catch (error) {
+//         console.error('Error fetching feedback graph data:', error);
+//         res.status(500).json({
+//             success: false,
+//             error: 'Internal server error'
+//         });
+//     }
+// };
+
 const getFeedbackGraph = async (req, res) => {
-    try {
-        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
-        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
-        const search = req.query.search ? String(req.query.search).trim() : '';
+  try {
+    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
+    const search = req.query.search ? String(req.query.search).trim() : '';
 
-        // Validate granularity parameter
-        if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
-            return res.status(400).json({
-                success: false,
-                error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'"
-            });
-        }
-
-        // Validate date range
-        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({
-                success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
-            });
-        }
-
-        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
-            return res.status(400).json({
-                success: false,
-                error: "Start date cannot be after end date"
-            });
-        }
-
-        // Build date filtering
-        let dateFilter = '';
-        const queryParams = [];
-        let paramIndex = 0;
-
-        if (startTimestamp !== null) {
-            paramIndex++;
-            dateFilter += ` AND ets >= $${paramIndex}`;
-            queryParams.push(startTimestamp);
-        }
-
-        if (endTimestamp !== null) {
-            paramIndex++;
-            dateFilter += ` AND ets <= $${paramIndex}`;
-            queryParams.push(endTimestamp);
-        }
-
-        // Add search filter if provided
-        if (search && search.trim() !== '') {
-            paramIndex++;
-            dateFilter += ` AND (
-                feedbacktext ILIKE $${paramIndex} OR 
-                questiontext ILIKE $${paramIndex} OR 
-                answertext ILIKE $${paramIndex} OR
-                uid ILIKE $${paramIndex} OR
-                channel ILIKE $${paramIndex}
-            )`;
-            queryParams.push(`%${search.trim()}%`);
-        }
-
-        // Define the date truncation and formatting based on granularity
-        let dateGrouping;
-        let dateFormat;
-        let orderBy;
-
-        switch (granularity) {
-            case 'hourly':
-                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
-                orderBy = "hour_bucket";
-                break;
-            case 'weekly':
-                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
-                orderBy = "week_bucket";
-                break;
-            case 'monthly':
-                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
-                orderBy = "month_bucket";
-                break;
-            case 'daily':
-            default:
-                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
-                orderBy = "day_bucket";
-                break;
-        }
-
-        const query = {
-            text: `
-                SELECT 
-                    ${dateFormat} as date,
-                    ${dateGrouping} as ${orderBy},
-                    COUNT(*) as feedbackCount,
-                    COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
-                    COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    COUNT(DISTINCT channel) as uniqueChannelsCount,
-                    AVG(LENGTH(feedbacktext)) as avgFeedbackLength,
-                    AVG(LENGTH(questiontext)) as avgQuestionLength,
-                    AVG(LENGTH(answertext)) as avgAnswerLength,
-                    ROUND(
-                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
-                        NULLIF(COUNT(*), 0), 2
-                    ) as satisfactionRate,
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
-                FROM feedback
-                WHERE feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL 
-                    AND ets IS NOT NULL
-                    ${dateFilter}
-                GROUP BY ${dateGrouping}
-                ORDER BY ${orderBy} ASC
-            `,
-            values: queryParams
-        };
-
-        const result = await pool.query(query);
-
-        // Format the data for frontend consumption
-        const graphData = result.rows.map(row => ({
-            date: row.date,
-            timestamp: parseInt(row.timestamp),
-            feedbackCount: parseInt(row.feedbackcount) || 0,
-            likesCount: parseInt(row.likescount) || 0,
-            dislikesCount: parseInt(row.dislikescount) || 0,
-            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-            uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
-            uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
-            avgFeedbackLength: parseFloat(row.avgfeedbacklength) || 0,
-            avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
-            avgAnswerLength: parseFloat(row.avganswerLength) || 0,
-            satisfactionRate: parseFloat(row.satisfactionrate) || 0,
-            // Add formatted values for different time periods
-            ...(granularity === 'hourly' && {
-                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
-            }),
-            ...(granularity === 'weekly' && { week: row.date }),
-            ...(granularity === 'monthly' && { month: row.date })
-        }));
-
-        // Calculate summary statistics
-        const totalFeedback = graphData.reduce((sum, item) => sum + item.feedbackCount, 0);
-        const totalLikes = graphData.reduce((sum, item) => sum + item.likesCount, 0);
-        const totalDislikes = graphData.reduce((sum, item) => sum + item.dislikesCount, 0);
-        const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        const avgFeedbackPerPeriod = totalFeedback / Math.max(graphData.length, 1);
-        const overallSatisfactionRate = totalFeedback > 0 ? (totalLikes * 100.0 / totalFeedback) : 0;
-
-        // Find peak activity period
-        const peakPeriod = graphData.reduce((max, item) =>
-            item.feedbackCount > max.feedbackCount ? item : max,
-            { feedbackCount: 0, date: null }
-        );
-
-        res.status(200).json({
-            success: true,
-            data: graphData,
-            metadata: {
-                granularity: granularity,
-                totalDataPoints: graphData.length,
-                dateRange: {
-                    start: graphData.length > 0 ? graphData[0].date : null,
-                    end: graphData.length > 0 ? graphData[graphData.length - 1].date : null
-                },
-                summary: {
-                    totalFeedback: totalFeedback,
-                    totalLikes: totalLikes,
-                    totalDislikes: totalDislikes,
-                    totalUniqueUsers: totalUniqueUsers,
-                    avgFeedbackPerPeriod: Math.round(avgFeedbackPerPeriod * 100) / 100,
-                    overallSatisfactionRate: Math.round(overallSatisfactionRate * 100) / 100,
-                    peakActivity: {
-                        date: peakPeriod.date,
-                        feedbackCount: peakPeriod.feedbackCount
-                    }
-                }
-            },
-            filters: {
-                search: search,
-                startDate: startDate,
-                endDate: endDate,
-                granularity: granularity,
-                appliedStartTimestamp: startTimestamp,
-                appliedEndTimestamp: endTimestamp
-            }
-        });
-    } catch (error) {
-        console.error('Error fetching feedback graph data:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Internal server error'
-        });
+    if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
+      return res.status(400).json({ success: false, error: "Invalid granularity" });
     }
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+      return res.status(400).json({ success: false, error: "Invalid date format" });
+    }
+
+    if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+      return res.status(400).json({ success: false, error: "Start date cannot be after end date" });
+    }
+
+    let dateFilter = '';
+    const queryParams = [];
+    let paramIndex = 0;
+
+    if (startTimestamp !== null) { paramIndex++; dateFilter += ` AND (ets::bigint) >= $${paramIndex}`; queryParams.push(startTimestamp); }
+    if (endTimestamp !== null) { paramIndex++; dateFilter += ` AND (ets::bigint) <= $${paramIndex}`; queryParams.push(endTimestamp); }
+    if (search && search.trim() !== '') {
+      paramIndex++;
+      dateFilter += ` AND (
+        feedbacktext ILIKE $${paramIndex} OR 
+        questiontext ILIKE $${paramIndex} OR 
+        answertext ILIKE $${paramIndex} OR
+        uid ILIKE $${paramIndex} OR
+        channel ILIKE $${paramIndex}
+      )`;
+      queryParams.push(`%${search.trim()}%`);
+    }
+
+    // Bucket expressions with IST timezone
+    let dateGrouping, dateFormat, orderBy;
+    switch (granularity) {
+      case 'hourly':
+        dateGrouping = "DATE_TRUNC('hour', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
+        dateFormat = "TO_CHAR(DATE_TRUNC('hour', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD HH24:00')";
+        orderBy = "hour_bucket";
+        break;
+      case 'weekly':
+        dateGrouping = "DATE_TRUNC('week', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
+        dateFormat = "TO_CHAR(DATE_TRUNC('week', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
+        orderBy = "week_bucket";
+        break;
+      case 'monthly':
+        dateGrouping = "DATE_TRUNC('month', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
+        dateFormat = "TO_CHAR(DATE_TRUNC('month', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM')";
+        orderBy = "month_bucket";
+        break;
+      case 'daily':
+      default:
+        dateGrouping = "DATE_TRUNC('day', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
+        dateFormat = "TO_CHAR(DATE_TRUNC('day', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
+        orderBy = "day_bucket";
+        break;
+    }
+
+    const query = {
+      text: `
+        SELECT 
+          ${dateFormat} AS date,
+          ${dateGrouping} AS ${orderBy},
+          COUNT(*) AS feedbackCount,
+          COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS likesCount,
+          COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS dislikesCount,
+          COUNT(DISTINCT uid) AS uniqueUsersCount,
+          COUNT(DISTINCT sid) AS uniqueSessionsCount,
+          COUNT(DISTINCT channel) AS uniqueChannelsCount,
+          AVG(LENGTH(feedbacktext)) AS avgFeedbackLength,
+          AVG(LENGTH(questiontext)) AS avgQuestionLength,
+          AVG(LENGTH(answertext)) AS avgAnswerLength,
+          ROUND(
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
+            NULLIF(COUNT(*), 0), 2
+          ) AS satisfactionRate,
+          EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 AS timestamp,
+          ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) AS hour_of_day` : 'NULL AS hour_of_day'}
+        FROM feedback
+        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL ${dateFilter}
+        GROUP BY ${dateGrouping}
+        ORDER BY ${orderBy} ASC
+      `,
+      values: queryParams
+    };
+
+    const result = await pool.query(query);
+
+    const graphData = result.rows.map(row => ({
+      date: row.date,
+      timestamp: parseInt(row.timestamp, 10),
+      feedbackCount: parseInt(row.feedbackcount, 10) || 0,
+      likesCount: parseInt(row.likescount, 10) || 0,
+      dislikesCount: parseInt(row.dislikescount, 10) || 0,
+      uniqueUsersCount: parseInt(row.uniqueuserscount, 10) || 0,
+      uniqueSessionsCount: parseInt(row.uniquesessionscount, 10) || 0,
+      uniqueChannelsCount: parseInt(row.uniquechannelscount, 10) || 0,
+      avgFeedbackLength: parseFloat(row.avgfeedbacklength) || 0,
+      avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
+      avgAnswerLength: parseFloat(row.avganswerlength) || 0,
+      satisfactionRate: parseFloat(row.satisfactionrate) || 0,
+      ...(granularity === 'hourly' && { hour: parseInt(row.hour_of_day, 10) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') }),
+      ...(granularity === 'weekly' && { week: row.date }),
+      ...(granularity === 'monthly' && { month: row.date })
+    }));
+
+    const totalFeedback = graphData.reduce((sum, item) => sum + item.feedbackCount, 0);
+    const totalLikes = graphData.reduce((sum, item) => sum + item.likesCount, 0);
+    const totalDislikes = graphData.reduce((sum, item) => sum + item.dislikesCount, 0);
+    const totalUniqueUsers = Math.max(...graphData.map(i => i.uniqueUsersCount), 0);
+    const avgFeedbackPerPeriod = totalFeedback / Math.max(graphData.length, 1);
+    const overallSatisfactionRate = totalFeedback > 0 ? (totalLikes * 100.0 / totalFeedback) : 0;
+    const peakPeriod = graphData.reduce((max, item) => item.feedbackCount > max.feedbackCount ? item : max, { feedbackCount: 0, date: null });
+
+    res.status(200).json({
+      success: true,
+      data: graphData,
+      metadata: {
+        granularity,
+        totalDataPoints: graphData.length,
+        dateRange: { start: graphData.length > 0 ? graphData[0].date : null, end: graphData.length > 0 ? graphData[graphData.length-1].date : null },
+        summary: {
+          totalFeedback, totalLikes, totalDislikes, totalUniqueUsers,
+          avgFeedbackPerPeriod: Math.round(avgFeedbackPerPeriod*100)/100,
+          overallSatisfactionRate: Math.round(overallSatisfactionRate*100)/100,
+          peakActivity: { date: peakPeriod.date, feedbackCount: peakPeriod.feedbackCount }
+        }
+      },
+      filters: { search, startDate, endDate, granularity, appliedStartTimestamp: startTimestamp, appliedEndTimestamp: endTimestamp }
+    });
+
+  } catch (error) {
+    console.error('Error fetching feedback graph data:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 };
 
 module.exports = {
