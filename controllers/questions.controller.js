@@ -723,14 +723,13 @@ const getQuestionsGraph = async (req, res) => {
 
     if (startTimestamp !== null) {
       paramIndex++;
-      // dateFilter += ` AND ets >= $${paramIndex}`;
-      dateFilter += ` AND (ets::bigint) >= $${paramIndex}`;
+      dateFilter += ` AND ets >= $${paramIndex}`;
       queryParams.push(startTimestamp);
     }
 
     if (endTimestamp !== null) {
       paramIndex++;
-      dateFilter += ` AND (ets::bigint) <= $${paramIndex}`;
+      dateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
 
@@ -752,28 +751,32 @@ const getQuestionsGraph = async (req, res) => {
     let orderBy;
 
     switch (granularity) {
-  case "hourly":
-    dateGrouping = "DATE_TRUNC('hour', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
-    dateFormat = "TO_CHAR(DATE_TRUNC('hour', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD HH24:00')";
-    orderBy = "hour_bucket";
-    break;
-  case "weekly":
-    dateGrouping = "DATE_TRUNC('week', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
-    dateFormat = "TO_CHAR(DATE_TRUNC('week', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
-    orderBy = "week_bucket";
-    break;
-  case "monthly":
-    dateGrouping = "DATE_TRUNC('month', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
-    dateFormat = "TO_CHAR(DATE_TRUNC('month', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM')";
-    orderBy = "month_bucket";
-    break;
-  case "daily":
-  default:
-    dateGrouping = "DATE_TRUNC('day', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata')";
-    dateFormat = "TO_CHAR(DATE_TRUNC('day', (TO_TIMESTAMP((ets::bigint)/1000) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
-    orderBy = "day_bucket";
-    break;
-}
+      case "hourly":
+        dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
+        dateFormat =
+          "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+        orderBy = "hour_bucket";
+        break;
+      case "weekly":
+        dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
+        dateFormat =
+          "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+        orderBy = "week_bucket";
+        break;
+      case "monthly":
+        dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
+        dateFormat =
+          "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+        orderBy = "month_bucket";
+        break;
+      case "daily":
+      default:
+        dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
+        dateFormat =
+          "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+        orderBy = "day_bucket";
+        break;
+    }
 
     const query = {
       text: `
@@ -813,14 +816,12 @@ const getQuestionsGraph = async (req, res) => {
       uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
       uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
       avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
-      avgAnswerLength: parseFloat(row.avganswerlength) || 0,
+      avgAnswerLength: parseFloat(row.avganswerLength) || 0,
       // Add formatted values for different time periods
       ...(granularity === "hourly" && {
-        // hour:
-        //   parseInt(row.hour_of_day) ||
-        //   parseInt(row.date?.split(" ")[1]?.split(":")[0] || "0"),
         hour:
-  (row.hour_of_day !== null ? parseInt(row.hour_of_day, 10) : parseInt(row.date?.split(" ")[1]?.split(":")[0] || "0", 10)),
+          parseInt(row.hour_of_day) ||
+          parseInt(row.date?.split(" ")[1]?.split(":")[0] || "0"),
       }),
       ...(granularity === "weekly" && { week: row.date }),
       ...(granularity === "monthly" && { month: row.date }),
@@ -831,14 +832,10 @@ const getQuestionsGraph = async (req, res) => {
       (sum, item) => sum + item.questionsCount,
       0
     );
-
-    // const totalUniqueUsers = Math.max(
-    //   ...graphData.map((item) => item.uniqueUsersCount),
-    //   0
-    // );
-
-    const totalUniqueUsers = graphData.length > 0 ? Math.max(...graphData.map((i) => i.uniqueUsersCount)) : 0;
-
+    const totalUniqueUsers = Math.max(
+      ...graphData.map((item) => item.uniqueUsersCount),
+      0
+    );
     const avgQuestionsPerPeriod =
       totalQuestions / Math.max(graphData.length, 1);
 
