@@ -141,7 +141,6 @@ const getUserLoginAnalytics = async (req, res) => {
 };
 
 // Get overall dashboard statistics - OPTIMIZED to return only essential metrics
-
 const getDashboardStats = async (req, res) => {
   try {
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
