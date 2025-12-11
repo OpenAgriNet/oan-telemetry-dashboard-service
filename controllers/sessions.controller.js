@@ -1,38 +1,5 @@
 const pool = require('../services/db');
-
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-    let startTimestamp = null;
-    let endTimestamp = null;
-
-    if (startDate) {
-        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
-            // Unix timestamp provided
-            startTimestamp = parseInt(startDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(startDate);
-            if (!isNaN(date.getTime())) {
-                startTimestamp = date.getTime();
-            }
-        }
-    }
-
-    if (endDate) {
-        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
-            // Unix timestamp provided
-            endTimestamp = parseInt(endDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(endDate);
-            if (!isNaN(date.getTime())) {
-                endTimestamp = date.getTime();
-            }
-        }
-    }
-
-    return { startTimestamp, endTimestamp };
-}
+const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 
 async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
     const offset = (page - 1) * limit;
@@ -54,6 +21,12 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         dateConditions += ` AND ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
+
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    const futureFilterParam = paramIndex;
+    dateConditions += ` AND ets <= $${paramIndex}`;
+    queryParams.push(Date.now());
 
     // Base CTE query with date filtering applied to all tables
     let query = `
@@ -136,6 +109,11 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
         queryParams.push(endTimestamp);
     }
 
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    dateConditions += ` AND ets <= $${paramIndex}`;
+    queryParams.push(Date.now());
+
     let query = `
         WITH combined_sessions AS (
             SELECT 
@@ -197,10 +175,12 @@ function formatSessionData(row) {
             // First try to parse the timestamp if it's in milliseconds
             const timestamp = parseInt(row.session_time);
             if (!isNaN(timestamp)) {
-                sessionTime = new Date(timestamp).toISOString().slice(0, 19);
+                // Convert to IST timezone
+                sessionTime = formatDateToIST(timestamp);
             } else {
                 // If not a timestamp, try parsing as a date string
-                sessionTime = new Date(row.session_time).toISOString().slice(0, 19);
+                const parsedDate = new Date(row.session_time);
+                sessionTime = formatDateToIST(parsedDate.getTime());
             }
         }
     } catch (err) {
