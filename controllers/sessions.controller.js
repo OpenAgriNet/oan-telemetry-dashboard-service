@@ -732,6 +732,7 @@ const getSessionsGraph = async (req, res) => {
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
+    
 
         // Add search filter if provided
         if (search && search.trim() !== '') {
@@ -742,6 +743,12 @@ const getSessionsGraph = async (req, res) => {
             )`;
             queryParams.push(`%${search.trim()}%`);
         }
+
+        // Exclude future sessions (ets > now)
+let futureFilter = '';
+paramIndex++;
+futureFilter = ` AND ets <= $${paramIndex}`;
+queryParams.push(Date.now());
 
         // Define the date truncation and formatting based on granularity
         let dateGrouping;
@@ -783,7 +790,7 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'question' as activity_type
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
@@ -793,7 +800,7 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'feedback' as activity_type
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
@@ -803,7 +810,7 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'error' as activity_type
                     FROM errordetails
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                 ),
                 session_aggregates AS (
                     SELECT 

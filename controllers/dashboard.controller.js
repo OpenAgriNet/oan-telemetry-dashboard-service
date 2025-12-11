@@ -156,11 +156,14 @@ const getDashboardStats = async (req, res) => {
     let paramIndex = 0;
     let questionDateFilter = '';
     let feedbackDateFilter = '';
+    let errordetailsDateFilter = '';
+    let futureFilter = '';
 
     if (startTimestamp !== null) {
       paramIndex++;
       questionDateFilter += ` AND ets >= $${paramIndex}`;
       feedbackDateFilter += ` AND ets >= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets >= $${paramIndex}`
       queryParams.push(startTimestamp);
     }
 
@@ -168,8 +171,13 @@ const getDashboardStats = async (req, res) => {
       paramIndex++;
       questionDateFilter += ` AND ets <= $${paramIndex}`;
       feedbackDateFilter += ` AND ets <= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
+
+    paramIndex++;
+    queryParams.push(Date.now());
+    futureFilter = ` AND ets <= $${paramIndex}`;
 
     const query = {
       text: `
@@ -181,9 +189,38 @@ const getDashboardStats = async (req, res) => {
           WHERE uid IS NOT NULL ${questionDateFilter}
         ),
         session_stats AS (
-          SELECT COUNT(DISTINCT sid) AS total_sessions
-          FROM questions
-          WHERE sid IS NOT NULL ${questionDateFilter}
+          -- combine all session-related rows from questions, feedback and errordetails
+          WITH combined_sessions AS (
+            SELECT
+              sid,
+              uid,
+              questiontext,
+              ets
+            FROM questions
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter} ${futureFilter}
+            UNION ALL
+            SELECT
+              sid,
+              uid,
+              NULL AS questiontext,
+              ets
+            FROM feedback
+            WHERE sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
+            UNION ALL
+            SELECT
+              sid,
+              uid,
+              NULL AS questiontext,
+              ets
+            FROM errordetails
+            WHERE sid IS NOT NULL ${errordetailsDateFilter} ${futureFilter}
+          )
+          SELECT COUNT(*) AS total_sessions
+          FROM (
+            SELECT sid, uid, COUNT(questiontext) AS question_count, MAX(ets) AS session_time
+            FROM combined_sessions
+            GROUP BY sid, uid
+          ) session_groups
         ),
         question_stats AS (
           SELECT COUNT(*) AS total_questions
