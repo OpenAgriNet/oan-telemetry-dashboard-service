@@ -760,11 +760,7 @@ const getQuestionsGraph = async (req, res) => {
                     ${dateFormat} as date,
                     ${dateGrouping} as ${orderBy},
                     COUNT(*) as questionsCount,
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    COUNT(DISTINCT channel) as uniqueChannelsCount,
-                    AVG(LENGTH(questiontext)) as avgQuestionLength,
-                    AVG(LENGTH(answertext)) as avgAnswerLength,
+              
                     EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
                     ${granularity === "hourly"
           ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
@@ -781,6 +777,12 @@ const getQuestionsGraph = async (req, res) => {
       values: queryParams,
     };
 
+          // COUNT(DISTINCT uid) as uniqueUsersCount,
+          //           COUNT(DISTINCT sid) as uniqueSessionsCount,
+          //           COUNT(DISTINCT channel) as uniqueChannelsCount,
+          //           AVG(LENGTH(questiontext)) as avgQuestionLength,
+          //           AVG(LENGTH(answertext)) as avgAnswerLength,
+
     const result = await pool.query(query);
 
     // Format the data for frontend consumption
@@ -788,11 +790,11 @@ const getQuestionsGraph = async (req, res) => {
       date: row.date,
       timestamp: parseInt(row.timestamp),
       questionsCount: parseInt(row.questionscount) || 0,
-      uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-      uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
-      uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
-      avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
-      avgAnswerLength: parseFloat(row.avganswerLength) || 0,
+      // uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+      // uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+      // uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
+      // avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
+      // avgAnswerLength: parseFloat(row.avganswerLength) || 0,
       // Add formatted values for different time periods
       ...(granularity === "hourly" && {
         hour:
@@ -808,12 +810,12 @@ const getQuestionsGraph = async (req, res) => {
       (sum, item) => sum + item.questionsCount,
       0
     );
-    const totalUniqueUsers = Math.max(
-      ...graphData.map((item) => item.uniqueUsersCount),
-      0
-    );
-    const avgQuestionsPerPeriod =
-      totalQuestions / Math.max(graphData.length, 1);
+    // const totalUniqueUsers = Math.max(
+    //   ...graphData.map((item) => item.uniqueUsersCount),
+    //   0
+    // );
+    // const avgQuestionsPerPeriod =
+    //   totalQuestions / Math.max(graphData.length, 1);
 
     // Find peak activity period
     const peakPeriod = graphData.reduce(
@@ -834,8 +836,6 @@ const getQuestionsGraph = async (req, res) => {
         },
         summary: {
           totalQuestions: totalQuestions,
-          totalUniqueUsers: totalUniqueUsers,
-          avgQuestionsPerPeriod: Math.round(avgQuestionsPerPeriod * 100) / 100,
           peakActivity: {
             date: peakPeriod.date,
             questionsCount: peakPeriod.questionsCount,
