@@ -49,13 +49,22 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
 
     const baseWhere = whereConditions.join(' AND ');
 
+    //  WITH base_users AS (
+    //         SELECT uid, ets
+    //         FROM questions
+    //         WHERE ${baseWhere}
+    //         ORDER BY  ets DESC
+    //         group BY uid,
+    //         LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+    //     ),
+
     // Optimized query - fetch users first, then join stats
     const query = `
         WITH base_users AS (
-            SELECT DISTINCT uid
+            SELECT DISTINCT on (uid) uid, ets
             FROM questions
             WHERE ${baseWhere}
-            ORDER BY uid
+            ORDER BY uid, ets DESC
             LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
         ),
         user_questions AS (
@@ -1223,7 +1232,6 @@ const getUserGraph = async (req, res) => {
                     ${dateGrouping} as ${orderBy},
                    
                     COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
                     COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS newUsersCount,
                     (COUNT(DISTINCT uid) - COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END)) AS returningUsersCount,
                     
@@ -1231,9 +1239,7 @@ const getUserGraph = async (req, res) => {
                     ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM (
                     SELECT uid, sid, ets, is_new FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets, NULL::int AS is_new  FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ) AS combined
+                    ) AS combined
                 WHERE 1=1
                     ${dateFilter}
                 GROUP BY ${dateGrouping}
@@ -1249,7 +1255,6 @@ const getUserGraph = async (req, res) => {
             date: row.date,
             timestamp: parseInt(row.timestamp),
             uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-            uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
             newUsersCount: parseInt(row.newuserscount) || 0,
             returningUsersCount: parseInt(row.returninguserscount) || 0,
             // Add formatted values for different time periods

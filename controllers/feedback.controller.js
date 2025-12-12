@@ -1,5 +1,5 @@
 const pool = require('../services/db');
-const { formatUTCToISTDate } = require('../utils/dateUtils');
+const { formatUTCToISTDate, formatDateToIST } = require('../utils/dateUtils');
 
 // Helper function to parse and validate date range parameters
 function parseDateRange(startDate, endDate) {
@@ -194,14 +194,28 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
 }
 
 function formatFeedbackData(feedbackItem) {
-    const dateObj = new Date(feedbackItem.created_at);
+    // const dateObj = new Date(feedbackItem.created_at);
+    
+    // // Use utility function to format UTC to IST date
+    // const formattedDate = formatUTCToISTDate(dateObj);
+    let feedbackTime = null;
+      if (feedbackItem.created_at) {
+            // First try to parse the timestamp if it's in milliseconds
+            const timestamp = parseInt(feedbackItem.created_at);
+            if (!isNaN(timestamp)) {
+                // Convert to IST timezone
+                feedbackTime = formatDateToIST(timestamp);
+            } else {
+                // If not a timestamp, try parsing as a date string
+                const parsedDate = new Date(feedbackItem.created_at);
+                feedbackTime = formatDateToIST(parsedDate.getTime());
+            }
+        }
 
-    // Use utility function to format UTC to IST date
-    const formattedDate = formatUTCToISTDate(dateObj);
-
+   
     return {
         qid: feedbackItem.qid,
-        date: formattedDate,
+        date: feedbackTime,
         user: feedbackItem.user_id,
         question: feedbackItem.questiontext,
         sessionId: feedbackItem.session_id,
@@ -649,12 +663,6 @@ const getFeedbackGraph = async (req, res) => {
                     COUNT(*) as feedbackCount,
                     COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
                     COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    COUNT(DISTINCT channel) as uniqueChannelsCount,
-                    AVG(LENGTH(feedbacktext)) as avgFeedbackLength,
-                    AVG(LENGTH(questiontext)) as avgQuestionLength,
-                    AVG(LENGTH(answertext)) as avgAnswerLength,
                     ROUND(
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
                         NULLIF(COUNT(*), 0), 2
@@ -681,13 +689,6 @@ const getFeedbackGraph = async (req, res) => {
             feedbackCount: parseInt(row.feedbackcount) || 0,
             likesCount: parseInt(row.likescount) || 0,
             dislikesCount: parseInt(row.dislikescount) || 0,
-            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-            uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
-            uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
-            avgFeedbackLength: parseFloat(row.avgfeedbacklength) || 0,
-            avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
-            avgAnswerLength: parseFloat(row.avganswerLength) || 0,
-            satisfactionRate: parseFloat(row.satisfactionrate) || 0,
             // Add formatted values for different time periods
             ...(granularity === 'hourly' && {
                 hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
@@ -700,9 +701,6 @@ const getFeedbackGraph = async (req, res) => {
         const totalFeedback = graphData.reduce((sum, item) => sum + item.feedbackCount, 0);
         const totalLikes = graphData.reduce((sum, item) => sum + item.likesCount, 0);
         const totalDislikes = graphData.reduce((sum, item) => sum + item.dislikesCount, 0);
-        const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        const avgFeedbackPerPeriod = totalFeedback / Math.max(graphData.length, 1);
-        const overallSatisfactionRate = totalFeedback > 0 ? (totalLikes * 100.0 / totalFeedback) : 0;
 
         // Find peak activity period
         const peakPeriod = graphData.reduce((max, item) =>
@@ -724,9 +722,6 @@ const getFeedbackGraph = async (req, res) => {
                     totalFeedback: totalFeedback,
                     totalLikes: totalLikes,
                     totalDislikes: totalDislikes,
-                    totalUniqueUsers: totalUniqueUsers,
-                    avgFeedbackPerPeriod: Math.round(avgFeedbackPerPeriod * 100) / 100,
-                    overallSatisfactionRate: Math.round(overallSatisfactionRate * 100) / 100,
                     peakActivity: {
                         date: peakPeriod.date,
                         feedbackCount: peakPeriod.feedbackCount
