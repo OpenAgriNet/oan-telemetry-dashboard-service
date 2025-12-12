@@ -817,11 +817,7 @@ queryParams.push(Date.now());
                         date,
                         time_bucket,
                         COUNT(DISTINCT CONCAT(sid, '_', uid)) as sessionsCount,
-                        COUNT(DISTINCT uid) as uniqueUsersCount,
                         COUNT(DISTINCT sid) as uniqueSessionIdsCount,
-                        COUNT(CASE WHEN activity_type = 'question' THEN 1 END) as questionsCount,
-                        COUNT(CASE WHEN activity_type = 'feedback' THEN 1 END) as feedbackCount,
-                        COUNT(CASE WHEN activity_type = 'error' THEN 1 END) as errorsCount,
                         EXTRACT(EPOCH FROM time_bucket) * 1000 as timestamp,
                         ${granularity === 'hourly' ? `EXTRACT(HOUR FROM time_bucket) as hour_of_day` : 'NULL as hour_of_day'}
                     FROM combined_sessions
@@ -832,19 +828,7 @@ queryParams.push(Date.now());
                     timestamp,
                     hour_of_day,
                     sessionsCount,
-                    uniqueUsersCount,
-                    uniqueSessionIdsCount,
-                    questionsCount,
-                    feedbackCount,
-                    errorsCount,
-                    CASE 
-                        WHEN sessionsCount > 0 THEN ROUND(questionsCount::decimal / sessionsCount, 2)
-                        ELSE 0 
-                    END as avgQuestionsPerSession,
-                    CASE 
-                        WHEN sessionsCount > 0 THEN ROUND(feedbackCount::decimal / sessionsCount, 2)
-                        ELSE 0 
-                    END as avgFeedbackPerSession
+                    uniqueSessionIdsCount
                 FROM session_aggregates
                 ORDER BY time_bucket ASC
             `,
@@ -858,13 +842,7 @@ queryParams.push(Date.now());
             date: row.date,
             timestamp: parseInt(row.timestamp),
             sessionsCount: parseInt(row.sessionscount) || 0,
-            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
             uniqueSessionIdsCount: parseInt(row.uniquesessionidscount) || 0,
-            questionsCount: parseInt(row.questionscount) || 0,
-            feedbackCount: parseInt(row.feedbackcount) || 0,
-            errorsCount: parseInt(row.errorscount) || 0,
-            avgQuestionsPerSession: parseFloat(row.avgquestionspersession) || 0,
-            avgFeedbackPerSession: parseFloat(row.avgfeedbackpersession) || 0,
             // Add formatted values for different time periods
             ...(granularity === 'hourly' && {
                 hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
@@ -875,9 +853,6 @@ queryParams.push(Date.now());
 
         // Calculate summary statistics
         const totalSessions = graphData.reduce((sum, item) => sum + item.sessionsCount, 0);
-        const totalQuestions = graphData.reduce((sum, item) => sum + item.questionsCount, 0);
-        const totalUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        const avgSessionsPerPeriod = totalSessions / Math.max(graphData.length, 1);
 
         // Find peak activity period
         const peakPeriod = graphData.reduce((max, item) =>
@@ -897,9 +872,6 @@ queryParams.push(Date.now());
                 },
                 summary: {
                     totalSessions: totalSessions,
-                    totalQuestions: totalQuestions,
-                    totalUsers: totalUsers,
-                    avgSessionsPerPeriod: Math.round(avgSessionsPerPeriod * 100) / 100,
                     peakActivity: {
                         date: peakPeriod.date,
                         sessionsCount: peakPeriod.sessionsCount
