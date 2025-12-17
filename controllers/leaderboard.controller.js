@@ -10,7 +10,7 @@ const { get } = require("../routes/leaderboard.Routes");
 const getTop10ByTaluka = async (req, res) => {
   try {
     // Get lgd_code from JWT token (extracted by leaderboardAuthController)
-    const registeredLgdCode =
+    const registeredLgdCode = 
       req.registeredLgdCode || req.user.registered_lgd_code;
 
     if (!registeredLgdCode) {
@@ -72,7 +72,7 @@ const getTop10ByTaluka = async (req, res) => {
 const getTop10ByDistrict = async (req, res) => {
   try {
     // Get lgd_code from JWT token (extracted by leaderboardAuthController)
-    const registeredLgdCode =
+    const registeredLgdCode = 
       req.registeredLgdCode || req.user.registered_lgd_code;
 
     if (!registeredLgdCode) {
@@ -351,6 +351,8 @@ const getUsersByVillage = async (req, res) => {
   }
 };
 
+// Get top 10 users by lgd_code for the month
+
 const getTop10Month = async (req, res) => {
   try {
     const registeredLgdCode =
@@ -373,47 +375,75 @@ const getTop10Month = async (req, res) => {
       return d;
     };
 
-    const now = new Date(); // server current date/time
+    // const now = new Date(); // server current date/time
     const userStart = parseDate(req.query.start_date);
     const userEnd = parseDate(req.query.end_date);
 
     // start = either userStart or first day of current month at 00:00:00
-    const start =
-      userStart ?? new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    // const start =
+    //   userStart ?? new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
 
     // end = either userEnd or today at 23:59:59.999 (so whole day is included)
-    const end =
-      userEnd ??
-      new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        23,
-        59,
-        59,
-        999
-      );
+    // const end =
+    //   userEnd ??
+    //   new Date(
+    //     now.getFullYear(),
+    //     now.getMonth(),
+    //     now.getDate(),
+    //     23,
+    //     59,
+    //     59,
+    //     999
+    //   );
+
+    // IST-based "today" parts
+const istNow = new Date();
+
+const start = userStart ?? new Date(
+  Date.UTC(
+    istNow.getFullYear(),     // IST year
+    istNow.getMonth(),        // IST month
+    1,                        // first day of month
+    0, 0, 0, 0
+  )
+);
+
+const end = userEnd ?? new Date(
+  Date.UTC(
+    istNow.getFullYear(),     // IST year
+    istNow.getMonth(),        // IST month
+    istNow.getDate(),         // IST today
+    23, 59, 59, 999
+  )
+);
 
     // if start > end, swap or return error
     let startTs = start;
     let endTs = end;
     if (startTs > endTs) {
-      const tmp = startTs;
-      startTs = endTs;
-      endTs = tmp;
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date range: start_date must be before end_date",
+      });
+      // const tmp = startTs;
+      // startTs = endTs;
+      // endTs = tmp;
     }
 
     // Convert to ISO strings acceptable by Postgres (or pass Date objects directly)
     // const startIso = startTs.toISOString(); // e.g. 2025-10-01T00:00:00.000Z
     // const endIso = endTs.toISOString(); // e.g. 2025-10-28T23:59:59.999Z
 
-    const startIso = new Date(startTs.getTime() + 5.5 * 60 * 60 * 1000)
-      .toISOString()
-      .replace("Z", "+05:30");
+    // const startIso = new Date(startTs.getTime() + 5.5 * 60 * 60 * 1000)
+    //   .toISOString()
+    //   .replace("Z", "+05:30");
 
-    const endIso = new Date(endTs.getTime() + 5.5 * 60 * 60 * 1000)
-      .toISOString()
-      .replace("Z", "+05:30");
+    // const endIso = new Date(endTs.getTime() + 5.5 * 60 * 60 * 1000)
+    //   .toISOString()
+    //   .replace("Z", "+05:30");
+
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
 
     // console.log(
     //   `getTop10Month: Querying from ${startIso} to ${endIso} for lgd_code ${registeredLgdCode}`
@@ -458,6 +488,103 @@ const getTop10Month = async (req, res) => {
   }
 };
 
+// Get active farmers by taluka within a date range
+
+const getActiveFarmersByTaluka = async (req, res) => {
+  try {
+    const { taluka_code, start_date, end_date } = req.query;
+
+    if (!taluka_code) {
+      return res.status(400).json({
+        success: false,
+        message: "taluka_code is required",
+      });
+    }
+
+    // ---- Date handling (SAME as getTop10Month style) ----
+    const parseDate = (v) => {
+      if (!v) return null;
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return null;
+      return d;
+    };
+
+    const userStart = parseDate(start_date);
+    const userEnd = parseDate(end_date);
+
+    let startTs = userStart;
+    let endTs = userEnd;
+
+    // swap if inverted
+    if (startTs || endTs) {
+      if (!startTs) {
+        return res.status(400).json({
+          success: false,
+          message: "start_date is required if end_date is provided",
+        });
+      }
+      if (!endTs) {
+        return res.status(400).json({
+          success: false,
+          message: "end_date is required if start_date is provided",
+        });
+      }
+      if(startTs > endTs) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date range: start_date must be before end_date",
+      });
+      }
+    }
+
+    // Convert to IST ISO strings (same logic)
+   const startIso = startTs
+  ? `${start_date}T00:00:00.000Z`
+  : null;
+
+const endIso = endTs
+  ? `${end_date}T23:59:59.999Z`
+  : null
+    // ---- Query ----
+    const query = `
+          SELECT DISTINCT l.farmer_id
+          FROM public.questions q
+          INNER JOIN public.leaderboard l
+          ON l.unique_id = q.unique_id
+          WHERE l.taluka_code = $1
+          AND l.farmer_id IS NOT NULL
+          AND l.farmer_id <> ''
+          AND (
+          ($2::timestamptz IS NULL OR q.created_at >= $2)
+          AND
+          ($3::timestamptz IS NULL OR q.created_at <= $3)
+          );
+    `;
+    
+    const result = await pool.query(query, [
+      taluka_code,
+      startIso,
+      endIso,
+    ]);
+
+    return res.json({
+      success: true,
+      taluka_code,
+      start_date: startIso,
+      end_date: endIso,
+      count: result.rows.length,
+      data: result.rows, 
+    });
+  } catch (err) {
+    console.error("Error in getActiveFarmersByTaluka:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: err.message,
+    });
+  }
+};
+
 module.exports = {
   getTop10ByTaluka,
   getTop10ByDistrict,
@@ -466,4 +593,5 @@ module.exports = {
   getUsersByTaluka,
   getUsersByVillage,
   getTop10Month,
+  getActiveFarmersByTaluka
 };
