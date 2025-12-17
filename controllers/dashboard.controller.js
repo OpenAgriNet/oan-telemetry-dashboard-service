@@ -3,40 +3,7 @@ const { getTotalFeedbackCount, getTotalLikesDislikesCount } = require('./feedbac
 const { getTotalQuestionsCount } = require('./questions.controller');
 const { getTotalSessionsCount } = require('./sessions.controller');
 const { getTotalUsersCount } = require('./user.controller');
-
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-    let startTimestamp = null;
-    let endTimestamp = null;
-
-    if (startDate) {
-        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
-            // Unix timestamp provided
-            startTimestamp = parseInt(startDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(startDate);
-            if (!isNaN(date.getTime())) {
-                startTimestamp = date.getTime();
-            }
-        }
-    }
-
-    if (endDate) {
-        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
-            // Unix timestamp provided
-            endTimestamp = parseInt(endDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(endDate);
-            if (!isNaN(date.getTime())) {
-                endTimestamp = date.getTime();
-            }
-        }
-    }
-
-    return { startTimestamp, endTimestamp };
-}
+const { parseDateRange } = require('../utils/dateUtils');
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly

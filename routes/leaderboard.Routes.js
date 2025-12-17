@@ -15,4 +15,7 @@ router.get("/district", leaderboardController.getUsersByDistrict);
 router.get("/taluka", leaderboardController.getUsersByTaluka);
 router.get("/village", leaderboardController.getUsersByVillage);
 
+// Route for getting active farmers by taluka within a date range
+router.get("/reports/active-farmers", leaderboardController.getActiveFarmersByTaluka);
+
 module.exports = router;
