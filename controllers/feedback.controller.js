@@ -1,7 +1,7 @@
 const pool = require('../services/db');
 const { formatUTCToISTDate, formatDateToIST, parseDateRange } = require('../utils/dateUtils');
 
-async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC') {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -51,7 +51,14 @@ async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDa
         queryParams.push(`%${search.trim()}%`);
     }
 
-    query += ` ORDER BY created_at DESC`;
+     const sortArray = ['created_at', 'user_id', 'feedbacktype', 'feedbacktext'];
+
+         if(sortArray.includes(sortBy)) {
+        query += ` ORDER BY ${sortBy} ${sortOrder}`;
+        } else {    
+        query += ` ORDER BY created_at DESC`;
+        }
+
 
     // Add pagination
     paramIndex++;
@@ -202,6 +209,8 @@ async function getAllFeedback(req, res) {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
 
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -224,7 +233,7 @@ async function getAllFeedback(req, res) {
 
         // Fetch paginated feedback data and total count
         const [rawFeedbackData, totalCount] = await Promise.all([
-            fetchAllFeedbackFromDB(page, limit, search, startDate, endDate),
+            fetchAllFeedbackFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalFeedbackCount(search, startDate, endDate)
         ]);
 
