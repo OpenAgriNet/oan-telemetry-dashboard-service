@@ -6,7 +6,9 @@ async function fetchQuestionsFromDB(
   limit = 10,
   search = "",
   startDate = null,
-  endDate = null
+  endDate = null,
+  sortBy = null, 
+  sortOrder = "DESC"
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -62,8 +64,15 @@ async function fetchQuestionsFromDB(
     queryParams.push(`%${search.trim()}%`);
   }
 
-  query += ` ORDER BY ets DESC`;
+  const sortArray = ["id", "user_id", "session_id", "dateAsked"];
+  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "dateAsked" ? "ets" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY ets DESC`;
+  }
 
+  // console.log("Final Query:", query);
   // Add pagination
   paramIndex++;
   query += ` LIMIT $${paramIndex}`;
@@ -165,6 +174,9 @@ const getQuestions = async (req, res) => {
       : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
+    const sortBy = req.query.sortBy;
+    const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
+
     // Additional validation for search term length to prevent abuse
     if (search.length > 1000) {
       return res.status(400).json({
@@ -195,7 +207,7 @@ const getQuestions = async (req, res) => {
 
     // Fetch paginated questions data and total count
     const [questionsData, totalCount] = await Promise.all([
-      fetchQuestionsFromDB(page, limit, search, startDate, endDate),
+      fetchQuestionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
       getTotalQuestionsCount(search, startDate, endDate),
     ]);
 

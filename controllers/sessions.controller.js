@@ -1,7 +1,7 @@
 const pool = require('../services/db');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 
-async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC') {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -73,9 +73,15 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         )`;
         queryParams.push(`%${search.trim()}%`);
     }
-
-    query += ` ORDER BY session_time DESC`;
-
+    
+    const sortArray = ["question_count", "username", "session_id", "session_time"];
+  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "session_time" ? "session_time" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY session_time DESC`
+  };
+    
     // Add pagination
     paramIndex++;
     query += ` LIMIT $${paramIndex}`;
@@ -84,7 +90,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     paramIndex++;
     query += ` OFFSET $${paramIndex}`;
     queryParams.push(offset);
-
+ 
     const result = await pool.query(query, queryParams);
     return result.rows;
 }
@@ -207,6 +213,8 @@ const getSessions = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
 
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -234,7 +242,7 @@ const getSessions = async (req, res) => {
 
         // Fetch paginated sessions data and total count
         const [sessionsData, totalCount] = await Promise.all([
-            fetchSessionsFromDB(page, limit, search, startDate, endDate),
+            fetchSessionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalSessionsCount(search, startDate, endDate)
         ]);
 
