@@ -7,7 +7,9 @@ async function fetchAllErrorsFromDB(
   search = "",
   startDate = null,
   endDate = null,
-  errorType = ""
+  errorType = "",
+  sortBy = null,
+  sortOrder = "DESC"
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -57,7 +59,13 @@ async function fetchAllErrorsFromDB(
     queryParams.push(`%${search.trim()}%`);
   }
 
-  query += ` ORDER BY created_at DESC`;
+     const sortArray = ["created_at", "user_id", "session_id", "error_message"];
+  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY created_at DESC`;
+  }
 
   // Add pagination
   paramIndex++;
@@ -216,10 +224,13 @@ async function getAllErrors(req, res) {
       startDate,
       endDate,
       errorType = "",
+      sortBy,
+      sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC"
     } = req.query;
-    console.log(
-      `Fetching errors - Page: ${page}, Limit: ${limit}, Search: "${search}", StartDate: ${startDate}, EndDate: ${endDate}, ErrorType: ${errorType}`
-    );
+    // console.log(
+    //   `Fetching errors - Page: ${page}, Limit: ${limit}, Search: "${search}", StartDate: ${startDate}, EndDate: ${endDate}, ErrorType: ${errorType} sortBy: ${sortBy}, sortOrder: ${sortOrder}`
+    // );
+
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 10;
 
@@ -238,7 +249,9 @@ async function getAllErrors(req, res) {
       search,
       startDate,
       endDate,
-      errorType
+      errorType,
+      sortBy,
+      sortOrder
     );
 
     // Get total count for pagination
