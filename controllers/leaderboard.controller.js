@@ -459,6 +459,7 @@ const end = userEnd ?? new Date(
     WHERE registered_location->>'lgd_code' = $1
       AND unique_id IS NOT NULL
       AND unique_id <> ''
+      AND unique_id <> '696354'
       AND farmer_id IS NOT NULL
       AND farmer_id <> ''
       AND created_at BETWEEN $2 AND $3
