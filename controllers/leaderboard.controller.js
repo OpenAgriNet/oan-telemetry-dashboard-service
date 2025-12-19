@@ -43,6 +43,8 @@ const getTop10ByTaluka = async (req, res) => {
       WHERE registered_location->>'lgd_code' = ANY($1::text[])
         AND unique_id IS NOT NULL
         AND unique_id <> ''
+        AND farmer_id IS NOT NULL
+        AND farmer_id <> ''
       ORDER BY record_count DESC
       LIMIT 10
     `;
@@ -105,6 +107,8 @@ const getTop10ByDistrict = async (req, res) => {
       WHERE registered_location->>'lgd_code' = ANY($1::text[])
         AND unique_id IS NOT NULL
         AND unique_id <> ''
+        AND farmer_id IS NOT NULL
+        AND farmer_id <> ''
       ORDER BY record_count DESC
       LIMIT 10
     `;
@@ -152,6 +156,8 @@ const getTop10ByState = async (req, res) => {
       FROM leaderboard
       WHERE unique_id IS NOT NULL
         AND unique_id <> ''
+        AND farmer_id IS NOT NULL
+        AND farmer_id <> ''
       ORDER BY record_count DESC
       LIMIT 10
     `;
