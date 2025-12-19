@@ -60,7 +60,6 @@ async function fetchAllErrorsFromDB(
   }
 
      const sortArray = ["created_at", "user_id", "session_id", "error_message"];
-  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
   if (sortArray.includes(sortBy)) {
     query += ` ORDER BY ${sortBy} ${sortOrder}`;
   } else {
@@ -227,9 +226,6 @@ async function getAllErrors(req, res) {
       sortBy,
       sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC"
     } = req.query;
-    // console.log(
-    //   `Fetching errors - Page: ${page}, Limit: ${limit}, Search: "${search}", StartDate: ${startDate}, EndDate: ${endDate}, ErrorType: ${errorType} sortBy: ${sortBy}, sortOrder: ${sortOrder}`
-    // );
 
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 10;
@@ -584,10 +580,6 @@ const getErrorsBySessionId = async (req, res) => {
       ),
       getTotalErrorsCountBySession(sessionId.trim(), startDate, endDate),
     ]);
-
-    console.log(
-      `Found ${errorsData.length} errors for session ${sessionId.trim()}`
-    );
 
     // Format error data
     const formattedData = errorsData.map(formatErrorData);
