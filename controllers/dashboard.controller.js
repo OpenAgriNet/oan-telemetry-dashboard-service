@@ -74,7 +74,6 @@ const getUserLoginAnalytics = async (req, res) => {
                 GROUP BY hour
                 ORDER BY hour DESC
             `);
-            console.log(result.rows);
 
             // Get current time and generate past 12 hourly time slots
             const now = new Date();
@@ -253,7 +252,6 @@ const getDashboardStats = async (req, res) => {
 };
 
 const getUserGraph = async (req, res) => {
-    console.log("getUserGraph");
     try {
         res.status(200).json({
             success: true,

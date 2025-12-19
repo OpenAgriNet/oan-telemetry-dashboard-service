@@ -64,7 +64,6 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             FROM questions
             WHERE ${baseWhere}
             ORDER BY uid, ets DESC
-            LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
         ),
         user_questions AS (
             SELECT 
@@ -122,14 +121,13 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
     `;
 
        const sortArray = ["user_id", "session_count", "total_questions", "feedback_count", "last_activity", "latest_session"];
-  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
   if (sortArray.includes(sortBy)) {
     query += ` ORDER BY ${sortBy === "last_activity" ? "last_activity" : sortBy} ${sortOrder}`;
   } else {
     query += ` ORDER BY latest_session DESC`
   };
     
-
+    query += ` LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`;
     // Add pagination parameters
     queryParams.push(limit, offset);
 

@@ -445,10 +445,6 @@ const end = userEnd ?? new Date(
     const startIso = start.toISOString();
     const endIso = end.toISOString();
 
-    // console.log(
-    //   `getTop10Month: Querying from ${startIso} to ${endIso} for lgd_code ${registeredLgdCode}`
-    // );
-
     const query = `
     SELECT
     unique_id,

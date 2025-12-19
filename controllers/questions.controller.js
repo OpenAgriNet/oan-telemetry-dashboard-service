@@ -65,14 +65,12 @@ async function fetchQuestionsFromDB(
   }
 
   const sortArray = ["id", "user_id", "session_id", "dateAsked"];
-  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
   if (sortArray.includes(sortBy)) {
     query += ` ORDER BY ${sortBy === "dateAsked" ? "ets" : sortBy} ${sortOrder}`;
   } else {
     query += ` ORDER BY ets DESC`;
   }
 
-  // console.log("Final Query:", query);
   // Add pagination
   paramIndex++;
   query += ` LIMIT $${paramIndex}`;

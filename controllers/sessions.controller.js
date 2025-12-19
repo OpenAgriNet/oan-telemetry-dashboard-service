@@ -75,7 +75,6 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     }
     
     const sortArray = ["question_count", "username", "session_id", "session_time"];
-  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
   if (sortArray.includes(sortBy)) {
     query += ` ORDER BY ${sortBy === "session_time" ? "session_time" : sortBy} ${sortOrder}`;
   } else {
@@ -205,8 +204,6 @@ function formatSessionData(row) {
 
 const getSessions = async (req, res) => {
     try {
-        console.log('Fetching sessions...');
-
         // Extract and sanitize pagination parameters from query string
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -245,8 +242,6 @@ const getSessions = async (req, res) => {
             fetchSessionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalSessionsCount(search, startDate, endDate)
         ]);
-
-        console.log('Query result:', sessionsData.length, 'sessions found for page', page);
 
         const formattedData = sessionsData.map(formatSessionData);
 
