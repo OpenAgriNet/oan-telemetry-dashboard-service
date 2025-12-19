@@ -6,12 +6,11 @@ const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../uti
 const userStatsCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
 
-async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC') {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-
     // Create cache key for this specific query
-    const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}`;
+    const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}_${sortBy}_${sortOrder}`;
     const cachedResult = userStatsCache.get(cacheKey);
 
     if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
@@ -59,7 +58,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
     //     ),
 
     // Optimized query - fetch users first, then join stats
-    const query = `
+    let query = `
         WITH base_users AS (
             SELECT DISTINCT on (uid) uid, ets
             FROM questions
@@ -120,8 +119,16 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
         FROM user_questions uq
         LEFT JOIN latest_sessions ls ON ls.user_id = uq.user_id
         LEFT JOIN user_feedback uf ON uf.user_id = uq.user_id
-        ORDER BY uq.latest_session DESC NULLS LAST
     `;
+
+       const sortArray = ["user_id", "session_count", "total_questions", "feedback_count", "last_activity", "latest_session"];
+  // console.log("SortBy:", sortBy, "SortOrder:", sortOrder);
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "last_activity" ? "last_activity" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY latest_session DESC`
+  };
+    
 
     // Add pagination parameters
     queryParams.push(limit, offset);
@@ -343,6 +350,8 @@ const getUsers = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === 'desc' ? 'desc' : 'asc';
 
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -370,7 +379,7 @@ const getUsers = async (req, res) => {
 
         // Fetch paginated users data and total count
         const [usersData, totalCount] = await Promise.all([
-            fetchUsersFromDB(page, limit, search, startDate, endDate),
+            fetchUsersFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalUsersCount(search, startDate, endDate)
         ]);
 
