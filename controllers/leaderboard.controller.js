@@ -552,7 +552,7 @@ const endIso = endTs
   : null
     // ---- Query ----
     const query = `
-          SELECT DISTINCT l.farmer_id
+          SELECT DISTINCT l.farmer_id, l.unique_id
           FROM public.questions q
           INNER JOIN public.leaderboard l
           ON l.unique_id = q.unique_id
