@@ -171,16 +171,21 @@ const getDashboardStats = async (req, res) => {
           WHERE uid IS NOT NULL AND ets IS NOT NULL
           GROUP BY uid
         ),
+        active_users AS (
+          -- Get all users active in the date range
+          SELECT DISTINCT q.uid
+          FROM questions q
+          WHERE q.uid IS NOT NULL ${questionDateFilter}
+        ),
         user_stats AS (
           SELECT
-            COUNT(DISTINCT q.uid) AS total_users,
+            COUNT(DISTINCT au.uid) AS total_users,
             COUNT(DISTINCT CASE 
               WHEN ${newUsersCondition}
-              THEN q.uid 
+              THEN au.uid 
             END) AS new_users
-          FROM questions q
-          LEFT JOIN first_activity fa ON q.uid = fa.uid
-          WHERE q.uid IS NOT NULL ${questionDateFilter}
+          FROM active_users au
+          LEFT JOIN first_activity fa ON au.uid = fa.uid
         ),
         session_stats AS (
           -- combine all session-related rows from questions, feedback and errordetails
