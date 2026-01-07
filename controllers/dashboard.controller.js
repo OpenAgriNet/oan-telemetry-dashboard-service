@@ -149,7 +149,7 @@ const getDashboardStats = async (req, res) => {
       text: `
         WITH first_activity AS (
           -- Find each user's first-ever activity date (all-time, unfiltered)
-          SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))) as first_date
+          SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')) as first_date
           FROM questions 
           WHERE uid IS NOT NULL AND ets IS NOT NULL
           GROUP BY uid
@@ -157,11 +157,11 @@ const getDashboardStats = async (req, res) => {
         daily_activity AS (
           -- Get all users active in the date range with their activity dates
           SELECT 
-            DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)) as activity_date,
+            DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata') as activity_date,
             uid
           FROM questions
           WHERE uid IS NOT NULL AND ets IS NOT NULL ${questionDateFilter}
-          GROUP BY DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), uid
+          GROUP BY DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), uid
         ),
         user_stats AS (
           -- Calculate totals using same logic as graph
