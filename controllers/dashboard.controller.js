@@ -124,9 +124,14 @@ const getDashboardStats = async (req, res) => {
     let feedbackDateFilter = '';
     let errordetailsDateFilter = '';
     let futureFilter = '';
+    
+    // Track parameter positions for new user calculation
+    let startParamIndex = null;
+    let endParamIndex = null;
 
     if (startTimestamp !== null) {
       paramIndex++;
+      startParamIndex = paramIndex;
       questionDateFilter += ` AND ets >= $${paramIndex}`;
       feedbackDateFilter += ` AND ets >= $${paramIndex}`;
       errordetailsDateFilter += ` AND ets >= $${paramIndex}`
@@ -135,6 +140,7 @@ const getDashboardStats = async (req, res) => {
 
     if (endTimestamp !== null) {
       paramIndex++;
+      endParamIndex = paramIndex;
       questionDateFilter += ` AND ets <= $${paramIndex}`;
       feedbackDateFilter += ` AND ets <= $${paramIndex}`;
       errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
@@ -144,15 +150,37 @@ const getDashboardStats = async (req, res) => {
     paramIndex++;
     queryParams.push(Date.now());
     futureFilter = ` AND ets <= $${paramIndex}`;
+    
+    // Build new users condition dynamically
+    let newUsersCondition = 'false'; // Default to false if no date range
+    if (startParamIndex !== null && endParamIndex !== null) {
+      newUsersCondition = `fa.first_date >= DATE_TRUNC('day', TO_TIMESTAMP($${startParamIndex}::BIGINT/1000))
+                   AND fa.first_date <= DATE_TRUNC('day', TO_TIMESTAMP($${endParamIndex}::BIGINT/1000))`;
+    } else if (startParamIndex !== null) {
+      newUsersCondition = `fa.first_date >= DATE_TRUNC('day', TO_TIMESTAMP($${startParamIndex}::BIGINT/1000))`;
+    } else if (endParamIndex !== null) {
+      newUsersCondition = `fa.first_date <= DATE_TRUNC('day', TO_TIMESTAMP($${endParamIndex}::BIGINT/1000))`;
+    }
 
     const query = {
       text: `
-        WITH user_stats AS (
+        WITH first_activity AS (
+          -- Find each user's first-ever activity date (all-time)
+          SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))) as first_date
+          FROM questions 
+          WHERE uid IS NOT NULL AND ets IS NOT NULL
+          GROUP BY uid
+        ),
+        user_stats AS (
           SELECT
-            COUNT(DISTINCT uid) AS total_users,
-            COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS new_users
-          FROM questions
-          WHERE uid IS NOT NULL ${questionDateFilter}
+            COUNT(DISTINCT q.uid) AS total_users,
+            COUNT(DISTINCT CASE 
+              WHEN ${newUsersCondition}
+              THEN q.uid 
+            END) AS new_users
+          FROM questions q
+          LEFT JOIN first_activity fa ON q.uid = fa.uid
+          WHERE q.uid IS NOT NULL ${questionDateFilter}
         ),
         session_stats AS (
           -- combine all session-related rows from questions, feedback and errordetails
