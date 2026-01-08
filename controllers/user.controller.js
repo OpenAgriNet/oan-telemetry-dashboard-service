@@ -1251,10 +1251,9 @@ const getUserGraph = async (req, res) => {
         const query = {
             text: `
                 WITH first_activity AS (
-                    SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')) as first_date
-                    FROM questions 
-                    WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    GROUP BY uid
+                    -- Use materialized view for fast lookup of first activity dates
+                    SELECT uid, first_date
+                    FROM mv_user_first_activity
                 ),
                 daily_activity AS (
                     SELECT 
