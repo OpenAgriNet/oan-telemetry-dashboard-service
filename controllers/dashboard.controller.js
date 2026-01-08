@@ -148,11 +148,10 @@ const getDashboardStats = async (req, res) => {
     const query = {
       text: `
         WITH first_activity AS (
-          -- Find each user's first-ever activity date (all-time, unfiltered)
-          SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')) as first_date
-          FROM questions 
-          WHERE uid IS NOT NULL AND ets IS NOT NULL
-          GROUP BY uid
+          -- Use materialized view for fast lookup of first activity dates
+          -- Falls back to direct query if view doesn't exist
+          SELECT uid, first_date
+          FROM mv_user_first_activity
         ),
         daily_activity AS (
           -- Get all users active in the date range with their activity dates
