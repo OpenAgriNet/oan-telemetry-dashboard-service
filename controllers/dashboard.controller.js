@@ -147,12 +147,32 @@ const getDashboardStats = async (req, res) => {
 
     const query = {
       text: `
-        WITH user_stats AS (
-          SELECT
-            COUNT(DISTINCT uid) AS total_users,
-            COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS new_users
+        WITH first_activity AS (
+          -- Find each user's first-ever activity date (all-time, unfiltered)
+          SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')) as first_date
+          FROM questions 
+          WHERE uid IS NOT NULL AND ets IS NOT NULL
+          GROUP BY uid
+        ),
+        daily_activity AS (
+          -- Get all users active in the date range with their activity dates
+          SELECT 
+            DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata') as activity_date,
+            uid
           FROM questions
-          WHERE uid IS NOT NULL ${questionDateFilter}
+          WHERE uid IS NOT NULL AND ets IS NOT NULL ${questionDateFilter}
+          GROUP BY DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), uid
+        ),
+        user_stats AS (
+          -- Calculate totals using same logic as graph
+          SELECT
+            COUNT(DISTINCT da.uid) AS total_users,
+            COUNT(DISTINCT CASE 
+              WHEN DATE_TRUNC('day', fa.first_date) = DATE_TRUNC('day', da.activity_date)
+              THEN da.uid 
+            END) AS new_users
+          FROM daily_activity da
+          JOIN first_activity fa ON da.uid = fa.uid
         ),
         session_stats AS (
           -- combine all session-related rows from questions, feedback and errordetails

@@ -1210,46 +1210,78 @@ const getUserGraph = async (req, res) => {
 
         switch (granularity) {
             case 'hourly':
-                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD HH24:00')";
                 orderBy = "hour_bucket";
                 break;
             case 'weekly':
-                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
                 orderBy = "week_bucket";
                 break;
             case 'monthly':
-                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM')";
                 orderBy = "month_bucket";
                 break;
             case 'daily':
             default:
-                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
                 orderBy = "day_bucket";
+                break;
+        }
+
+        // Build date format string for the final SELECT (using da.activity_date)
+        let finalDateFormat;
+        switch (granularity) {
+            case 'hourly':
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD HH24:00')";
+                break;
+            case 'weekly':
+            case 'monthly':
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD')";
+                break;
+            case 'daily':
+            default:
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD')";
                 break;
         }
 
         const query = {
             text: `
-                SELECT 
-                    ${dateFormat} as date,
-                    ${dateGrouping} as ${orderBy},
-                   
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS newUsersCount,
-                    (COUNT(DISTINCT uid) - COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END)) AS returningUsersCount,
-                    
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
-                FROM (
-                    SELECT uid, sid, ets, is_new FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    ) AS combined
-                WHERE 1=1
+                WITH first_activity AS (
+                    SELECT uid, MIN(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')) as first_date
+                    FROM questions 
+                    WHERE uid IS NOT NULL AND ets IS NOT NULL
+                    GROUP BY uid
+                ),
+                daily_activity AS (
+                    SELECT 
+                        ${dateGrouping} as activity_date,
+                        uid
+                    FROM questions
+                    WHERE uid IS NOT NULL AND ets IS NOT NULL
                     ${dateFilter}
-                GROUP BY ${dateGrouping}
+                    GROUP BY ${dateGrouping}, uid
+                )
+                SELECT 
+                    ${finalDateFormat} as date,
+                    da.activity_date as ${orderBy},
+                    COUNT(DISTINCT da.uid) as uniqueUsersCount,
+                    COUNT(DISTINCT CASE 
+                        WHEN DATE_TRUNC('day', fa.first_date) = DATE_TRUNC('day', da.activity_date) 
+                        THEN da.uid 
+                    END) as newUsersCount,
+                    COUNT(DISTINCT CASE 
+                        WHEN DATE_TRUNC('day', fa.first_date) < DATE_TRUNC('day', da.activity_date) 
+                        THEN da.uid 
+                    END) as returningUsersCount,
+                    EXTRACT(EPOCH FROM da.activity_date) * 1000 as timestamp,
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM da.activity_date) as hour_of_day` : 'NULL as hour_of_day'}
+                FROM daily_activity da
+                JOIN first_activity fa ON da.uid = fa.uid
+                GROUP BY da.activity_date
                 ORDER BY ${orderBy} ASC 
             `,
             values: queryParams
