@@ -509,63 +509,34 @@ const getQuestionsBySessionId = async (req, res) => {
     queryParams.push(limit, offset);
 
     // Get questions by session ID with pagination and date filtering
-    // const questionsQuery = {
-    //   text: `
-    //             SELECT DISTINCT ON (questiontext),
-    //                 id,
-    //                 uid as qid,
-    //                 questiontext AS question,
-    //                 answertext AS answer,
-    //                 uid AS user_id,
-    //                 created_at,
-    //                 ets,
-    //                 channel,
-    //                 sid AS session_id
-    //             FROM questions
-    //             WHERE sid = $1 
-    //                 AND questiontext IS NOT NULL 
-    //                 AND answertext IS NOT NULL
-    //                 ${dateFilter}
-    //                 AND ets <= ${Date.now()}
-    //             ORDER BY ets DESC
-    //             LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
-    //         `,
-    //   values: queryParams,
-    // };
-
-     const questionsQuery = {
+    const questionsQuery = {
       text: `
-                SELECT * FROM (
-                SELECT DISTINCT ON (questiontext)
-               id,
-               uid as qid,
-                questiontext AS question,
-               answertext AS answer,
-              uid AS user_id,
-            created_at,
-            ets,
-            channel,
-            sid AS session_id
-        FROM questions
-        WHERE sid = $1 
-            AND questiontext IS NOT NULL 
-            AND answertext IS NOT NULL
-            ${dateFilter}
-            AND ets <= ${Date.now()}
-        ORDER BY questiontext, ets DESC
-    ) sub
-    ORDER BY ets DESC
-    LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+                SELECT 
+                    id,
+                    uid as qid,
+                    questiontext AS question,
+                    answertext AS answer,
+                    uid AS user_id,
+                    created_at,
+                    ets,
+                    channel,
+                    sid AS session_id
+                FROM questions
+                WHERE sid = $1 
+                    AND questiontext IS NOT NULL 
+                    AND answertext IS NOT NULL
+                    ${dateFilter}
+                    AND ets <= ${Date.now()}
+                ORDER BY ets DESC
+                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
     };
 
     // Get total count for session with date filtering
-                    // SELECT COUNT(*) as total
-
     const countQuery = {
       text: `
-                SELECT COUNT(DISTINCT questiontext) as total
+                SELECT COUNT(*) as total
                 FROM questions
                 WHERE sid = $1 
                     AND questiontext IS NOT NULL 

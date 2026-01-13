@@ -31,7 +31,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     // Base CTE query with date filtering applied to all tables
     let query = `
         WITH combined_sessions AS (
-            SELECT DISTINCT
+            SELECT 
                 sid,
                 uid,
                 questiontext,
