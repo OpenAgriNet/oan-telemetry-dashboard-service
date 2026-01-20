@@ -1,40 +1,7 @@
 const pool = require('../services/db');
+const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-    let startTimestamp = null;
-    let endTimestamp = null;
-
-    if (startDate) {
-        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
-            // Unix timestamp provided
-            startTimestamp = parseInt(startDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(startDate);
-            if (!isNaN(date.getTime())) {
-                startTimestamp = date.getTime();
-            }
-        }
-    }
-
-    if (endDate) {
-        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
-            // Unix timestamp provided
-            endTimestamp = parseInt(endDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(endDate);
-            if (!isNaN(date.getTime())) {
-                endTimestamp = date.getTime();
-            }
-        }
-    }
-
-    return { startTimestamp, endTimestamp };
-}
-
-async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC') {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -54,6 +21,12 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         dateConditions += ` AND ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
+
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    const futureFilterParam = paramIndex;
+    dateConditions += ` AND ets <= $${paramIndex}`;
+    queryParams.push(Date.now());
 
     // Base CTE query with date filtering applied to all tables
     let query = `
@@ -100,9 +73,14 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         )`;
         queryParams.push(`%${search.trim()}%`);
     }
-
-    query += ` ORDER BY session_time DESC`;
-
+    
+    const sortArray = ["question_count", "username", "session_id", "session_time"];
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "session_time" ? "session_time" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY session_time DESC`
+  };
+    
     // Add pagination
     paramIndex++;
     query += ` LIMIT $${paramIndex}`;
@@ -111,7 +89,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     paramIndex++;
     query += ` OFFSET $${paramIndex}`;
     queryParams.push(offset);
-
+ 
     const result = await pool.query(query, queryParams);
     return result.rows;
 }
@@ -135,6 +113,11 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
         dateConditions += ` AND ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
+
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    dateConditions += ` AND ets <= $${paramIndex}`;
+    queryParams.push(Date.now());
 
     let query = `
         WITH combined_sessions AS (
@@ -197,10 +180,12 @@ function formatSessionData(row) {
             // First try to parse the timestamp if it's in milliseconds
             const timestamp = parseInt(row.session_time);
             if (!isNaN(timestamp)) {
-                sessionTime = new Date(timestamp).toISOString().slice(0, 19);
+                // Convert to IST timezone
+                sessionTime = formatDateToIST(timestamp);
             } else {
                 // If not a timestamp, try parsing as a date string
-                sessionTime = new Date(row.session_time).toISOString().slice(0, 19);
+                const parsedDate = new Date(row.session_time);
+                sessionTime = formatDateToIST(parsedDate.getTime());
             }
         }
     } catch (err) {
@@ -219,14 +204,14 @@ function formatSessionData(row) {
 
 const getSessions = async (req, res) => {
     try {
-        console.log('Fetching sessions...');
-
         // Extract and sanitize pagination parameters from query string
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
 
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
@@ -254,11 +239,9 @@ const getSessions = async (req, res) => {
 
         // Fetch paginated sessions data and total count
         const [sessionsData, totalCount] = await Promise.all([
-            fetchSessionsFromDB(page, limit, search, startDate, endDate),
+            fetchSessionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalSessionsCount(search, startDate, endDate)
         ]);
-
-        console.log('Query result:', sessionsData.length, 'sessions found for page', page);
 
         const formattedData = sessionsData.map(formatSessionData);
 
@@ -752,6 +735,7 @@ const getSessionsGraph = async (req, res) => {
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
+    
 
         // Add search filter if provided
         if (search && search.trim() !== '') {
@@ -762,6 +746,12 @@ const getSessionsGraph = async (req, res) => {
             )`;
             queryParams.push(`%${search.trim()}%`);
         }
+
+        // Exclude future sessions (ets > now)
+let futureFilter = '';
+paramIndex++;
+futureFilter = ` AND ets <= $${paramIndex}`;
+queryParams.push(Date.now());
 
         // Define the date truncation and formatting based on granularity
         let dateGrouping;
@@ -803,7 +793,7 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'question' as activity_type
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
@@ -813,7 +803,7 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'feedback' as activity_type
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
@@ -823,18 +813,14 @@ const getSessionsGraph = async (req, res) => {
                         ${dateFormat} as date,
                         'error' as activity_type
                     FROM errordetails
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                 ),
                 session_aggregates AS (
                     SELECT 
                         date,
                         time_bucket,
                         COUNT(DISTINCT CONCAT(sid, '_', uid)) as sessionsCount,
-                        COUNT(DISTINCT uid) as uniqueUsersCount,
                         COUNT(DISTINCT sid) as uniqueSessionIdsCount,
-                        COUNT(CASE WHEN activity_type = 'question' THEN 1 END) as questionsCount,
-                        COUNT(CASE WHEN activity_type = 'feedback' THEN 1 END) as feedbackCount,
-                        COUNT(CASE WHEN activity_type = 'error' THEN 1 END) as errorsCount,
                         EXTRACT(EPOCH FROM time_bucket) * 1000 as timestamp,
                         ${granularity === 'hourly' ? `EXTRACT(HOUR FROM time_bucket) as hour_of_day` : 'NULL as hour_of_day'}
                     FROM combined_sessions
@@ -845,19 +831,7 @@ const getSessionsGraph = async (req, res) => {
                     timestamp,
                     hour_of_day,
                     sessionsCount,
-                    uniqueUsersCount,
-                    uniqueSessionIdsCount,
-                    questionsCount,
-                    feedbackCount,
-                    errorsCount,
-                    CASE 
-                        WHEN sessionsCount > 0 THEN ROUND(questionsCount::decimal / sessionsCount, 2)
-                        ELSE 0 
-                    END as avgQuestionsPerSession,
-                    CASE 
-                        WHEN sessionsCount > 0 THEN ROUND(feedbackCount::decimal / sessionsCount, 2)
-                        ELSE 0 
-                    END as avgFeedbackPerSession
+                    uniqueSessionIdsCount
                 FROM session_aggregates
                 ORDER BY time_bucket ASC
             `,
@@ -871,13 +845,7 @@ const getSessionsGraph = async (req, res) => {
             date: row.date,
             timestamp: parseInt(row.timestamp),
             sessionsCount: parseInt(row.sessionscount) || 0,
-            uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
             uniqueSessionIdsCount: parseInt(row.uniquesessionidscount) || 0,
-            questionsCount: parseInt(row.questionscount) || 0,
-            feedbackCount: parseInt(row.feedbackcount) || 0,
-            errorsCount: parseInt(row.errorscount) || 0,
-            avgQuestionsPerSession: parseFloat(row.avgquestionspersession) || 0,
-            avgFeedbackPerSession: parseFloat(row.avgfeedbackpersession) || 0,
             // Add formatted values for different time periods
             ...(granularity === 'hourly' && {
                 hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
@@ -888,9 +856,6 @@ const getSessionsGraph = async (req, res) => {
 
         // Calculate summary statistics
         const totalSessions = graphData.reduce((sum, item) => sum + item.sessionsCount, 0);
-        const totalQuestions = graphData.reduce((sum, item) => sum + item.questionsCount, 0);
-        const totalUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
-        const avgSessionsPerPeriod = totalSessions / Math.max(graphData.length, 1);
 
         // Find peak activity period
         const peakPeriod = graphData.reduce((max, item) =>
@@ -910,9 +875,6 @@ const getSessionsGraph = async (req, res) => {
                 },
                 summary: {
                     totalSessions: totalSessions,
-                    totalQuestions: totalQuestions,
-                    totalUsers: totalUsers,
-                    avgSessionsPerPeriod: Math.round(avgSessionsPerPeriod * 100) / 100,
                     peakActivity: {
                         date: peakPeriod.date,
                         sessionsCount: peakPeriod.sessionsCount

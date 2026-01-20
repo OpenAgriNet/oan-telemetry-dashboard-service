@@ -1,45 +1,14 @@
 const pool = require("../services/db"); // Ensure this path is correct
-
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-  let startTimestamp = null;
-  let endTimestamp = null;
-
-  if (startDate) {
-    if (typeof startDate === "string" && /^\d+$/.test(startDate)) {
-      // Unix timestamp provided
-      startTimestamp = parseInt(startDate);
-    } else {
-      // ISO date string provided, convert to unix timestamp (milliseconds)
-      const date = new Date(startDate);
-      if (!isNaN(date.getTime())) {
-        startTimestamp = date.getTime();
-      }
-    }
-  }
-
-  if (endDate) {
-    if (typeof endDate === "string" && /^\d+$/.test(endDate)) {
-      // Unix timestamp provided
-      endTimestamp = parseInt(endDate);
-    } else {
-      // ISO date string provided, convert to unix timestamp (milliseconds)
-      const date = new Date(endDate);
-      if (!isNaN(date.getTime())) {
-        endTimestamp = date.getTime();
-      }
-    }
-  }
-
-  return { startTimestamp, endTimestamp };
-}
+const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require("../utils/dateUtils");
 
 async function fetchQuestionsFromDB(
   page = 1,
   limit = 10,
   search = "",
   startDate = null,
-  endDate = null
+  endDate = null,
+  sortBy = null, 
+  sortOrder = "DESC"
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -76,6 +45,11 @@ async function fetchQuestionsFromDB(
     queryParams.push(endTimestamp);
   }
 
+  // Filter out future ETS records (bad telemetry data)
+  paramIndex++;
+  query += ` AND ets <= $${paramIndex}`;
+  queryParams.push(Date.now());
+
   // Add search functionality if search term is provided
   if (search && search.trim() !== "") {
     paramIndex++;
@@ -90,7 +64,12 @@ async function fetchQuestionsFromDB(
     queryParams.push(`%${search.trim()}%`);
   }
 
-  query += ` ORDER BY created_at DESC`;
+  const sortArray = ["id", "user_id", "session_id", "dateAsked"];
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "dateAsked" ? "ets" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY ets DESC`;
+  }
 
   // Add pagination
   paramIndex++;
@@ -160,10 +139,12 @@ function formatQuestionData(row) {
       // First try to parse the timestamp if it's in milliseconds
       const timestamp = parseInt(row.ets);
       if (!isNaN(timestamp)) {
-        dateAsked = new Date(timestamp).toISOString().slice(0, 19);
+        // Convert to IST timezone
+        dateAsked = formatDateToIST(timestamp);
       } else {
         // If not a timestamp, try parsing as a date string
-        dateAsked = new Date(row.ets).toISOString().slice(0, 19);
+        const parsedDate = new Date(row.ets);
+        dateAsked = formatDateToIST(parsedDate.getTime());
       }
     }
   } catch (err) {
@@ -190,6 +171,9 @@ const getQuestions = async (req, res) => {
       ? String(req.query.startDate).trim()
       : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    const sortBy = req.query.sortBy;
+    const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
 
     // Additional validation for search term length to prevent abuse
     if (search.length > 1000) {
@@ -221,7 +205,7 @@ const getQuestions = async (req, res) => {
 
     // Fetch paginated questions data and total count
     const [questionsData, totalCount] = await Promise.all([
-      fetchQuestionsFromDB(page, limit, search, startDate, endDate),
+      fetchQuestionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
       getTotalQuestionsCount(search, startDate, endDate),
     ]);
 
@@ -399,7 +383,8 @@ const getQuestionsByUserId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${dateFilter}
-                ORDER BY created_at DESC
+                    AND ets <= ${Date.now()}
+                ORDER BY ets DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
@@ -541,7 +526,8 @@ const getQuestionsBySessionId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${dateFilter}
-                ORDER BY created_at DESC
+                    AND ets <= ${Date.now()}
+                ORDER BY ets DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
@@ -784,11 +770,7 @@ const getQuestionsGraph = async (req, res) => {
                     ${dateFormat} as date,
                     ${dateGrouping} as ${orderBy},
                     COUNT(*) as questionsCount,
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    COUNT(DISTINCT channel) as uniqueChannelsCount,
-                    AVG(LENGTH(questiontext)) as avgQuestionLength,
-                    AVG(LENGTH(answertext)) as avgAnswerLength,
+              
                     EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
                     ${granularity === "hourly"
           ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
@@ -805,6 +787,12 @@ const getQuestionsGraph = async (req, res) => {
       values: queryParams,
     };
 
+          // COUNT(DISTINCT uid) as uniqueUsersCount,
+          //           COUNT(DISTINCT sid) as uniqueSessionsCount,
+          //           COUNT(DISTINCT channel) as uniqueChannelsCount,
+          //           AVG(LENGTH(questiontext)) as avgQuestionLength,
+          //           AVG(LENGTH(answertext)) as avgAnswerLength,
+
     const result = await pool.query(query);
 
     // Format the data for frontend consumption
@@ -812,11 +800,11 @@ const getQuestionsGraph = async (req, res) => {
       date: row.date,
       timestamp: parseInt(row.timestamp),
       questionsCount: parseInt(row.questionscount) || 0,
-      uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-      uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
-      uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
-      avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
-      avgAnswerLength: parseFloat(row.avganswerLength) || 0,
+      // uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
+      // uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+      // uniqueChannelsCount: parseInt(row.uniquechannelscount) || 0,
+      // avgQuestionLength: parseFloat(row.avgquestionlength) || 0,
+      // avgAnswerLength: parseFloat(row.avganswerLength) || 0,
       // Add formatted values for different time periods
       ...(granularity === "hourly" && {
         hour:
@@ -832,12 +820,12 @@ const getQuestionsGraph = async (req, res) => {
       (sum, item) => sum + item.questionsCount,
       0
     );
-    const totalUniqueUsers = Math.max(
-      ...graphData.map((item) => item.uniqueUsersCount),
-      0
-    );
-    const avgQuestionsPerPeriod =
-      totalQuestions / Math.max(graphData.length, 1);
+    // const totalUniqueUsers = Math.max(
+    //   ...graphData.map((item) => item.uniqueUsersCount),
+    //   0
+    // );
+    // const avgQuestionsPerPeriod =
+    //   totalQuestions / Math.max(graphData.length, 1);
 
     // Find peak activity period
     const peakPeriod = graphData.reduce(
@@ -858,8 +846,6 @@ const getQuestionsGraph = async (req, res) => {
         },
         summary: {
           totalQuestions: totalQuestions,
-          totalUniqueUsers: totalUniqueUsers,
-          avgQuestionsPerPeriod: Math.round(avgQuestionsPerPeriod * 100) / 100,
           peakActivity: {
             date: peakPeriod.date,
             questionsCount: peakPeriod.questionsCount,

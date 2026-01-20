@@ -1,39 +1,5 @@
 const pool = require("../services/db");
-const { formatUTCToISTDateTime } = require("../utils/dateUtils");
-
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-  let startTimestamp = null;
-  let endTimestamp = null;
-
-  if (startDate) {
-    if (typeof startDate === "string" && /^\d+$/.test(startDate)) {
-      // Unix timestamp provided
-      startTimestamp = parseInt(startDate);
-    } else {
-      // ISO date string provided, convert to unix timestamp (milliseconds)
-      const date = new Date(startDate);
-      if (!isNaN(date.getTime())) {
-        startTimestamp = date.getTime();
-      }
-    }
-  }
-
-  if (endDate) {
-    if (typeof endDate === "string" && /^\d+$/.test(endDate)) {
-      // Unix timestamp provided
-      endTimestamp = parseInt(endDate);
-    } else {
-      // ISO date string provided, convert to unix timestamp (milliseconds)
-      const date = new Date(endDate);
-      if (!isNaN(date.getTime())) {
-        endTimestamp = date.getTime();
-      }
-    }
-  }
-
-  return { startTimestamp, endTimestamp };
-}
+const { formatUTCToISTDateTime, parseDateRange } = require("../utils/dateUtils");
 
 async function fetchAllErrorsFromDB(
   page = 1,
@@ -41,7 +7,9 @@ async function fetchAllErrorsFromDB(
   search = "",
   startDate = null,
   endDate = null,
-  errorType = ""
+  errorType = "",
+  sortBy = null,
+  sortOrder = "DESC"
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -91,7 +59,12 @@ async function fetchAllErrorsFromDB(
     queryParams.push(`%${search.trim()}%`);
   }
 
-  query += ` ORDER BY created_at DESC`;
+     const sortArray = ["created_at", "user_id", "session_id", "error_message"];
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY created_at DESC`;
+  }
 
   // Add pagination
   paramIndex++;
@@ -250,10 +223,10 @@ async function getAllErrors(req, res) {
       startDate,
       endDate,
       errorType = "",
+      sortBy,
+      sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC"
     } = req.query;
-    console.log(
-      `Fetching errors - Page: ${page}, Limit: ${limit}, Search: "${search}", StartDate: ${startDate}, EndDate: ${endDate}, ErrorType: ${errorType}`
-    );
+
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 10;
 
@@ -272,7 +245,9 @@ async function getAllErrors(req, res) {
       search,
       startDate,
       endDate,
-      errorType
+      errorType,
+      sortBy,
+      sortOrder
     );
 
     // Get total count for pagination
@@ -605,10 +580,6 @@ const getErrorsBySessionId = async (req, res) => {
       ),
       getTotalErrorsCountBySession(sessionId.trim(), startDate, endDate),
     ]);
-
-    console.log(
-      `Found ${errorsData.length} errors for session ${sessionId.trim()}`
-    );
 
     // Format error data
     const formattedData = errorsData.map(formatErrorData);

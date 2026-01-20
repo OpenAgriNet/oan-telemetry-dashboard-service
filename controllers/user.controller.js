@@ -1,90 +1,69 @@
 const pool = require('../services/db');
 const { v4: uuidv4 } = require('uuid');
+const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 
 // Simple in-memory cache for user stats
 const userStatsCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
 
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-    let startTimestamp = null;
-    let endTimestamp = null;
-    
-    if (startDate) {
-        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
-            // Unix timestamp provided
-            startTimestamp = parseInt(startDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(startDate);
-            if (!isNaN(date.getTime())) {
-                startTimestamp = date.getTime();
-            }
-        }
-    }
-    
-    if (endDate) {
-        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
-            // Unix timestamp provided
-            endTimestamp = parseInt(endDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(endDate);
-            if (!isNaN(date.getTime())) {
-                endTimestamp = date.getTime();
-            }
-        }
-    }
-    
-    return { startTimestamp, endTimestamp };
-}
-
-async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null) {
+async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC') {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-    
     // Create cache key for this specific query
-    const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}`;
+    const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}_${sortBy}_${sortOrder}`;
     const cachedResult = userStatsCache.get(cacheKey);
-    
+
     if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
         return cachedResult.data;
     }
-    
+
     const queryParams = [];
     let paramIndex = 0;
 
     // Build WHERE conditions efficiently
     let whereConditions = ['uid IS NOT NULL', 'answertext IS NOT NULL'];
-    
+
     if (startTimestamp !== null) {
         paramIndex++;
         whereConditions.push(`ets >= $${paramIndex}`);
         queryParams.push(startTimestamp);
     }
-    
+
     if (endTimestamp !== null) {
         paramIndex++;
         whereConditions.push(`ets <= $${paramIndex}`);
         queryParams.push(endTimestamp);
     }
-    
+
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    whereConditions.push(`ets <= $${paramIndex}`);
+    queryParams.push(getCurrentTimestamp());
+
     if (search && search.trim() !== '') {
         paramIndex++;
         whereConditions.push(`uid ILIKE $${paramIndex}`);
         queryParams.push(`%${search.trim()}%`);
     }
-    
+
     const baseWhere = whereConditions.join(' AND ');
-    
+
+    //  WITH base_users AS (
+    //         SELECT uid, ets
+    //         FROM questions
+    //         WHERE ${baseWhere}
+    //         ORDER BY  ets DESC
+    //         group BY uid,
+    //         LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+    //     ),
+
     // Optimized query - fetch users first, then join stats
-    const query = `
+    let query = `
         WITH base_users AS (
-            SELECT DISTINCT uid
+            SELECT DISTINCT on (uid) uid, ets
             FROM questions
             WHERE ${baseWhere}
-            ORDER BY uid
-            LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+            ORDER BY uid, ets DESC
         ),
         user_questions AS (
             SELECT 
@@ -98,6 +77,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             JOIN questions q ON q.uid = bu.uid AND q.uid IS NOT NULL AND q.answertext IS NOT NULL
             ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ''}
             ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ''}
+            AND q.ets <= ${getCurrentTimestamp()}
             GROUP BY bu.uid
         ),
         latest_sessions AS (
@@ -108,6 +88,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             JOIN questions q ON q.uid = bu.uid AND q.uid IS NOT NULL AND q.answertext IS NOT NULL
             ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ''}
             ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ''}
+            AND q.ets <= ${getCurrentTimestamp()}
             ORDER BY bu.uid, q.ets DESC
         ),
         user_feedback AS (
@@ -120,6 +101,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
             LEFT JOIN feedback f ON f.uid = bu.uid AND f.uid IS NOT NULL AND f.answertext IS NOT NULL
             ${startTimestamp ? `AND f.ets >= ${startTimestamp}` : ''}
             ${endTimestamp ? `AND f.ets <= ${endTimestamp}` : ''}
+            AND f.ets <= ${getCurrentTimestamp()}
             GROUP BY bu.uid
         )
         SELECT 
@@ -136,21 +118,28 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
         FROM user_questions uq
         LEFT JOIN latest_sessions ls ON ls.user_id = uq.user_id
         LEFT JOIN user_feedback uf ON uf.user_id = uq.user_id
-        ORDER BY uq.latest_session DESC NULLS LAST
     `;
+
+       const sortArray = ["user_id", "session_count", "total_questions", "feedback_count", "last_activity", "latest_session"];
+  if (sortArray.includes(sortBy)) {
+    query += ` ORDER BY ${sortBy === "last_activity" ? "last_activity" : sortBy} ${sortOrder}`;
+  } else {
+    query += ` ORDER BY latest_session DESC`
+  };
     
+    query += ` LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`;
     // Add pagination parameters
     queryParams.push(limit, offset);
 
     try {
         const result = await pool.query(query, queryParams);
-        
+
         // Cache the result
         userStatsCache.set(cacheKey, {
             data: result.rows,
             timestamp: Date.now()
         });
-        
+
         // Clean up old cache entries periodically
         if (userStatsCache.size > 500) {
             const now = Date.now();
@@ -160,7 +149,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                 }
             }
         }
-        
+
         return result.rows;
     } catch (error) {
         console.error('Error in fetchUsersFromDB:', error);
@@ -170,55 +159,60 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
 
 async function getTotalUsersCount(search = '', startDate = null, endDate = null) {
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-    
+
     // Create cache key for count query
     const cacheKey = `count_${search}_${startTimestamp}_${endTimestamp}`;
     const cachedResult = userStatsCache.get(cacheKey);
-    
+
     if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
         return cachedResult.data;
     }
-    
+
     // Optimized count query with early filtering
     let query = `
         SELECT COUNT(DISTINCT uid) as total
         FROM questions
         WHERE uid IS NOT NULL AND answertext IS NOT NULL
     `;
-    
+
     const queryParams = [];
     let paramIndex = 0;
-    
+
     // Add date range filtering
     if (startTimestamp !== null) {
         paramIndex++;
         query += ` AND ets >= $${paramIndex}`;
         queryParams.push(startTimestamp);
     }
-    
+
     if (endTimestamp !== null) {
         paramIndex++;
         query += ` AND ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
-    
+
+    // Add future ETS filter (filter out bad telemetry data with future timestamps)
+    paramIndex++;
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(getCurrentTimestamp());
+
     // Add search filter to count query if search term is provided
     if (search && search.trim() !== '') {
         paramIndex++;
         query += ` AND uid ILIKE $${paramIndex}`;
         queryParams.push(`%${search.trim()}%`);
     }
-    
+
     try {
         const result = await pool.query(query, queryParams);
         const totalCount = parseInt(result.rows[0].total);
-        
+
         // Cache the result
         userStatsCache.set(cacheKey, {
             data: totalCount,
             timestamp: Date.now()
         });
-        
+
         return totalCount;
     } catch (error) {
         console.error('Error in getTotalUsersCount:', error);
@@ -229,23 +223,23 @@ async function getTotalUsersCount(search = '', startDate = null, endDate = null)
 function formatUserData(row) {
     let latestSession = null;
     let firstSession = null;
-    
+
     try {
         if (row.latest_session) {
             const timestamp = parseInt(row.latest_session);
             if (!isNaN(timestamp)) {
-                latestSession = new Date(timestamp).toISOString().slice(0, 19);
+                latestSession = formatDateToIST(timestamp);
             } else {
-                latestSession = new Date(row.latest_session).toISOString().slice(0, 19);
+                latestSession = formatDateToIST(row.latest_session);
             }
         }
-        
+
         if (row.first_session) {
             const timestamp = parseInt(row.first_session);
             if (!isNaN(timestamp)) {
-                firstSession = new Date(timestamp).toISOString().slice(0, 19);
+                firstSession = formatDateToIST(timestamp);
             } else {
-                firstSession = new Date(row.first_session).toISOString().slice(0, 19);
+                firstSession = formatDateToIST(row.first_session);
             }
         }
     } catch (err) {
@@ -281,9 +275,9 @@ const formatUserDataHandler = async (req, res) => {
         });
     } catch (error) {
         console.error("Error in format user data handler:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error in format user data handler" 
+            error: "Error in format user data handler"
         });
     }
 };
@@ -296,9 +290,9 @@ const fetchUsersFromDBHandler = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         const usersData = await fetchUsersFromDB(page, limit, search, startDate, endDate);
-        
+
         res.status(200).json({
             success: true,
             data: usersData,
@@ -310,9 +304,9 @@ const fetchUsersFromDBHandler = async (req, res) => {
         });
     } catch (error) {
         console.error("Error in fetch users from DB handler:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching users from database" 
+            error: "Error fetching users from database"
         });
     }
 };
@@ -323,9 +317,9 @@ const getTotalUsersCountHandler = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         const totalCount = await getTotalUsersCount(search, startDate, endDate);
-        
+
         res.status(200).json({
             success: true,
             data: {
@@ -339,9 +333,9 @@ const getTotalUsersCountHandler = async (req, res) => {
         });
     } catch (error) {
         console.error("Error in get total users count handler:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error getting total users count" 
+            error: "Error getting total users count"
         });
     }
 };
@@ -354,39 +348,41 @@ const getUsers = async (req, res) => {
         const search = req.query.search ? String(req.query.search).trim() : '';
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === 'desc' ? 'desc' : 'asc';
+
         // Additional validation for search term length to prevent abuse
         if (search.length > 1000) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Search term too long" 
+                error: "Search term too long"
             });
         }
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Start date cannot be after end date" 
+                error: "Start date cannot be after end date"
             });
         }
 
         // Fetch paginated users data and total count
         const [usersData, totalCount] = await Promise.all([
-            fetchUsersFromDB(page, limit, search, startDate, endDate),
+            fetchUsersFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
             getTotalUsersCount(search, startDate, endDate)
         ]);
 
         const formattedData = usersData.map(formatUserData);
-        
+
         // Calculate pagination metadata
         const totalPages = Math.ceil(totalCount / limit);
         const hasNextPage = page < totalPages;
@@ -429,40 +425,40 @@ const getUserByUsername = async (req, res) => {
         const { username } = req.params;
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         if (!username || typeof username !== 'string' || username.trim() === '') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Valid username is required" 
+                error: "Valid username is required"
             });
         }
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         const queryParams = [username.trim()];
         let paramIndex = 1;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         // Get comprehensive user details with date filtering
         const query = {
             text: `
@@ -517,21 +513,21 @@ const getUserByUsername = async (req, res) => {
             `,
             values: queryParams,
         };
-        
+
         const result = await pool.query(query);
-        
+
         if (result.rows.length === 0) {
-            return res.status(404).json({ 
+            return res.status(404).json({
                 success: false,
-                error: "No user found for the given username and date range" 
+                error: "No user found for the given username and date range"
             });
         }
-        
+
         const userData = formatUserData(result.rows[0]);
         // Add additional details for single user view
         userData.channelsUsed = result.rows[0].channels_used || 0;
         userData.channels = result.rows[0].channels || [];
-        
+
         res.status(200).json({
             success: true,
             data: userData,
@@ -544,9 +540,9 @@ const getUserByUsername = async (req, res) => {
         });
     } catch (error) {
         console.error("Error fetching user by username:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching user data" 
+            error: "Error fetching user data"
         });
     }
 };
@@ -556,37 +552,37 @@ const getUserStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         let feedbackDateFilter = '';
         let activityDateFilter = 'WHERE created_at >= CURRENT_DATE - INTERVAL \'30 days\'';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             feedbackDateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             feedbackDateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         // If date filtering is applied, use it for activity as well
         if (startTimestamp !== null || endTimestamp !== null) {
             activityDateFilter = 'WHERE true';
@@ -661,10 +657,10 @@ const getUserStats = async (req, res) => {
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
         const stats = result.rows[0];
-        
+
         res.status(200).json({
             success: true,
             data: {
@@ -684,9 +680,9 @@ const getUserStats = async (req, res) => {
         });
     } catch (error) {
         console.error("Error fetching user stats:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching user statistics" 
+            error: "Error fetching user statistics"
         });
     }
 };
@@ -696,33 +692,33 @@ const getSessionStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         const query = {
             text: `
                 WITH session_stats AS (
@@ -802,10 +798,10 @@ const getSessionStats = async (req, res) => {
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
         const stats = result.rows[0];
-        
+
         res.status(200).json({
             success: true,
             data: {
@@ -826,9 +822,9 @@ const getSessionStats = async (req, res) => {
         });
     } catch (error) {
         console.error("Error fetching session stats:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching session statistics" 
+            error: "Error fetching session statistics"
         });
     }
 };
@@ -838,33 +834,33 @@ const getQuestionStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         const query = {
             text: `
                 WITH question_stats AS (
@@ -949,10 +945,10 @@ const getQuestionStats = async (req, res) => {
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
         const stats = result.rows[0];
-        
+
         res.status(200).json({
             success: true,
             data: {
@@ -974,9 +970,9 @@ const getQuestionStats = async (req, res) => {
         });
     } catch (error) {
         console.error("Error fetching question stats:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching question statistics" 
+            error: "Error fetching question statistics"
         });
     }
 };
@@ -986,33 +982,33 @@ const getFeedbackStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         const query = {
             text: `
                 WITH feedback_stats AS (
@@ -1114,10 +1110,10 @@ const getFeedbackStats = async (req, res) => {
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
         const stats = result.rows[0];
-        
+
         res.status(200).json({
             success: true,
             data: {
@@ -1140,9 +1136,9 @@ const getFeedbackStats = async (req, res) => {
         });
     } catch (error) {
         console.error("Error fetching feedback stats:", error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
-            error: "Error fetching feedback statistics" 
+            error: "Error fetching feedback statistics"
         });
     }
 };
@@ -1153,48 +1149,48 @@ const getUserGraph = async (req, res) => {
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
         const search = req.query.search ? String(req.query.search).trim() : '';
-        
+
         // Validate granularity parameter
         if (!['daily', 'hourly', 'weekly', 'monthly'].includes(granularity)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'" 
+                error: "Invalid granularity. Must be 'daily', 'hourly', 'weekly', or 'monthly'"
             });
         }
-        
+
         // Validate date range
         const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
         if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp" 
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
             });
         }
-        
+
         if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                error: "Start date cannot be after end date" 
+                error: "Start date cannot be after end date"
             });
         }
-        
+
         // Build date filtering
         let dateFilter = '';
         const queryParams = [];
         let paramIndex = 0;
-        
+
         if (startTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets >= $${paramIndex}`;
             queryParams.push(startTimestamp);
         }
-        
+
         if (endTimestamp !== null) {
             paramIndex++;
             dateFilter += ` AND ets <= $${paramIndex}`;
             queryParams.push(endTimestamp);
         }
-        
+
         // Add search filter if provided
         if (search && search.trim() !== '') {
             paramIndex++;
@@ -1206,84 +1202,115 @@ const getUserGraph = async (req, res) => {
             )`;
             queryParams.push(`%${search.trim()}%`);
         }
-        
+
         // Define the date truncation and formatting based on granularity
         let dateGrouping;
         let dateFormat;
         let orderBy;
-        
+
         switch (granularity) {
             case 'hourly':
-                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD HH24:00')";
                 orderBy = "hour_bucket";
                 break;
             case 'weekly':
-                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
                 orderBy = "week_bucket";
                 break;
             case 'monthly':
-                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM')";
                 orderBy = "month_bucket";
                 break;
             case 'daily':
             default:
-                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
+                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
                 orderBy = "day_bucket";
                 break;
         }
-        
+
+        // Build date format string for the final SELECT (using da.activity_date)
+        let finalDateFormat;
+        switch (granularity) {
+            case 'hourly':
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD HH24:00')";
+                break;
+            case 'weekly':
+            case 'monthly':
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD')";
+                break;
+            case 'daily':
+            default:
+                finalDateFormat = "TO_CHAR(da.activity_date, 'YYYY-MM-DD')";
+                break;
+        }
+
         const query = {
             text: `
-                SELECT 
-                    ${dateFormat} as date,
-                    ${dateGrouping} as ${orderBy},
-                   
-                    COUNT(DISTINCT uid) as uniqueUsersCount,
-                    COUNT(DISTINCT sid) as uniqueSessionsCount,
-                    
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
-                FROM (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ) AS combined
-                WHERE 1=1
+                WITH first_activity AS (
+                    -- Use materialized view for fast lookup of first activity dates
+                    SELECT uid, first_date
+                    FROM mv_user_first_activity
+                ),
+                daily_activity AS (
+                    SELECT 
+                        ${dateGrouping} as activity_date,
+                        uid
+                    FROM questions
+                    WHERE uid IS NOT NULL AND ets IS NOT NULL
                     ${dateFilter}
-                GROUP BY ${dateGrouping}
-                ORDER BY ${orderBy} ASC
+                    GROUP BY ${dateGrouping}, uid
+                )
+                SELECT 
+                    ${finalDateFormat} as date,
+                    da.activity_date as ${orderBy},
+                    COUNT(DISTINCT da.uid) as uniqueUsersCount,
+                    COUNT(DISTINCT CASE 
+                        WHEN DATE_TRUNC('day', fa.first_date) = DATE_TRUNC('day', da.activity_date) 
+                        THEN da.uid 
+                    END) as newUsersCount,
+                    COUNT(DISTINCT CASE 
+                        WHEN DATE_TRUNC('day', fa.first_date) < DATE_TRUNC('day', da.activity_date) 
+                        THEN da.uid 
+                    END) as returningUsersCount,
+                    EXTRACT(EPOCH FROM da.activity_date) * 1000 as timestamp,
+                    ${granularity === 'hourly' ? `EXTRACT(HOUR FROM da.activity_date) as hour_of_day` : 'NULL as hour_of_day'}
+                FROM daily_activity da
+                JOIN first_activity fa ON da.uid = fa.uid
+                GROUP BY da.activity_date
+                ORDER BY ${orderBy} ASC 
             `,
             values: queryParams
         };
-        
+
         const result = await pool.query(query);
-        
+
         // Format the data for frontend consumption
         const graphData = result.rows.map(row => ({
             date: row.date,
             timestamp: parseInt(row.timestamp),
             uniqueUsersCount: parseInt(row.uniqueuserscount) || 0,
-            uniqueSessionsCount: parseInt(row.uniquesessionscount) || 0,
+            newUsersCount: parseInt(row.newuserscount) || 0,
+            returningUsersCount: parseInt(row.returninguserscount) || 0,
             // Add formatted values for different time periods
-            ...(granularity === 'hourly' && { 
-                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0') 
+            ...(granularity === 'hourly' && {
+                hour: parseInt(row.hour_of_day) || parseInt(row.date?.split(' ')[1]?.split(':')[0] || '0')
             }),
             ...(granularity === 'weekly' && { week: row.date }),
             ...(granularity === 'monthly' && { month: row.date })
         }));
-        
+
         // Calculate summary statistics
         const totalUniqueUsers = Math.max(...graphData.map(item => item.uniqueUsersCount), 0);
         // Find peak activity period
-        const peakPeriod = graphData.reduce((max, item) => 
-            item.uniqueUsersCount > max.uniqueUsersCount ? item : max, 
+        const peakPeriod = graphData.reduce((max, item) =>
+            item.uniqueUsersCount > max.uniqueUsersCount ? item : max,
             { uniqueUsersCount: 0, date: null }
         );
-        
+
         res.status(200).json({
             success: true,
             data: graphData,

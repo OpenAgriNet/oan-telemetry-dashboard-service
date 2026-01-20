@@ -1,38 +1,9 @@
 const pool = require('../services/db'); // adjust path as needed
-
-// Helper function to parse and validate date range parameters
-function parseDateRange(startDate, endDate) {
-    let startTimestamp = null;
-    let endTimestamp = null;
-
-    if (startDate) {
-        if (typeof startDate === 'string' && /^\d+$/.test(startDate)) {
-            // Unix timestamp provided
-            startTimestamp = parseInt(startDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(startDate);
-            if (!isNaN(date.getTime())) {
-                startTimestamp = date.getTime();
-            }
-        }
-    }
-
-    if (endDate) {
-        if (typeof endDate === 'string' && /^\d+$/.test(endDate)) {
-            // Unix timestamp provided
-            endTimestamp = parseInt(endDate);
-        } else {
-            // ISO date string provided, convert to unix timestamp (milliseconds)
-            const date = new Date(endDate);
-            if (!isNaN(date.getTime())) {
-                endTimestamp = date.getTime();
-            }
-        }
-    }
-
-    return { startTimestamp, endTimestamp };
-}
+const { getTotalFeedbackCount, getTotalLikesDislikesCount } = require('./feedback.controller');
+const { getTotalQuestionsCount } = require('./questions.controller');
+const { getTotalSessionsCount } = require('./sessions.controller');
+const { getTotalUsersCount } = require('./user.controller');
+const { parseDateRange } = require('../utils/dateUtils');
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
@@ -103,7 +74,6 @@ const getUserLoginAnalytics = async (req, res) => {
                 GROUP BY hour
                 ORDER BY hour DESC
             `);
-            console.log(result.rows);
 
             // Get current time and generate past 12 hourly time slots
             const now = new Date();
@@ -138,114 +108,169 @@ const getUserLoginAnalytics = async (req, res) => {
 
 // Get overall dashboard statistics - OPTIMIZED to return only essential metrics
 const getDashboardStats = async (req, res) => {
-    try {
-        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
-        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+  try {
+    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
-        // Validate date range - no default start date to ensure consistency across all pages
-        let { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-            return res.status(400).json({
-                success: false,
-                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
-            });
-        }
-
-        // Build date filtering
-        let dateFilter = '';
-        let feedbackDateFilter = '';
-        const queryParams = [];
-        let paramIndex = 0;
-
-        if (startTimestamp !== null) {
-            paramIndex++;
-            dateFilter += ` AND ets >= $${paramIndex}`;
-            feedbackDateFilter += ` AND ets >= $${paramIndex}`;
-            queryParams.push(startTimestamp);
-        }
-
-        if (endTimestamp !== null) {
-            paramIndex++;
-            dateFilter += ` AND ets <= $${paramIndex}`;
-            feedbackDateFilter += ` AND ets <= $${paramIndex}`;
-            queryParams.push(endTimestamp);
-        }
-
-        // SIMPLIFIED QUERY - Only compute essential metrics actually used by the frontend
-        const query = {
-            text: `
-                WITH all_user_activity AS (
-                    SELECT uid, sid, ets FROM questions WHERE uid IS NOT NULL AND ets IS NOT NULL
-                    UNION ALL
-                    SELECT uid, sid, ets FROM errordetails WHERE uid IS NOT NULL AND ets IS NOT NULL
-                ),
-                overall_stats AS (
-                    SELECT 
-                        COUNT(DISTINCT uid) as total_users,
-                        COUNT(DISTINCT sid) as total_sessions
-                    FROM all_user_activity
-                    WHERE 1=1 ${dateFilter}
-                ),
-                question_stats AS (
-                    SELECT 
-                        COUNT(*) as total_questions
-                    FROM questions
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-                ),
-                feedback_stats AS (
-                    SELECT 
-                        COUNT(*) as total_feedback,
-                        COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
-                        COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
-                    FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
-                )
-                SELECT 
-                    os.total_users,
-                    os.total_sessions,
-                    qs.total_questions,
-                    fs.total_feedback,
-                    fs.total_likes,
-                    fs.total_dislikes
-                FROM overall_stats os
-                CROSS JOIN question_stats qs
-                CROSS JOIN feedback_stats fs
-            `,
-            values: queryParams
-        };
-
-        const result = await pool.query(query);
-        const stats = result.rows[0];
-
-        res.status(200).json({
-            success: true,
-            data: {
-                // Core Metrics - only what's actually used by the frontend
-                totalUsers: parseInt(stats.total_users) || 0,
-                totalSessions: parseInt(stats.total_sessions) || 0,
-                totalQuestions: parseInt(stats.total_questions) || 0,
-                totalFeedback: parseInt(stats.total_feedback) || 0,
-                totalLikes: parseInt(stats.total_likes) || 0,
-                totalDislikes: parseInt(stats.total_dislikes) || 0
-            },
-            filters: {
-                startDate: startDate,
-                endDate: endDate,
-                appliedStartTimestamp: startTimestamp,
-                appliedEndTimestamp: endTimestamp
-            }
-        });
-    } catch (error) {
-        console.error("Error fetching dashboard stats:", error);
-        res.status(500).json({
-            success: false,
-            error: "Error fetching dashboard statistics"
-        });
+    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+      return res.status(400).json({ success: false, error: "Invalid date format" });
     }
+
+    const queryParams = [];
+    let paramIndex = 0;
+    let questionDateFilter = '';
+    let feedbackDateFilter = '';
+    let errordetailsDateFilter = '';
+    let futureFilter = '';
+
+    if (startTimestamp !== null) {
+      paramIndex++;
+      questionDateFilter += ` AND ets >= $${paramIndex}`;
+      feedbackDateFilter += ` AND ets >= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets >= $${paramIndex}`
+      queryParams.push(startTimestamp);
+    }
+
+    if (endTimestamp !== null) {
+      paramIndex++;
+      questionDateFilter += ` AND ets <= $${paramIndex}`;
+      feedbackDateFilter += ` AND ets <= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
+      queryParams.push(endTimestamp);
+    }
+
+    paramIndex++;
+    queryParams.push(Date.now());
+    futureFilter = ` AND ets <= $${paramIndex}`;
+
+    const query = {
+      text: `
+        WITH first_activity AS (
+          -- Use materialized view for fast lookup of first activity dates
+          -- Falls back to direct query if view doesn't exist
+          SELECT uid, first_date
+          FROM mv_user_first_activity
+        ),
+        daily_activity AS (
+          -- Get all users active in the date range with their activity dates
+          SELECT 
+            DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata') as activity_date,
+            uid
+          FROM questions
+          WHERE uid IS NOT NULL AND ets IS NOT NULL ${questionDateFilter}
+          GROUP BY DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), uid
+        ),
+        user_stats AS (
+          -- Calculate totals using same logic as graph
+          SELECT
+            COUNT(DISTINCT da.uid) AS total_users,
+            COUNT(DISTINCT CASE 
+              WHEN DATE_TRUNC('day', fa.first_date) = DATE_TRUNC('day', da.activity_date)
+              THEN da.uid 
+            END) AS new_users
+          FROM daily_activity da
+          JOIN first_activity fa ON da.uid = fa.uid
+        ),
+        session_stats AS (
+          -- combine all session-related rows from questions, feedback and errordetails
+          WITH combined_sessions AS (
+            SELECT
+              sid,
+              uid,
+              questiontext,
+              ets
+            FROM questions
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter} ${futureFilter}
+            UNION ALL
+            SELECT
+              sid,
+              uid,
+              NULL AS questiontext,
+              ets
+            FROM feedback
+            WHERE sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
+            UNION ALL
+            SELECT
+              sid,
+              uid,
+              NULL AS questiontext,
+              ets
+            FROM errordetails
+            WHERE sid IS NOT NULL ${errordetailsDateFilter} ${futureFilter}
+          )
+          SELECT COUNT(*) AS total_sessions
+          FROM (
+            SELECT sid, uid, COUNT(questiontext) AS question_count, MAX(ets) AS session_time
+            FROM combined_sessions
+            GROUP BY sid, uid
+          ) session_groups
+        ),
+        question_stats AS (
+          SELECT COUNT(*) AS total_questions
+          FROM questions
+          WHERE uid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter}
+        ),
+        feedback_stats AS (
+          SELECT 
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback
+          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL ${feedbackDateFilter}
+        )
+        SELECT 
+          us.total_users,
+          us.new_users,
+          ss.total_sessions,
+          qs.total_questions,
+          fs.total_feedback,
+          fs.total_likes,
+          fs.total_dislikes
+        FROM user_stats us
+        CROSS JOIN session_stats ss
+        CROSS JOIN question_stats qs
+        CROSS JOIN feedback_stats fs
+      `,
+      values: queryParams
+    };
+
+    //     const total_questions = await getTotalQuestionsCount(null, startDate, endDate);
+    //   const users = await getTotalUsersCount(null, startDate, endDate);
+    //   const total_sessions = await getTotalSessionsCount(null, startDate, endDate);
+    //   const total_feedback = await getTotalFeedbackCount(null, startDate, endDate);
+    //   const feedbacks = await getTotalLikesDislikesCount(null, startDate, endDate);
+
+    const result = await pool.query(query);
+    const stats = result.rows[0];
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalUsers: parseInt(stats.total_users) || 0,
+        totalNewUsers: parseInt(stats.new_users) || 0,
+        totalSessions: parseInt(stats.total_sessions) || 0,
+        totalQuestions: parseInt(stats.total_questions) || 0,
+        totalFeedback: parseInt(stats.total_feedback) || 0,
+        totalLikes: parseInt(stats.total_likes) || 0,
+        totalDislikes: parseInt(stats.total_dislikes) || 0
+      },
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching dashboard stats:", error);
+    res.status(500).json({ success: false, error: "Error fetching dashboard statistics" });
+  }
 };
+
 const getUserGraph = async (req, res) => {
-    console.log("getUserGraph");
     try {
         res.status(200).json({
             success: true,
