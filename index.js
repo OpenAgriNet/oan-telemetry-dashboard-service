@@ -10,6 +10,7 @@ const errorRoutes = require("./routes/errorRoutes");
 const dashboardRoutes = require("./routes/dashboard.Routes");
 const authController = require("./controllers/auth.controller");
 const leaderboardRoutes = require("./routes/leaderboard.Routes");
+const deviceRoutes = require("./routes/deviceRoutes");
 const villageRoutes = require("./routes/villageRoutes");
 const leaderboardAuthController = require("./controllers/leaderboardAuth.controller");
 const pool = require("./services/db");
@@ -25,7 +26,7 @@ app.use(
     methods: ["GET", "POST"], // Allowed HTTP methods
     //allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
     //credentials: true // Allow credentials (e.g., cookies, HTTP auth)
-  })
+  }),
 );
 
 app.get("/health", (req, res) => {
@@ -40,11 +41,12 @@ app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
 
 app.use("/v1", authController, questionRoutes);
 app.use("/v1", authController, userRoutes);
+app.use("/v1", authController, deviceRoutes);
 app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
-app.use("/v1/api/villages", authController, villageRoutes);
+app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
