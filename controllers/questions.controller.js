@@ -1,5 +1,9 @@
 const pool = require("../services/db"); // Ensure this path is correct
-const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require("../utils/dateUtils");
+const {
+  parseDateRange,
+  formatDateToIST,
+  getCurrentTimestamp,
+} = require("../utils/dateUtils");
 
 async function fetchQuestionsFromDB(
   page = 1,
@@ -7,8 +11,8 @@ async function fetchQuestionsFromDB(
   search = "",
   startDate = null,
   endDate = null,
-  sortBy = null, 
-  sortOrder = "DESC"
+  sortBy = null,
+  sortOrder = "DESC",
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -87,7 +91,7 @@ async function fetchQuestionsFromDB(
 async function getTotalQuestionsCount(
   search = "",
   startDate = null,
-  endDate = null
+  endDate = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -205,7 +209,15 @@ const getQuestions = async (req, res) => {
 
     // Fetch paginated questions data and total count
     const [questionsData, totalCount] = await Promise.all([
-      fetchQuestionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
+      fetchQuestionsFromDB(
+        page,
+        limit,
+        search,
+        startDate,
+        endDate,
+        sortBy,
+        sortOrder,
+      ),
       getTotalQuestionsCount(search, startDate, endDate),
     ]);
 
@@ -772,10 +784,11 @@ const getQuestionsGraph = async (req, res) => {
                     COUNT(*) as questionsCount,
               
                     EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === "hourly"
-          ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
-          : "NULL as hour_of_day"
-        }
+                    ${
+                      granularity === "hourly"
+                        ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
+                        : "NULL as hour_of_day"
+                    }
                 FROM questions
                 WHERE questiontext IS NOT NULL 
                     AND answertext IS NOT NULL 
@@ -787,11 +800,11 @@ const getQuestionsGraph = async (req, res) => {
       values: queryParams,
     };
 
-          // COUNT(DISTINCT uid) as uniqueUsersCount,
-          //           COUNT(DISTINCT sid) as uniqueSessionsCount,
-          //           COUNT(DISTINCT channel) as uniqueChannelsCount,
-          //           AVG(LENGTH(questiontext)) as avgQuestionLength,
-          //           AVG(LENGTH(answertext)) as avgAnswerLength,
+    // COUNT(DISTINCT uid) as uniqueUsersCount,
+    //           COUNT(DISTINCT sid) as uniqueSessionsCount,
+    //           COUNT(DISTINCT channel) as uniqueChannelsCount,
+    //           AVG(LENGTH(questiontext)) as avgQuestionLength,
+    //           AVG(LENGTH(answertext)) as avgAnswerLength,
 
     const result = await pool.query(query);
 
@@ -818,7 +831,7 @@ const getQuestionsGraph = async (req, res) => {
     // Calculate summary statistics
     const totalQuestions = graphData.reduce(
       (sum, item) => sum + item.questionsCount,
-      0
+      0,
     );
     // const totalUniqueUsers = Math.max(
     //   ...graphData.map((item) => item.uniqueUsersCount),
@@ -830,7 +843,7 @@ const getQuestionsGraph = async (req, res) => {
     // Find peak activity period
     const peakPeriod = graphData.reduce(
       (max, item) => (item.questionsCount > max.questionsCount ? item : max),
-      { questionsCount: 0, date: null }
+      { questionsCount: 0, date: null },
     );
 
     res.status(200).json({
@@ -881,3 +894,29 @@ module.exports = {
   fetchQuestionsFromDB,
   formatQuestionData,
 };
+
+// const query = {
+//   text: `
+//     SELECT
+//       TO_CHAR(bucket_date, 'YYYY-MM-DD') AS date,
+//       COUNT(*) AS questionsCount,
+//       EXTRACT(EPOCH FROM bucket_date) * 1000 AS timestamp,
+//       ${
+//         granularity === "hourly"
+//           ? "EXTRACT(HOUR FROM bucket_date) AS hour_of_day"
+//           : "NULL AS hour_of_day"
+//       }
+//     FROM (
+//       SELECT
+//         ${dateGrouping} AS bucket_date
+//       FROM questions
+//       WHERE questiontext IS NOT NULL
+//         AND answertext IS NOT NULL
+//         AND ets IS NOT NULL
+//         ${dateFilter}
+//     ) q
+//     GROUP BY bucket_date
+//     ORDER BY bucket_date ASC
+//   `,
+//   values: queryParams,
+// };
