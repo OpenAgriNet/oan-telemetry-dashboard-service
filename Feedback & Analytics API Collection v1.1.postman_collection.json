@@ -1,0 +1,1241 @@
+{
+	"info": {
+		"_postman_id": "c26c26ba-fa9e-4453-bda8-6661d721eb99",
+		"name": "Feedback & Analytics API Collection v1.1",
+		"description": "Complete API collection for Feedback, Questions, Sessions, and Users management with pagination, search, and date range filtering capabilities using unix timestamps (ets parameter)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "14644630"
+	},
+	"item": [
+		{
+			"name": "Feedback APIs",
+			"item": [
+				{
+					"name": "Get All Feedback",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1",
+									"description": "Page number (default: 1)"
+								},
+								{
+									"key": "limit",
+									"value": "10",
+									"description": "Items per page (default: 10, max: 100)"
+								}
+							]
+						},
+						"description": "Retrieve all feedback with pagination support"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback with Date Range (ISO)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=15&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Start date in ISO format (YYYY-MM-DD)"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "End date in ISO format (YYYY-MM-DD)"
+								}
+							]
+						},
+						"description": "Get feedback within a specific date range using ISO date format"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback with Date Range (Unix Timestamp)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=10&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Start date as unix timestamp (milliseconds)"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "End date as unix timestamp (milliseconds)"
+								}
+							]
+						},
+						"description": "Get feedback within a specific date range using unix timestamps"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback with Search and Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=20&search=agri&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								},
+								{
+									"key": "search",
+									"value": "agri",
+									"description": "Search term"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Start date filter"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "End date filter"
+								}
+							]
+						},
+						"description": "Combine search and date filtering for feedback"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback/{{sampleFeedbackId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback",
+								"{{sampleFeedbackId}}"
+							],
+							"variable": [
+								{
+									"key": "sampleFeedbackId",
+									"value": "{{sampleFeedbackId}}"
+								}
+							]
+						},
+						"description": "Get specific feedback details by UUID"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Feedback - Large Limit",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Test with larger page size"
+					},
+					"response": []
+				}
+			],
+			"description": "Feedback management endpoints with pagination, search, and date range filtering using ets unix timestamps"
+		},
+		{
+			"name": "Questions APIs",
+			"item": [
+				{
+					"name": "Get All Questions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=15",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								}
+							]
+						},
+						"description": "Retrieve all questions with pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Questions with Date Range",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=10&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Start date filter"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "End date filter"
+								}
+							]
+						},
+						"description": "Get questions within specific date range"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Questions with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=10&search=database&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "search",
+									"value": "database",
+									"description": "Search in question text, answer text, user ID, and channel"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Start timestamp filter"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "End timestamp filter"
+								}
+							]
+						},
+						"description": "Search questions with date filtering using unix timestamps"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Question by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions/{{sampleQuestionId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions",
+								"{{sampleQuestionId}}"
+							],
+							"variable": [
+								{
+									"key": "sampleQuestionId",
+									"value": "{{sampleQuestionId}}"
+								}
+							]
+						},
+						"description": "Get specific question details by UUID"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Questions by User ID with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}/questions?page=1&limit=5&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}",
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "5"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Filter questions from this date"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "Filter questions until this date"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get questions by user with date range filtering"
+					},
+					"response": []
+				}
+			],
+			"description": "Questions management endpoints with comprehensive search, filtering, and date range capabilities"
+		},
+		{
+			"name": "Sessions APIs",
+			"item": [
+				{
+					"name": "Get All Sessions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=1&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Retrieve all sessions with aggregated data from questions, feedback, and errors"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sessions with Date Range",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=1&limit=15&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Filter sessions from this date"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "Filter sessions until this date"
+								}
+							]
+						},
+						"description": "Get sessions within specific date range"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Sessions with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=1&limit=10&search=jag&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "search",
+									"value": "jag",
+									"description": "Search by session ID or username"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Start timestamp filter"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "End timestamp filter"
+								}
+							]
+						},
+						"description": "Search sessions with date filtering using timestamps"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Session Details by ID with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions/{{sampleSessionId}}?startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions",
+								"{{sampleSessionId}}"
+							],
+							"query": [
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Filter session data from this date"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "Filter session data until this date"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleSessionId",
+									"value": "{{sampleSessionId}}"
+								}
+							]
+						},
+						"description": "Get session details with date range filtering for activities"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Sessions by User ID with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}/sessions?page=1&limit=10&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}",
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Filter sessions from this timestamp"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "Filter sessions until this timestamp"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get user sessions with date range filtering"
+					},
+					"response": []
+				}
+			],
+			"description": "Session management with aggregated data from multiple sources (questions, feedback, errordetails) and date filtering"
+		},
+		{
+			"name": "Users APIs",
+			"item": [
+				{
+					"name": "Get All Users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users?page=1&limit=25",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "25"
+								}
+							]
+						},
+						"description": "Retrieve all users with comprehensive statistics"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Users with Date Range",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users?page=1&limit=20&startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Filter user activity from this date"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "Filter user activity until this date"
+								}
+							]
+						},
+						"description": "Get users with statistics filtered by date range"
+					},
+					"response": []
+				},
+				{
+					"name": "Search Users with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users?page=1&limit=15&search=jag&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "15"
+								},
+								{
+									"key": "search",
+									"value": "jag",
+									"description": "Search users by username"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Start timestamp for activity filter"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "End timestamp for activity filter"
+								}
+							]
+						},
+						"description": "Search users with date filtering on their activity"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User by Username with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/{{sampleUserId}}?startDate={{startDateISO}}&endDate={{endDateISO}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"{{sampleUserId}}"
+							],
+							"query": [
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}",
+									"description": "Filter user activity from this date"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}",
+									"description": "Filter user activity until this date"
+								}
+							],
+							"variable": [
+								{
+									"key": "sampleUserId",
+									"value": "{{sampleUserId}}"
+								}
+							]
+						},
+						"description": "Get user profile with activity filtered by date range"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Statistics with Date Filter",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/stats?startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"stats"
+							],
+							"query": [
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Filter statistics from this timestamp"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "Filter statistics until this timestamp"
+								}
+							]
+						},
+						"description": "Get platform statistics filtered by date range"
+					},
+					"response": []
+				}
+			],
+			"description": "User management and analytics endpoints with comprehensive statistics and date range filtering"
+		},
+		{
+			"name": "Edge Cases & Error Testing",
+			"item": [
+				{
+					"name": "Invalid Page Number",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=0&limit=10",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "0",
+									"description": "Should default to 1"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Test invalid page number handling"
+					},
+					"response": []
+				},
+				{
+					"name": "Limit Too High",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=150",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "150",
+									"description": "Should be capped at 100"
+								}
+							]
+						},
+						"description": "Test limit validation (max 100)"
+					},
+					"response": []
+				},
+				{
+					"name": "Invalid Date Format",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?startDate=invalid-date&endDate=also-invalid",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "startDate",
+									"value": "invalid-date",
+									"description": "Should return 400 error"
+								},
+								{
+									"key": "endDate",
+									"value": "also-invalid",
+									"description": "Should return 400 error"
+								}
+							]
+						},
+						"description": "Test invalid date format handling"
+					},
+					"response": []
+				},
+				{
+					"name": "Long Search Term",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?search={{longSearchTerm}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "{{longSearchTerm}}",
+									"description": "Very long search term to test validation"
+								}
+							]
+						},
+						"description": "Test search term length validation"
+					},
+					"response": []
+				},
+				{
+					"name": "Invalid UUID Format",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback/invalid-uuid-format",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback",
+								"invalid-uuid-format"
+							]
+						},
+						"description": "Test UUID validation for feedback ID"
+					},
+					"response": []
+				},
+				{
+					"name": "Non-existent Resource",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/users/nonexistent_user",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"users",
+								"nonexistent_user"
+							]
+						},
+						"description": "Test 404 handling for non-existent user"
+					},
+					"response": []
+				},
+				{
+					"name": "Empty Search",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?search=",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "",
+									"description": "Empty search should work like no search"
+								}
+							]
+						},
+						"description": "Test empty search parameter handling"
+					},
+					"response": []
+				}
+			],
+			"description": "Test edge cases and error handling scenarios"
+		},
+		{
+			"name": "Performance Testing",
+			"item": [
+				{
+					"name": "Large Page Request",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/questions?page=1&limit=100",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"questions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Test maximum allowed page size"
+					},
+					"response": []
+				},
+				{
+					"name": "Deep Pagination",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?page=50&limit=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "50"
+								},
+								{
+									"key": "limit",
+									"value": "20"
+								}
+							]
+						},
+						"description": "Test performance with deep pagination"
+					},
+					"response": []
+				},
+				{
+					"name": "Date Range Performance Test",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/feedback?page=1&limit=100&startDate={{startTimestamp}}&endDate={{endTimestamp}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"feedback"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startTimestamp}}",
+									"description": "Performance test with date filtering"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endTimestamp}}",
+									"description": "Performance test with date filtering"
+								}
+							]
+						},
+						"description": "Test performance with date range filtering and maximum page size"
+					},
+					"response": []
+				},
+				{
+					"name": "Combined Search and Date Range",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/sessions?search=performance&startDate={{startDateISO}}&endDate={{endDateISO}}&page=1&limit=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sessions"
+							],
+							"query": [
+								{
+									"key": "search",
+									"value": "performance"
+								},
+								{
+									"key": "startDate",
+									"value": "{{startDateISO}}"
+								},
+								{
+									"key": "endDate",
+									"value": "{{endDateISO}}"
+								},
+								{
+									"key": "page",
+									"value": "1"
+								},
+								{
+									"key": "limit",
+									"value": "50"
+								}
+							]
+						},
+						"description": "Test performance with combined search and date filtering"
+					},
+					"response": []
+				}
+			],
+			"description": "Performance and load testing scenarios"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Set up long search term for testing",
+					"const longTerm = 'a'.repeat(1001);",
+					"pm.variables.set('longSearchTerm', longTerm);",
+					"",
+					"// Set up dynamic timestamps for date range queries",
+					"const now = new Date();",
+					"const currentTimestamp = now.getTime();",
+					"",
+					"// Calculate 7 days ago",
+					"const last7Days = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));",
+					"const last7DaysTimestamp = last7Days.getTime();",
+					"",
+					"// Calculate 30 days ago",
+					"const last30Days = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));",
+					"const last30DaysTimestamp = last30Days.getTime();",
+					"",
+					"// Calculate start of current week (Monday)",
+					"const startOfWeek = new Date(now);",
+					"const day = startOfWeek.getDay();",
+					"const diff = startOfWeek.getDate() - day + (day === 0 ? -6 : 1);",
+					"startOfWeek.setDate(diff);",
+					"startOfWeek.setHours(0, 0, 0, 0);",
+					"const weekStartTimestamp = startOfWeek.getTime();",
+					"",
+					"// Calculate start of current month",
+					"const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);",
+					"const monthStartTimestamp = startOfMonth.getTime();",
+					"",
+					"// Set all timestamp variables",
+					"pm.variables.set('currentTimestamp', currentTimestamp.toString());",
+					"pm.variables.set('last7DaysTimestamp', last7DaysTimestamp.toString());",
+					"pm.variables.set('last30DaysTimestamp', last30DaysTimestamp.toString());",
+					"pm.variables.set('weekStartTimestamp', weekStartTimestamp.toString());",
+					"pm.variables.set('monthStartTimestamp', monthStartTimestamp.toString());",
+					"",
+					"// Log for debugging",
+					"console.log('Current timestamp:', currentTimestamp);",
+					"console.log('7 days ago timestamp:', last7DaysTimestamp);",
+					"console.log('30 days ago timestamp:', last30DaysTimestamp);",
+					"console.log('Week start timestamp:', weekStartTimestamp);",
+					"console.log('Month start timestamp:', monthStartTimestamp);"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000/v1",
+			"type": "string"
+		},
+		{
+			"key": "sampleUserId",
+			"value": "jagadish",
+			"type": "string"
+		},
+		{
+			"key": "sampleSessionId",
+			"value": "dc215d2b-8184-4bde-b09b-f80251e7e7e0",
+			"type": "string"
+		},
+		{
+			"key": "sampleQuestionId",
+			"value": "9d0cc3a7-4cab-4698-86ce-f1f2d231e307",
+			"type": "string"
+		},
+		{
+			"key": "sampleFeedbackId",
+			"value": "fad272cc-1214-4602-be49-39f2588ae1f2",
+			"type": "string"
+		},
+		{
+			"key": "startDateISO",
+			"value": "2025-01-15",
+			"type": "string"
+		},
+		{
+			"key": "endDateISO",
+			"value": "2025-05-21",
+			"type": "string"
+		},
+		{
+			"key": "startTimestamp",
+			"value": "1704067200000",
+			"type": "string"
+		},
+		{
+			"key": "endTimestamp",
+			"value": "1716422400000",
+			"type": "string"
+		},
+		{
+			"key": "currentTimestamp",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "last7DaysTimestamp",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "last30DaysTimestamp",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "weekStartTimestamp",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "monthStartTimestamp",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
