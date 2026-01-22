@@ -1,0 +1,134 @@
+{
+	"info": {
+		"_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		"name": "Leaderboard API Collection",
+		"description": "API collection for Leaderboard endpoints - Get top 10 users by State, Taluka, and District. All endpoints require JWT authentication and support optional farmer_id filter.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "14644630"
+	},
+	"item": [
+		{
+			"name": "Leaderboard APIs",
+			"item": [
+				{
+					"name": "Get Top 10 by State",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{authToken}}",
+								"description": "JWT token for authentication",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/leaderboard/top10/state",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leaderboard",
+								"top10",
+								"state"
+							],
+							"query": [
+								{
+									"key": "farmer_id",
+									"value": "",
+									"description": "Optional: Filter to show only users with farmer_id",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Get top 10 users by record count across the entire state. Requires JWT authentication. The registered_lgd_code is extracted from the JWT token. Optional farmer_id query parameter filters results to only show users with farmer IDs."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Top 10 by Taluka",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{authToken}}",
+								"description": "JWT token for authentication",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/leaderboard/top10/taluka",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leaderboard",
+								"top10",
+								"taluka"
+							],
+							"query": [
+								{
+									"key": "farmer_id",
+									"value": "",
+									"description": "Optional: Filter to show only users with farmer_id",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Get top 10 users by record count within the same taluka as the authenticated user. Requires JWT authentication. The registered_lgd_code is extracted from the JWT token to determine the taluka. Optional farmer_id query parameter filters results to only show users with farmer IDs."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Top 10 by District",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{authToken}}",
+								"description": "JWT token for authentication",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/leaderboard/top10/district",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leaderboard",
+								"top10",
+								"district"
+							],
+							"query": [
+								{
+									"key": "farmer_id",
+									"value": "",
+									"description": "Optional: Filter to show only users with farmer_id",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Get top 10 users by record count within the same district as the authenticated user. Requires JWT authentication. The registered_lgd_code is extracted from the JWT token to determine the district. Optional farmer_id query parameter filters results to only show users with farmer IDs."
+					},
+					"response": []
+				}
+			],
+			"description": "Endpoints for retrieving leaderboard data - top 10 users by state, taluka, and district based on record count"
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "https://proddashbaordvistaar.mahapocra.gov.in/v1",
+			"type": "string"
+		},
+		{
+			"key": "authToken",
+			"value": "your-jwt-token-here",
+			"type": "string"
+		}
+	]
+}
