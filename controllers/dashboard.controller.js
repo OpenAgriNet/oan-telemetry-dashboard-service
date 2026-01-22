@@ -184,12 +184,12 @@ question_stats AS (
     AND ets <= $2
 ),
 feedback_stats AS (
-  SELECT
-    COUNT(DISTINCT qid) AS total_feedback,
-    COUNT(DISTINCT qid) FILTER (WHERE feedbacktype = 'like') AS total_likes,
-    COUNT(DISTINCT qid) FILTER (WHERE feedbacktype = 'dislike') AS total_dislikes
-  FROM feedback
-  WHERE feedbacktext IS NOT NULL
+  SELECT 
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback
+          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
     AND ets >= $1
     AND ets <= $2
 )
