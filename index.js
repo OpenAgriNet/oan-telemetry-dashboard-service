@@ -52,31 +52,31 @@ const checkHealthStatus = async () => {
     console.log(`[${timestamp}] Retrieved counts:`, JSON.stringify(counts));
 
     const thresholds = {
-      questionsMin: parseInt(process.env.THRESHOLD_QUESTIONS_MIN || 0),
-      feedbackMin: parseInt(process.env.THRESHOLD_FEEDBACK_MIN || 0),
+      questionsMin: parseInt(process.env.THRESHOLD_QUESTIONS_MIN || 1), // Default to 1 to trigger on 0
+      feedbackMin: parseInt(process.env.THRESHOLD_FEEDBACK_MIN || 1),   // Default to 1 to trigger on 0
       errorsMax: parseInt(process.env.THRESHOLD_ERRORS_MAX || 10)
     };
 
     console.log(`[${timestamp}] Thresholds config:`, JSON.stringify(thresholds));
 
     let alertTriggered = false;
-    let alertMessage = "Health Check Alert (Last Hour):\n";
+    let alertMessage = "🚨 *Health Check Alert (Last Hour)* 🚨\n\n";
 
     if (counts.questions < thresholds.questionsMin) {
       alertTriggered = true;
-      const msg = `- Low Questions: ${counts.questions} (Min: ${thresholds.questionsMin})\n`;
+      const msg = `> 🔴 *[P1] Low Questions*: \`${counts.questions}\` (Expected Min: \`${thresholds.questionsMin}\`)\n`;
       alertMessage += msg;
       console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
     }
     if (counts.feedback < thresholds.feedbackMin) {
       alertTriggered = true;
-      const msg = `- Low Feedback: ${counts.feedback} (Min: ${thresholds.feedbackMin})\n`;
+      const msg = `> 🟡 *[P2] Low Feedback*: \`${counts.feedback}\` (Expected Min: \`${thresholds.feedbackMin}\`)\n`;
       alertMessage += msg;
       console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
     }
     if (counts.errors > thresholds.errorsMax) {
       alertTriggered = true;
-      const msg = `- High Errors: ${counts.errors} (Max: ${thresholds.errorsMax})\n`;
+      const msg = `> 🔴 *[P1] High Errors*: \`${counts.errors}\` (Max Allowed: \`${thresholds.errorsMax}\`)\n`;
       alertMessage += msg;
       console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
     }
