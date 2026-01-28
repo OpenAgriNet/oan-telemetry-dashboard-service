@@ -5,10 +5,14 @@ on:
     branches:
       - bh-main
       - bh-dev
+      - mh-main
+      - mh-dev
   pull_request:
     branches:
       - bh-main
       - bh-dev
+      - mh-main
+      - mh-dev
 
 env:
   IMAGE_NAME: telemetry-query-service
@@ -53,9 +57,9 @@ jobs:
       - name: Set environment tag based on branch
         id: set-env-tag
         run: |
-          if [[ "${{ github.ref_name }}" == "bh-main" ]]; then
+          if [[ "${{ github.ref_name }}" == "bh-main" ]] || [[ "${{ github.ref_name }}" == "mh-main" ]]; then
             echo "ENV_TAG=prod" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref_name }}" == "bh-dev" ]]; then
+          elif [[ "${{ github.ref_name }}" == "bh-dev" ]] || [[ "${{ github.ref_name }}" == "mh-dev" ]]; then
             echo "ENV_TAG=dev" >> $GITHUB_OUTPUT
           else
             echo "ENV_TAG=dev" >> $GITHUB_OUTPUT
