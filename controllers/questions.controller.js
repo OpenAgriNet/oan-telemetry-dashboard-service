@@ -24,13 +24,13 @@ async function fetchQuestionsFromDB(
             uid as qid,
             questiontext AS question,
             answertext AS answer,
-            uid AS user_id,
+            fingerprint_id AS user_id,
             created_at,
             ets,
             channel,
             sid AS session_id
         FROM questions
-        WHERE uid IS NOT NULL AND answertext IS NOT NULL
+        WHERE fingerprint_id IS NOT NULL AND answertext IS NOT NULL
     `;
 
   const queryParams = [];
@@ -63,7 +63,8 @@ async function fetchQuestionsFromDB(
             uid ILIKE $${paramIndex} OR
             channel ILIKE $${paramIndex} OR
             farmer_id ILIKE $${paramIndex} OR
-            unique_id ILIKE $${paramIndex}
+            unique_id ILIKE $${paramIndex} OR 
+            fingerprint_id ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
@@ -98,7 +99,7 @@ async function getTotalQuestionsCount(
   let query = `
         SELECT COUNT(*) as total
         FROM questions
-        WHERE uid IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL and fingerprint_id IS NOT NULL
     `;
 
   const queryParams = [];
@@ -126,7 +127,8 @@ async function getTotalQuestionsCount(
             uid ILIKE $${paramIndex} OR
             channel ILIKE $${paramIndex} OR
             farmer_id ILIKE $${paramIndex} OR
-            unique_id ILIKE $${paramIndex}
+            unique_id ILIKE $${paramIndex} OR
+            fingerprint_id ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
@@ -791,7 +793,8 @@ const getQuestionsGraph = async (req, res) => {
                     }
                 FROM questions
                 WHERE questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL 
+                    AND answertext IS NOT NULL
+                    AND fingerprint_id IS NOT NULL 
                     AND ets IS NOT NULL
                     ${dateFilter}
                 GROUP BY ${dateGrouping}

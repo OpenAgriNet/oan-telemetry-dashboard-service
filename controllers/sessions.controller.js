@@ -33,27 +33,27 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         WITH combined_sessions AS (
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 NULL as questiontext,
                 ets
             FROM feedback
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
             UNION ALL
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 NULL as questiontext,
                 ets
             FROM errordetails
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
         )
         SELECT 
             sid as session_id,
@@ -123,27 +123,27 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
         WITH combined_sessions AS (
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 NULL as questiontext,
                 ets
             FROM feedback
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
             UNION ALL
             SELECT 
                 sid,
-                uid,
+                fingerprint_id as uid,
                 NULL as questiontext,
                 ets
             FROM errordetails
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
         ),
         session_groups AS (
             SELECT 
@@ -787,33 +787,33 @@ queryParams.push(Date.now());
                 WITH combined_sessions AS (
                     SELECT 
                         sid,
-                        uid,
+                         fingerprint_id as uid,
                         ets,
                         ${dateGrouping} as time_bucket,
                         ${dateFormat} as date,
                         'question' as activity_type
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
-                        uid,
+                        fingerprint_id as uid,
                         ets,
                         ${dateGrouping} as time_bucket,
                         ${dateFormat} as date,
                         'feedback' as activity_type
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,
-                        uid,
+                        fingerprint_id as uid,
                         ets,
                         ${dateGrouping} as time_bucket,
                         ${dateFormat} as date,
                         'error' as activity_type
                     FROM errordetails
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                 ),
                 session_aggregates AS (
                     SELECT 
