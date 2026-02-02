@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-**oan-telemetry-dashboard-service** (internally "telemetry-query-service") is a backend microservice built with **Node.js** and **Express**. It serves as the data retrieval layer for the Telemetry Dashboard, providing APIs to query user interactions, session details, feedback, and system errors. It connects to a **PostgreSQL** database for persistent storage and **Redis** for caching or session management.
+**oan-telemetry-dashboard-service** (internally "telemetry-query-service") is a backend microservice built with **Node.js** and **Express**. It serves as the data retrieval layer for the Telemetry Dashboard, providing APIs to query user interactions, session details, feedback, and system errors. It connects to a **PostgreSQL** database for persistent storage.
 
 ### Primary Objective
 To expose secure, performant REST APIs that aggregators and administrators use to visualize system usage, debug errors, and analyze user engagement metrics.
@@ -33,7 +33,6 @@ graph TD
     end
     
     Postgres[(PostgreSQL Database)]
-    Redis[(Redis Cache)]
 
     Client -->|HTTP Request| ExpressApp
     ExpressApp --> Router
@@ -41,7 +40,6 @@ graph TD
     AuthMW -->|Forward Request| Controllers
     Controllers -->|Query| DBService
     DBService -->|SQL| Postgres
-    DBService -->|Get/Set| Redis
 ```
 
 ### Data Flow
@@ -111,12 +109,12 @@ For a detailed breakdown of every endpoint, please refer to the [API_DOCUMENTATI
 | :--- | :--- |
 | **express** | Web framework. |
 | **pg** | PostgreSQL client for Node.js. |
-| **ioredis / redis** | Redis clients for caching/sessions. |
 | **jose** | JWT signing and verification. |
-| **node-cron** | Schedluing background tasks. |
+| **node-cron** | Scheduling background tasks. |
 | **morgan** | HTTP request logger. |
 | **cors** | Cross-Origin Resource Sharing middleware. |
 | **dotenv** | Environment variable management. |
+| **axios** | HTTP client for external requests. |
 
 ---
 
@@ -125,7 +123,6 @@ For a detailed breakdown of every endpoint, please refer to the [API_DOCUMENTATI
 ### Prerequisites
 *   Node.js (v18+)
 *   PostgreSQL instance
-*   Redis instance
 
 ### Installation
 1.  Navigate to the directory:
@@ -141,7 +138,6 @@ For a detailed breakdown of every endpoint, please refer to the [API_DOCUMENTATI
 Create a `.env` file based on your environment requirements. Key variables typically include:
 -   `PORT`: Server port (default 3000)
 -   `DB_HOST`, `DB_USER`, `DB_PASS`, `DB_NAME`: PostgreSQL credentials.
--   `REDIS_URL`: Connection string for Redis.
 
 ### Running the Service
 *   **Development**:
