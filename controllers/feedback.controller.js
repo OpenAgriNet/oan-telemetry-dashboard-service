@@ -22,7 +22,7 @@ async function fetchAllFeedbackFromDB(
         SELECT 
             id,
             qid,
-            uid as user_id,
+            fingerprint_id as user_id,
             created_at,
             feedbacktype,   
             feedbacktext,
@@ -32,7 +32,7 @@ async function fetchAllFeedbackFromDB(
             sid as session_id,
             ets
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
     `;
 
   const queryParams = [];
@@ -58,7 +58,7 @@ async function fetchAllFeedbackFromDB(
             feedbacktext ILIKE $${paramIndex} OR 
             questiontext ILIKE $${paramIndex} OR 
             answertext ILIKE $${paramIndex} OR
-            uid ILIKE $${paramIndex}
+            fingerprint_id ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
@@ -94,7 +94,7 @@ async function getTotalFeedbackCount(
   let query = `
         SELECT COUNT(*) as total
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
     `;
 
   const queryParams = [];
@@ -120,7 +120,7 @@ async function getTotalFeedbackCount(
             feedbacktext ILIKE $${paramIndex} OR 
             questiontext ILIKE $${paramIndex} OR 
             answertext ILIKE $${paramIndex} OR
-            uid ILIKE $${paramIndex}
+            fingerprint_id ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
@@ -142,7 +142,7 @@ async function getTotalLikesDislikesCount(
             SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
             SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
     `;
 
   const queryParams = [];
@@ -174,7 +174,8 @@ async function getTotalLikesDislikesCount(
     query += ` AND (
             feedbacktext ILIKE $${paramIndex} OR 
             questiontext ILIKE $${paramIndex} OR 
-            answertext ILIKE $${paramIndex}
+            answertext ILIKE $${paramIndex} OR
+            fingerprint_id ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
@@ -710,23 +711,12 @@ const getFeedbackGraph = async (req, res) => {
   ${dateFormat} AS date,
   ${dateGrouping} AS ${orderBy},
 
-  COUNT(DISTINCT qid) AS feedbackCount,
-
-  COUNT(DISTINCT CASE 
-    WHEN feedbacktype = 'like' THEN qid 
-  END) AS likesCount,
-
-  COUNT(DISTINCT CASE 
-    WHEN feedbacktype = 'dislike' THEN qid 
-  END) AS dislikesCount,
-
-  ROUND(
-    COUNT(DISTINCT CASE WHEN feedbacktype = 'like' THEN qid END) * 100.0 /
-    NULLIF(COUNT(DISTINCT qid), 0),
-    2
-  ) AS satisfactionRate,
-
-  EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 AS timestamp,
+  COUNT(*) as feedbackCount,
+  COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
+  COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
+  ROUND(COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 /
+                        NULLIF(COUNT(*), 0), 2) as satisfactionRate,
+  EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
 
   ${
     granularity === "hourly"
@@ -736,6 +726,8 @@ const getFeedbackGraph = async (req, res) => {
 
 FROM feedback
 WHERE feedbacktext IS NOT NULL
+  AND questiontext IS NOT NULL
+  AND fingerprint_id IS NOT NULL
   AND ets IS NOT NULL
   ${dateFilter}
 GROUP BY ${dateGrouping}

@@ -158,28 +158,49 @@ const getDashboardStats = async (req, res) => {
       text: `
         WITH user_stats AS (
   SELECT
-    COUNT(DISTINCT fingerprint_id) FILTER (
-      WHERE first_seen_at >= $3
-        AND first_seen_at <= $4
-    ) AS total_users,
-    COUNT(DISTINCT fingerprint_id) FILTER (
-      WHERE first_seen_at >= $3
+    ( SELECT COUNT(DISTINCT fingerprint_id) from questions
+      WHERE fingerprint_id IS NOT NULL
+        AND ets >= $1
+        AND ets <= $2
+     ) AS total_users,   
+    ( SELECT COUNT(DISTINCT fingerprint_id) from users
+      WHERE fingerprint_id is not null and first_seen_at >= $3
         AND first_seen_at <= $4
     ) AS new_users
-  FROM users
 ),
 session_stats AS (
-  SELECT
-    COUNT(DISTINCT sid) AS total_sessions
-  FROM questions
-  WHERE ets >= $1
-    AND ets <= $2
+  WITH combined_sessions AS (
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM questions
+    WHERE sid IS NOT NULL
+      AND answertext IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+    UNION ALL
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM feedback
+    WHERE sid IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+    UNION ALL
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM errordetails
+    WHERE sid IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+  )
+  SELECT COUNT(*) AS total_sessions
+  FROM (
+    SELECT sid, uid
+    FROM combined_sessions
+    GROUP BY sid, uid
+  ) session_groups
 ),
 question_stats AS (
   SELECT
     COUNT(*) AS total_questions
   FROM questions
-  WHERE answertext IS NOT NULL
+  WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
     AND ets >= $1
     AND ets <= $2
 ),
@@ -189,7 +210,7 @@ feedback_stats AS (
             COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
             COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
           FROM feedback
-          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL and fingerprint_id IS NOT NULL
     AND ets >= $1
     AND ets <= $2
 )
