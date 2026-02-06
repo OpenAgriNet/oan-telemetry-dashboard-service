@@ -16,6 +16,7 @@ const pool = require("./services/db");
 const app = express();
 
 app.use(express.json());
+app.use(morgan("combined"));
 app.set("trust proxy", true);
 
 // app.use(cors());
@@ -45,7 +46,6 @@ app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
 app.use("/v1/api/villages", authController, villageRoutes);
-app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
 
