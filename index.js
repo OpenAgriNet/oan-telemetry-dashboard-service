@@ -1,4 +1,6 @@
 const express = require("express");
+const axios = require("axios");
+const cron = require("node-cron");
 const cors = require("cors");
 const morgan = require("morgan");
 require("dotenv").config();
@@ -29,9 +31,95 @@ app.use(
   }),
 );
 
-app.get("/health", (req, res) => {
-  // A quick healthcheck: can extend to check DB connectivity if desired
-  res.status(200).json({ status: "ok" });
+const checkHealthStatus = async () => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] Starting health check...`);
+
+  try {
+    const oneHourAgo = Date.now() - 3600000;
+
+    const questionsRes = await pool.query(
+      "SELECT COUNT(*) FROM questions WHERE ets > $1",
+      [oneHourAgo]
+    );
+
+    const counts = {
+      questions: parseInt(questionsRes.rows[0].count),
+    };
+
+    console.log(`[${timestamp}] Retrieved counts:`, JSON.stringify(counts));
+
+    const thresholds = {
+      questionsMin: parseInt(process.env.THRESHOLD_QUESTIONS_MIN || 1),
+    };
+
+    console.log(`[${timestamp}] Thresholds config:`, JSON.stringify(thresholds));
+
+    let alertTriggered = false;
+    let alertMessage = "🚨 *Health Check Alert (Last Hour)* 🚨\n\n";
+
+    if (counts.questions < thresholds.questionsMin) {
+      alertTriggered = true;
+      const msg = `> 🔴 *[P1] Low Questions*: \`${counts.questions}\` (Expected Min: \`${thresholds.questionsMin}\`)\n`;
+      alertMessage += msg;
+      console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
+    }
+
+    if (alertTriggered) {
+      console.log(`[${timestamp}] Alert triggered! Sending notification...`);
+      if (process.env.SLACK_WEBHOOK_URL) {
+        try {
+          await axios.post(process.env.SLACK_WEBHOOK_URL, {
+            text: alertMessage,
+          });
+          console.log(`[${timestamp}] Slack alert sent successfully.`);
+        } catch (err) {
+          console.error(
+            `[${timestamp}] Failed to send Slack alert:`,
+            err.message
+          );
+        }
+      } else {
+        console.log(
+          `[${timestamp}] No SLACK_WEBHOOK_URL configured. Skipping notification.`
+        );
+      }
+    } else {
+      console.log(`[${timestamp}] Health check passed. No alerts.`);
+    }
+
+    return {
+      status: alertTriggered ? "alert" : "ok",
+      counts,
+      thresholds,
+      alertTriggered,
+    };
+  } catch (error) {
+    console.error(
+      `[${new Date().toISOString()}] Health check logic failed:`,
+      error
+    );
+    throw error;
+  }
+};
+
+app.get("/health", async (req, res) => {
+  try {
+    const result = await checkHealthStatus();
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ status: "error", error: error.message });
+  }
+});
+
+// Schedule health check to run every hour
+cron.schedule("0 * * * *", async () => {
+  console.log("Running scheduled health check...");
+  try {
+    await checkHealthStatus();
+  } catch (error) {
+    console.error("Scheduled health check failed:", error);
+  }
 });
 
 app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
