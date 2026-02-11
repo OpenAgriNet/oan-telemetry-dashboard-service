@@ -11,13 +11,13 @@ function getJoseModule() {
   return joseModulePromise;
 }
 const publicKeyPem = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6cqy+hechjriXqjWRe/a
-nHyk76Iz4x7SpE06jioTaaXpp9kn9/cyVMkJmclN6QZUB7eLyIRTEPZhjr89IFBf
-/Fsp/dRcfJZa98y87o5KEoSnZwviwDe6cjKA6b8iDNeOnhEeSVwddD6YVeAv9f9Z
-oRkHDtnheNOs0FJoXEryW4mA0QWrq3We79D5hIUPlAkcocwEDhx6CQVm3ZOl8qnI
-pz67N0qOiLiXFrEw/BaEFtpYEfilMGmLAc5DLpsE3P8v198yB3J6OStNfs3solKn
-gc+4HxCOvHaPqLar11tBNaaMKXcyHOa6Sl5uJR7CZZBwqoIFFlrEhTxpPNwRxe6+
-6QIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAj4R4rkOZlN6M7+DDkwlh
+QNS7ZThhpwG3r7eCghUqhqvham25dxWq8Wm9vNJijCvWnWbCjavWWIvz6jzBbCfe
+Y0zSYy+hEn14PFurZizQ1QVoD6RzU1zxI9h/jnNULfmFifW3JYnuckQzM42bI38u
+/97Whi1xb+/vp+k52H2pWnh+yHJQKTIi3ZzFOv+gb08Lukg7gJ5wCQ+t1hSxjzBZ
+8968fCjkFdNXtU80sX1KEVkHpJkP4eymVqtkMvDn4TEfajTRKc+HrP6u4QX/UIdP
+oRwAwDQD+fFncTBbyc/ld5ddxwZGan0gL8ona9CjujI+Yz3+FhRTtFpFU4jTxE2F
+cQIDAQAB
 -----END PUBLIC KEY-----`;
 // Pre-import the RSA public key for RS256 verification
 const publicKeyPromise = (async () => {
