@@ -15,10 +15,9 @@ const pool = new Pool({
     process.env.DB_CONN_TIMEOUT_MS || "5000",
     10
   ),
-  // ssl: {
-  //   rejectUnauthorized: true,
-  //   ca: fs.readFileSync(path.join(__dirname, 'certs', 'rds-global.pem')).toString()
-  // }
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // Prevent unhandled pool errors from crashing the process
