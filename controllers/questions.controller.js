@@ -506,7 +506,7 @@ const getQuestionsBySessionId = async (req, res) => {
     }
 
     // Add pagination params
-    queryParams.push(limit, offset);
+    // queryParams.push(limit, offset);
 
     // Get questions by session ID with pagination and date filtering
     const questionsQuery = {
@@ -528,10 +528,11 @@ const getQuestionsBySessionId = async (req, res) => {
                     ${dateFilter}
                     AND ets <= ${Date.now()}
                 ORDER BY ets DESC
-                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
     };
+
+    //  LIMIT $${ paramIndex + 1 } OFFSET $${ paramIndex + 2 }
 
     // Get total count for session with date filtering
     const countQuery = {
@@ -555,9 +556,13 @@ const getQuestionsBySessionId = async (req, res) => {
     const formattedData = questionsResult.rows.map(formatQuestionData);
 
     // Calculate pagination metadata
-    const totalPages = Math.ceil(totalCount / limit);
-    const hasNextPage = page < totalPages;
-    const hasPreviousPage = page > 1;
+    // const totalPages = Math.ceil(totalCount / limit);
+    // const hasNextPage = page < totalPages;
+    // const hasPreviousPage = page > 1;
+
+    const totalPages = 1;
+    const hasNextPage = false;
+    const hasPreviousPage = false;
 
     res.status(200).json({
       success: true,
@@ -566,7 +571,7 @@ const getQuestionsBySessionId = async (req, res) => {
         currentPage: page,
         totalPages: totalPages,
         totalItems: totalCount,
-        itemsPerPage: limit,
+        itemsPerPage: totalCount,
         hasNextPage: hasNextPage,
         hasPreviousPage: hasPreviousPage,
         nextPage: hasNextPage ? page + 1 : null,
