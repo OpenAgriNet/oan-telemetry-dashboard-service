@@ -33,7 +33,7 @@ async function leaderboardAuthController(req, res, next) {
     const tokenFromHeader = authHeader.startsWith("Bearer ")
       ? authHeader.slice(7).trim()
       : null;
-    const jwt = tokenFromHeader || req.query.token;
+    const jwt = tokenFromHeader;
     if (!jwt) {
       return res.status(401).json({ status: "error", message: "Unauthorized" });
     }

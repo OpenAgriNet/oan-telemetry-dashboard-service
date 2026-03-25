@@ -10,6 +10,8 @@ function getJoseModule() {
   }
   return joseModulePromise;
 }
+
+// Not able to read the public key from env variable, so hardcoding it here for now
 const publicKeyPem = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6cqy+hechjriXqjWRe/a
 nHyk76Iz4x7SpE06jioTaaXpp9kn9/cyVMkJmclN6QZUB7eLyIRTEPZhjr89IFBf
@@ -28,7 +30,7 @@ async function authController(req, res, next) {
   try {
     const authHeader = req.headers.authorization || "";
     const tokenFromHeader = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
-    const jwt = tokenFromHeader || req.query.token;
+    const jwt = tokenFromHeader;
     if (!jwt) {
       return res.status(401).json({ status: "error", message: "Unauthorized" });
     }

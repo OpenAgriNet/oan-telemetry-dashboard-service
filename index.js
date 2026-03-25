@@ -3,6 +3,8 @@ const axios = require("axios");
 const cron = require("node-cron");
 const cors = require("cors");
 const morgan = require("morgan");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
 const questionRoutes = require("./routes/questionRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -17,18 +19,28 @@ const leaderboardAuthController = require("./controllers/leaderboardAuth.control
 const pool = require("./services/db");
 const app = express();
 
+app.set("trust proxy", 1);
+app.use(helmet());
 app.use(express.json());
-app.set("trust proxy", true);
 
 // app.use(cors());
 app.use(
   cors({
-    //origin: ['https://your-frontend-domain.com', 'http://localhost:3000'], // Allowed origins
+    // allow localhost 8080 and the production dashboard domain
+    origin: ['https://proddashbaordvistaar.mahapocra.gov.in', "http://localhost:8080"], // Allowed origins
     methods: ["GET", "POST"], // Allowed HTTP methods
-    //allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
-    //credentials: true // Allow credentials (e.g., cookies, HTTP auth)
+    allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
+    credentials: true // Allow credentials (e.g., cookies, HTTP auth)
   })
 );
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+});
+
+app.use(limiter);
+
 
 const checkHealthStatus = async () => {
   const timestamp = new Date().toISOString();
@@ -136,13 +148,13 @@ app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
 //   res.send("hi welcome");
 // });
 
-app.use("/v1", authController, questionRoutes);
-app.use("/v1", authController, userRoutes);
-app.use("/v1", authController, sessionRoutes);
-app.use("/v1", authController, feedbackRoutes);
-app.use("/v1", authController, errorRoutes);
-app.use("/v1", authController, dashboardRoutes);
-app.use("/v1/api/villages", authController, villageRoutes);
+app.use("/v1",  questionRoutes);
+app.use("/v1",  userRoutes);
+app.use("/v1",  sessionRoutes);
+app.use("/v1",  feedbackRoutes);
+app.use("/v1",  errorRoutes);
+app.use("/v1",  dashboardRoutes);
+app.use("/v1/api/villages",  villageRoutes);
 app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
