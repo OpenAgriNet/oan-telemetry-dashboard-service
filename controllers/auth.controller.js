@@ -10,14 +10,14 @@ function getJoseModule() {
   }
   return joseModulePromise;
 }
-const publicKeyPem = `-----BEGIN PUBLIC KEY-----                                                                                                                                                              
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAj4R4rkOZlN6M7+DDkwlh                                                                                                                        
-QNS7ZThhpwG3r7eCghUqhqvham25dxWq8Wm9vNJijCvWnWbCjavWWIvz6jzBbCfe                                                                                                                        
-Y0zSYy+hEn14PFurZizQ1QVoD6RzU1zxI9h/jnNULfmFifW3JYnuckQzM42bI38u                                                                                                                        
-/97Whi1xb+/vp+k52H2pWnh+yHJQKTIi3ZzFOv+gb08Lukg7gJ5wCQ+t1hSxjzBZ                                                                                                                        
-8968fCjkFdNXtU80sX1KEVkHpJkP4eymVqtkMvDn4TEfajTRKc+HrP6u4QX/UIdP                                                                                                                        
-oRwAwDQD+fFncTBbyc/ld5ddxwZGan0gL8ona9CjujI+Yz3+FhRTtFpFU4jTxE2F                                                                                                                        
-cQIDAQAB                                                                                                                                                                                
+const publicKeyPem = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhTdqS1xhKPDQhMJ8PjVi
+R94+qePsjOB+v7qdAK9/ytLeU/3x6kIZ6ki1lAAaOWY3ZvlS/yF6l8xt4op5k+Yy
+5Sh1k1DF92H/rmtZ63Rf3SC23pV91C/uYLOGxGLfXh3G5CbmnAfiaMF185HwTJ+i
+ej4ntdyg+5QKYi5L6V/zynD25UpQ9Nb60JXdJbk19Susfvos9c4VJKVUdB22iXRq
+TVEkEmhrNVkr/uS7/baJf896rklFg4ZWhKTo0TxqQNOdGbX8dHrJZIGMku2Fqp8Z
+BwoQ8AHx0SsjYzmUZ9YYLe/yhN7VpPVv3flLEUU+bRWTXuvbrrnxS+DuyJEMluFJ
+9QIDAQAB                                                                                                                                                                                
 -----END PUBLIC KEY-----`;
 // Pre-import the RSA public key for RS256 verification
 const publicKeyPromise = (async () => {
