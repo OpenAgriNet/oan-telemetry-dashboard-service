@@ -19,6 +19,7 @@ const ttsRoutes = require("./routes/ttsRoutes");
 const callRoutes = require("./routes/callRoutes");
 const leaderboardAuthController = require("./controllers/leaderboardAuth.controller");
 const pool = require("./services/db");
+const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
 const app = express();
 
 app.use(express.json());
@@ -33,6 +34,9 @@ app.use(
     //credentials: true // Allow credentials (e.g., cookies, HTTP auth)
   }),
 );
+
+// Enforce API response masking for sensitive endpoint families.
+app.use(piiMaskingMiddleware);
 
 const checkHealthStatus = async () => {
   const timestamp = new Date().toISOString();
