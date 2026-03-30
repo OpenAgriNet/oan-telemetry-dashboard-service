@@ -11,20 +11,18 @@ function getJoseModule() {
   return joseModulePromise;
 }
 
-const publicKeyPem = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu1SU1LfVLPHCozMxH2Mo
-4lgOEePzNm0tRgeLezV6ffAt0gunVTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u
-+qKhbwKfBstIs+bMY2Zkp18gnTxKLxoS2tFczGkPLPgizskuemMghRniWaoLcyeh
-kd3qqGElvW/VDL5AaWTg0nLVkjRo9z+40RQzuVaE8AkAFmxZzow3x+VJYKdjykkJ
-0iT9wCS0DRTXu269V264Vf/3jvredZiKRkgwlL9xNAwxXFg0x/XFw005UWVRIkdg
-cKWTjpBP2dPwVZ4WWC+9aGVd+Gyn1o0CLelf4rEjGoXbAAEgAqeGUxrcIlbjXfbc
-mwIDAQAB
------END PUBLIC KEY-----`;
+const publicKeyPem = process.env.MY_PUBLIC_KEY;
+
+if (!publicKeyPem) {
+  throw new Error("MY_PUBLIC_KEY not configured");
+}
+
+const formattedKey = publicKeyPem.replace(/\\n/g, '\n');
 
 // Pre-import the RSA public key for RS256 verification
 const publicKeyPromise = (async () => {
   const { importSPKI } = await getJoseModule();
-  return importSPKI(publicKeyPem, "RS256");
+  return importSPKI(formattedKey, "RS256");
 })();
 
 async function leaderboardAuthController(req, res, next) {

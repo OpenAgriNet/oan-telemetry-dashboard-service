@@ -11,20 +11,18 @@ function getJoseModule() {
   return joseModulePromise;
 }
 
-// Not able to read the public key from env variable, so hardcoding it here for now
-const publicKeyPem = `-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6cqy+hechjriXqjWRe/a
-nHyk76Iz4x7SpE06jioTaaXpp9kn9/cyVMkJmclN6QZUB7eLyIRTEPZhjr89IFBf
-/Fsp/dRcfJZa98y87o5KEoSnZwviwDe6cjKA6b8iDNeOnhEeSVwddD6YVeAv9f9Z
-oRkHDtnheNOs0FJoXEryW4mA0QWrq3We79D5hIUPlAkcocwEDhx6CQVm3ZOl8qnI
-pz67N0qOiLiXFrEw/BaEFtpYEfilMGmLAc5DLpsE3P8v198yB3J6OStNfs3solKn
-gc+4HxCOvHaPqLar11tBNaaMKXcyHOa6Sl5uJR7CZZBwqoIFFlrEhTxpPNwRxe6+
-6QIDAQAB
------END PUBLIC KEY-----`;
+const publicKeyPem = process.env.MY_PUBLIC_KEY;
+
+if (!publicKeyPem) {
+  throw new Error("MY_PUBLIC_KEY not configured");
+}
+
+const formattedKey = publicKeyPem.replace(/\\n/g, '\n');
+
 // Pre-import the RSA public key for RS256 verification
 const publicKeyPromise = (async () => {
   const { importSPKI } = await getJoseModule();
-  return importSPKI(publicKeyPem, "RS256");
+  return importSPKI(formattedKey, "RS256");
 })();
 async function authController(req, res, next) {
   try {
