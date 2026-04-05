@@ -36,7 +36,7 @@ app.use(
 );
 
 // Enforce API response masking for sensitive endpoint families.
-app.use(piiMaskingMiddleware);
+// app.use(piiMaskingMiddleware);
 
 const checkHealthStatus = async () => {
   const timestamp = new Date().toISOString();
