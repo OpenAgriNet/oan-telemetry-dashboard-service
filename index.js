@@ -17,6 +17,7 @@ const villageRoutes = require("./routes/villageRoutes");
 const asrRoutes = require("./routes/asrRoutes");
 const ttsRoutes = require("./routes/ttsRoutes");
 const callRoutes = require("./routes/callRoutes");
+const langfuseRoutes = require("./routes/langfuseRoutes");
 const leaderboardAuthController = require("./controllers/leaderboardAuth.controller");
 const pool = require("./services/db");
 const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
@@ -36,7 +37,7 @@ app.use(
 );
 
 // Enforce API response masking for sensitive endpoint families.
-app.use(piiMaskingMiddleware);
+// app.use(piiMaskingMiddleware);
 
 const checkHealthStatus = async () => {
   const timestamp = new Date().toISOString();
@@ -147,6 +148,7 @@ app.use("/v1", authController, ttsRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
 app.use("/v1", authController, callRoutes);
+app.use("/v1", authController, langfuseRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 

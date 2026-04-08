@@ -289,8 +289,176 @@ const getUserGraph = async (req, res) => {
   }
 };
 
+const parseCountMap = (value) => {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
+const getLangfuseQuestionsTree = async (req, res) => {
+  try {
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid date format" });
+    }
+
+    const params = [];
+    let index = 0;
+    let dateFilter = "";
+
+    if (startTimestamp !== null) {
+      index++;
+      dateFilter += ` AND report_date >= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      params.push(startTimestamp);
+    }
+
+    if (endTimestamp !== null) {
+      index++;
+      dateFilter += ` AND report_date <= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      params.push(endTimestamp);
+    }
+
+    const [summaryResult, mappingResult] = await Promise.all([
+      pool.query(
+        `
+          SELECT
+            report_date,
+            questions_total,
+            questions_non_agri,
+            questions_agri,
+            tool_counts,
+            category_counts
+          FROM langfuse_daily_question_summary
+          WHERE 1 = 1
+          ${dateFilter}
+          ORDER BY report_date DESC
+        `,
+        params
+      ),
+      pool.query(`
+        SELECT
+          tool_name,
+          category_key
+        FROM langfuse_tool_category_map
+      `),
+    ]);
+
+    const categoryToTools = {};
+    const toolToCategory = {};
+    mappingResult.rows.forEach((row) => {
+      const category = String(row.category_key || "uncategorized");
+      const toolName = String(row.tool_name || "");
+      if (!toolName) return;
+      if (!categoryToTools[category]) {
+        categoryToTools[category] = [];
+      }
+      categoryToTools[category].push(toolName);
+      toolToCategory[toolName] = category;
+    });
+
+    const data = summaryResult.rows.map((row) => {
+      const reportDate = row.report_date;
+      const categoryCounts = parseCountMap(row.category_counts);
+      const toolCounts = parseCountMap(row.tool_counts);
+
+      const toolCountsByCategory = {};
+      Object.entries(toolCounts).forEach(([toolName, rawCount]) => {
+        const category = toolToCategory[toolName] || "uncategorized";
+        if (!toolCountsByCategory[category]) {
+          toolCountsByCategory[category] = [];
+        }
+        toolCountsByCategory[category].push({
+          toolName,
+          count: Number(rawCount) || 0,
+        });
+      });
+
+      Object.values(toolCountsByCategory).forEach((tools) => {
+        tools.sort((a, b) => b.count - a.count);
+      });
+
+      const allCategoryKeys = new Set([
+        ...Object.keys(categoryCounts),
+        ...Object.keys(toolCountsByCategory),
+      ]);
+
+      const agriCategories = [];
+      const nonAgriCategories = [];
+
+      allCategoryKeys.forEach((categoryKey) => {
+        const normalized = String(categoryKey || "uncategorized");
+        const countFromCategoryMap = Number(categoryCounts[normalized]) || 0;
+        const tools = toolCountsByCategory[normalized] || [];
+        const toolSum = tools.reduce((sum, item) => sum + item.count, 0);
+        const count = countFromCategoryMap || toolSum;
+
+        const node = {
+          categoryKey: normalized,
+          count,
+          tools,
+        };
+
+        if (normalized === "uncategorized") {
+          nonAgriCategories.push(node);
+        } else {
+          agriCategories.push(node);
+        }
+      });
+
+      agriCategories.sort((a, b) => b.count - a.count);
+      nonAgriCategories.sort((a, b) => b.count - a.count);
+
+      return {
+        reportDate,
+        totalQuestions: Number(row.questions_total) || 0,
+        questionsAgri: Number(row.questions_agri) || 0,
+        questionsNonAgri: Number(row.questions_non_agri) || 0,
+        agri: {
+          categories: agriCategories,
+        },
+        nonAgri: {
+          categories: nonAgriCategories,
+        },
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching langfuse questions tree:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Error fetching langfuse questions tree",
+    });
+  }
+};
+
 module.exports = {
   getUserLoginAnalytics,
   getDashboardStats,
   getUserGraph,
+  getLangfuseQuestionsTree,
 };
