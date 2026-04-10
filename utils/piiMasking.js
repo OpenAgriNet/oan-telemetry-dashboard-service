@@ -43,6 +43,35 @@ const CONVERSATION_HEAVY_KEYS = new Set([
   "message",
 ]);
 
+const TEMPORAL_KEYS = new Set([
+  "timestamp",
+  "timestamps",
+  "ets",
+  "createdat",
+  "updatedat",
+  "sessiontime",
+  "starttime",
+  "endtime",
+  "firstoccurrence",
+  "lastoccurrence",
+]);
+
+const SENSITIVE_STRING_KEYS = new Set([
+  "email",
+  "mail",
+  "phone",
+  "mobile",
+  "contact",
+  "token",
+  "authorization",
+  "apikey",
+  "accesstoken",
+  "refreshtoken",
+  "secret",
+  "password",
+  "bearer",
+]);
+
 function normalizeKey(key) {
   if (typeof key !== "string") return "";
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -78,6 +107,51 @@ function isOtpKey(key) {
 
 function isConversationHeavyKey(key) {
   return CONVERSATION_HEAVY_KEYS.has(normalizeKey(key));
+}
+
+function isTemporalKey(key) {
+  return TEMPORAL_KEYS.has(normalizeKey(key));
+}
+
+function isLikelyTemporalValue(value) {
+  if (typeof value !== "string") return false;
+
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  if (/^\d{10,16}$/.test(trimmed)) return true;
+
+  if (
+    /^\d{4}-\d{2}-\d{2}(?:[tT\s].*)?$/.test(trimmed) &&
+    !Number.isNaN(Date.parse(trimmed))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isSensitiveStringKey(key) {
+  const normalized = normalizeKey(key);
+  if (!normalized) return false;
+
+  if (SENSITIVE_STRING_KEYS.has(normalized)) return true;
+
+  return (
+    normalized.includes("email") ||
+    normalized.includes("phone") ||
+    normalized.includes("mobile") ||
+    normalized.includes("contact") ||
+    normalized.includes("token") ||
+    normalized.includes("authorization") ||
+    normalized.includes("apikey") ||
+    normalized.includes("secret") ||
+    normalized.includes("password")
+  );
+}
+
+function shouldMaskStringByKey(key) {
+  return isConversationHeavyKey(key) || isSensitiveStringKey(key);
 }
 
 function maskStringValue(value, options = {}) {
@@ -146,6 +220,14 @@ function maskByKeyValue(key, value) {
   if (isOtpKey(key)) return REDACTION_MARKERS.OTP;
 
   if (typeof value === "string") {
+    if (isTemporalKey(key) && isLikelyTemporalValue(value)) {
+      return value;
+    }
+
+    if (!shouldMaskStringByKey(key)) {
+      return value;
+    }
+
     return maskStringValue(value, {
       isConversationField: isConversationHeavyKey(key),
     });
@@ -182,6 +264,14 @@ function maskApiResponse(payload, parentKey = null) {
   }
 
   if (typeof payload === "string") {
+    if (isTemporalKey(parentKey) && isLikelyTemporalValue(payload)) {
+      return payload;
+    }
+
+    if (!shouldMaskStringByKey(parentKey)) {
+      return payload;
+    }
+
     return maskStringValue(payload, {
       isConversationField: isConversationHeavyKey(parentKey),
     });
@@ -195,6 +285,7 @@ module.exports = {
   isFarmerIdKey,
   isAadhaarKey,
   isOtpKey,
+  isTemporalKey,
   maskStringValue,
   maskApiResponse,
 };
