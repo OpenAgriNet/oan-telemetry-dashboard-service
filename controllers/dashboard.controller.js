@@ -7,6 +7,7 @@ const { getTotalQuestionsCount } = require("./questions.controller");
 const { getTotalSessionsCount } = require("./sessions.controller");
 const { getTotalUsersCount } = require("./user.controller");
 const { parseDateRange } = require("../utils/dateUtils");
+const { buildChannelFilterClause, STATE_CONFIG } = require("../utils/stateAccess");
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
@@ -111,6 +112,7 @@ const getUserLoginAnalytics = async (req, res) => {
 // Get overall dashboard statistics - OPTIMIZED to return only essential metrics
 const getDashboardStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -129,113 +131,160 @@ const getDashboardStats = async (req, res) => {
 
     const queryParams = [];
     let paramIndex = 0;
-    let questionDateFilter = "";
-    let feedbackDateFilter = "";
-    let errordetailsDateFilter = "";
-    let futureFilter = "";
+    const {
+      clause: questionChannelClause,
+      paramIndex: qChannelParamIndex,
+    } = buildChannelFilterClause("q.channel", telemetryState, queryParams, paramIndex);
+    paramIndex = qChannelParamIndex;
+    const {
+      clause: questionChannelClauseNoAlias,
+      paramIndex: qNoAliasChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = qNoAliasChannelParamIndex;
+    const {
+      clause: feedbackChannelClause,
+      paramIndex: fChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = fChannelParamIndex;
+    const {
+      clause: errorChannelClause,
+      paramIndex: eChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = eChannelParamIndex;
+
+    let startParam = null;
+    let endParam = null;
 
     if (startTimestamp !== null) {
-      paramIndex++;
-      questionDateFilter += ` AND ets >= $${paramIndex}`;
-      feedbackDateFilter += ` AND ets >= $${paramIndex}`;
-      errordetailsDateFilter += ` AND ets >= $${paramIndex}`;
+      paramIndex += 1;
+      startParam = paramIndex;
       queryParams.push(startTimestamp);
     }
 
     if (endTimestamp !== null) {
-      paramIndex++;
-      questionDateFilter += ` AND ets <= $${paramIndex}`;
-      feedbackDateFilter += ` AND ets <= $${paramIndex}`;
-      errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
+      paramIndex += 1;
+      endParam = paramIndex;
       queryParams.push(endTimestamp);
     }
 
-    paramIndex++;
-    queryParams.push(Date.now());
-    futureFilter = ` AND ets <= $${paramIndex}`;
-
+    const questionDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    const feedbackDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    const errorDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    const userDateFilter = `
+      ${startParam ? ` AND period_first_seen >= TO_TIMESTAMP($${startParam} / 1000.0)` : ""}
+      ${endParam ? ` AND period_first_seen <= TO_TIMESTAMP($${endParam} / 1000.0)` : ""}
+    `;
     const query = {
       text: `
-        WITH user_stats AS (
-  SELECT
-    ( SELECT COUNT(DISTINCT fingerprint_id) from users
-      WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
-        AND DATE(first_seen_at) <= DATE($4)
-    ) AS new_users,
-    ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
-      INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
-      WHERE q.fingerprint_id IS NOT NULL
-        AND q.ets >= $1
-        AND q.ets <= $2
-        AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
-    ) AS returning_users
-),
-session_stats AS (
-  WITH combined_sessions AS (
-    SELECT sid, fingerprint_id AS uid, ets
-    FROM questions
-    WHERE sid IS NOT NULL
-      AND answertext IS NOT NULL
-      AND fingerprint_id IS NOT NULL
-      AND ets >= $1 AND ets <= $2
-    UNION ALL
-    SELECT sid, fingerprint_id AS uid, ets
-    FROM feedback
-    WHERE sid IS NOT NULL
-      AND fingerprint_id IS NOT NULL
-      AND ets >= $1 AND ets <= $2
-    UNION ALL
-    SELECT sid, fingerprint_id AS uid, ets
-    FROM errordetails
-    WHERE sid IS NOT NULL
-      AND fingerprint_id IS NOT NULL
-      AND ets >= $1 AND ets <= $2
-  )
-  SELECT COUNT(*) AS total_sessions
-  FROM (
-    SELECT sid, uid
-    FROM combined_sessions
-    GROUP BY sid, uid
-  ) session_groups
-),
-question_stats AS (
-  SELECT
-    COUNT(*) AS total_questions
-  FROM questions
-  WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
-    AND ets >= $1
-    AND ets <= $2
-),
-feedback_stats AS (
-  SELECT 
+        WITH user_first_seen AS (
+          SELECT
+            q.fingerprint_id,
+            MIN(TO_TIMESTAMP(q.ets / 1000.0)) AS first_seen_overall
+          FROM questions q
+          WHERE q.fingerprint_id IS NOT NULL
+            AND ${questionChannelClause}
+          GROUP BY q.fingerprint_id
+        ),
+        period_users AS (
+          SELECT
+            q.fingerprint_id,
+            MIN(TO_TIMESTAMP(q.ets / 1000.0)) AS period_first_seen
+          FROM questions q
+          WHERE q.fingerprint_id IS NOT NULL
+            AND q.answertext IS NOT NULL
+            AND ${questionChannelClause}
+            ${questionDateFilter}
+          GROUP BY q.fingerprint_id
+        ),
+        user_stats AS (
+          SELECT
+            COUNT(DISTINCT pu.fingerprint_id) AS total_users,
+            COUNT(DISTINCT CASE
+              WHEN DATE(ufs.first_seen_overall) = DATE(pu.period_first_seen)
+              THEN pu.fingerprint_id
+            END) AS new_users,
+            COUNT(DISTINCT CASE
+              WHEN DATE(ufs.first_seen_overall) < DATE(pu.period_first_seen)
+              THEN pu.fingerprint_id
+            END) AS returning_users
+          FROM period_users pu
+          INNER JOIN user_first_seen ufs ON ufs.fingerprint_id = pu.fingerprint_id
+        ),
+        session_stats AS (
+          WITH combined_sessions AS (
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM questions
+            WHERE sid IS NOT NULL
+              AND answertext IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${questionChannelClauseNoAlias}
+              ${questionDateFilter}
+            UNION ALL
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM feedback
+            WHERE sid IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${feedbackChannelClause}
+              ${feedbackDateFilter}
+            UNION ALL
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM errordetails
+            WHERE sid IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${errorChannelClause}
+              ${errorDateFilter}
+          )
+          SELECT COUNT(*) AS total_sessions
+          FROM (
+            SELECT sid, uid
+            FROM combined_sessions
+            GROUP BY sid, uid
+          ) session_groups
+        ),
+        question_stats AS (
+          SELECT COUNT(*) AS total_questions
+          FROM questions
+          WHERE answertext IS NOT NULL
+            AND fingerprint_id IS NOT NULL
+            AND ${questionChannelClauseNoAlias}
+            ${questionDateFilter}
+        ),
+        feedback_stats AS (
+          SELECT
             COUNT(*) AS total_feedback,
             COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
             COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
           FROM feedback
-          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL and fingerprint_id IS NOT NULL
-    AND ets >= $1
-    AND ets <= $2
-)
-SELECT
-  (us.new_users + us.returning_users) AS total_users,
-  us.new_users,
-  us.returning_users,
-  ss.total_sessions,
-  qs.total_questions,
-  fs.total_feedback,
-  fs.total_likes,
-  fs.total_dislikes
-FROM user_stats us
-CROSS JOIN session_stats ss
-CROSS JOIN question_stats qs
-CROSS JOIN feedback_stats fs;
+          WHERE feedbacktext IS NOT NULL
+            AND questiontext IS NOT NULL
+            AND fingerprint_id IS NOT NULL
+            AND ${feedbackChannelClause}
+            ${feedbackDateFilter}
+        )
+        SELECT
+          us.total_users,
+          us.new_users,
+          us.returning_users,
+          ss.total_sessions,
+          qs.total_questions,
+          fs.total_feedback,
+          fs.total_likes,
+          fs.total_dislikes
+        FROM user_stats us
+        CROSS JOIN session_stats ss
+        CROSS JOIN question_stats qs
+        CROSS JOIN feedback_stats fs;
       `,
-      values: [
-        startTimestamp, // $1 → bigint
-        endTimestamp, // $2 → bigint
-        new Date(startTimestamp), // $3 → timestamp
-        new Date(endTimestamp), // $4 → timestamp
-      ],
+      values: queryParams,
     };
 
     //     const total_questions = await getTotalQuestionsCount(null, startDate, endDate);
@@ -274,6 +323,213 @@ CROSS JOIN feedback_stats fs;
   }
 };
 
+// Get overall dashboard statistics for UNIFIED METRICS (always Bharat Vistaar)
+const getDashboardStatsUnified = async (req, res) => {
+  try {
+    // Force Bharat Vistaar state for unified metrics
+    const unifiedTelemetryState = STATE_CONFIG["bharat-vistaar"];
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid date format" });
+    }
+
+    const queryParams = [];
+    let paramIndex = 0;
+    const {
+      clause: questionChannelClause,
+      paramIndex: qChannelParamIndex,
+    } = buildChannelFilterClause("q.channel", unifiedTelemetryState, queryParams, paramIndex);
+    paramIndex = qChannelParamIndex;
+    const {
+      clause: questionChannelClauseNoAlias,
+      paramIndex: qNoAliasChannelParamIndex,
+    } = buildChannelFilterClause("channel", unifiedTelemetryState, queryParams, paramIndex);
+    paramIndex = qNoAliasChannelParamIndex;
+    const {
+      clause: feedbackChannelClause,
+      paramIndex: fChannelParamIndex,
+    } = buildChannelFilterClause("channel", unifiedTelemetryState, queryParams, paramIndex);
+    paramIndex = fChannelParamIndex;
+    const {
+      clause: errorChannelClause,
+      paramIndex: eChannelParamIndex,
+    } = buildChannelFilterClause("channel", unifiedTelemetryState, queryParams, paramIndex);
+    paramIndex = eChannelParamIndex;
+
+    let startParam = null;
+    let endParam = null;
+
+    if (startTimestamp !== null) {
+      paramIndex += 1;
+      startParam = paramIndex;
+      queryParams.push(startTimestamp);
+    }
+
+    if (endTimestamp !== null) {
+      paramIndex += 1;
+      endParam = paramIndex;
+      queryParams.push(endTimestamp);
+    }
+
+    const questionDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    const feedbackDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    const errorDateFilter = `
+      ${startParam ? ` AND ets >= $${startParam}` : ""}
+      ${endParam ? ` AND ets <= $${endParam}` : ""}
+    `;
+    
+    const query = {
+      text: `
+        WITH user_first_seen AS (
+          SELECT
+            q.fingerprint_id,
+            MIN(TO_TIMESTAMP(q.ets / 1000.0)) AS first_seen_overall
+          FROM questions q
+          WHERE q.fingerprint_id IS NOT NULL
+            AND ${questionChannelClause}
+          GROUP BY q.fingerprint_id
+        ),
+        period_users AS (
+          SELECT
+            q.fingerprint_id,
+            MIN(TO_TIMESTAMP(q.ets / 1000.0)) AS period_first_seen
+          FROM questions q
+          WHERE q.fingerprint_id IS NOT NULL
+            AND q.answertext IS NOT NULL
+            AND ${questionChannelClause}
+            ${questionDateFilter}
+          GROUP BY q.fingerprint_id
+        ),
+        user_stats AS (
+          SELECT
+            COUNT(DISTINCT pu.fingerprint_id) AS total_users,
+            COUNT(DISTINCT CASE
+              WHEN DATE(ufs.first_seen_overall) = DATE(pu.period_first_seen)
+              THEN pu.fingerprint_id
+            END) AS new_users,
+            COUNT(DISTINCT CASE
+              WHEN DATE(ufs.first_seen_overall) < DATE(pu.period_first_seen)
+              THEN pu.fingerprint_id
+            END) AS returning_users
+          FROM period_users pu
+          INNER JOIN user_first_seen ufs ON ufs.fingerprint_id = pu.fingerprint_id
+        ),
+        session_stats AS (
+          WITH combined_sessions AS (
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM questions
+            WHERE sid IS NOT NULL
+              AND answertext IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${questionChannelClauseNoAlias}
+              ${questionDateFilter}
+            UNION ALL
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM feedback
+            WHERE sid IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${feedbackChannelClause}
+              ${feedbackDateFilter}
+            UNION ALL
+            SELECT sid, fingerprint_id AS uid, ets
+            FROM errordetails
+            WHERE sid IS NOT NULL
+              AND fingerprint_id IS NOT NULL
+              AND ${errorChannelClause}
+              ${errorDateFilter}
+          )
+          SELECT COUNT(*) AS total_sessions
+          FROM (
+            SELECT sid, uid
+            FROM combined_sessions
+            GROUP BY sid, uid
+          ) session_groups
+        ),
+        question_stats AS (
+          SELECT COUNT(*) AS total_questions
+          FROM questions
+          WHERE answertext IS NOT NULL
+            AND fingerprint_id IS NOT NULL
+            AND ${questionChannelClauseNoAlias}
+            ${questionDateFilter}
+        ),
+        feedback_stats AS (
+          SELECT
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback
+          WHERE feedbacktext IS NOT NULL
+            AND questiontext IS NOT NULL
+            AND fingerprint_id IS NOT NULL
+            AND ${feedbackChannelClause}
+            ${feedbackDateFilter}
+        )
+        SELECT
+          us.total_users,
+          us.new_users,
+          us.returning_users,
+          ss.total_sessions,
+          qs.total_questions,
+          fs.total_feedback,
+          fs.total_likes,
+          fs.total_dislikes
+        FROM user_stats us
+        CROSS JOIN session_stats ss
+        CROSS JOIN question_stats qs
+        CROSS JOIN feedback_stats fs;
+      `,
+      values: queryParams,
+    };
+
+    const result = await pool.query(query);
+    const stats = result.rows[0];
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalUsers: parseInt(stats.total_users) || 0,
+        totalNewUsers: parseInt(stats.new_users) || 0,
+        totalReturningUsers: parseInt(stats.returning_users) || 0,
+        totalSessions: parseInt(stats.total_sessions) || 0,
+        totalQuestions: parseInt(stats.total_questions) || 0,
+        totalFeedback: parseInt(stats.total_feedback) || 0,
+        totalLikes: parseInt(stats.total_likes) || 0,
+        totalDislikes: parseInt(stats.total_dislikes) || 0,
+      },
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+        appliedState: "bharat-vistaar",
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching unified dashboard stats:", error);
+    res
+      .status(500)
+      .json({ success: false, error: "Error fetching unified dashboard statistics" });
+  }
+};
+
 const getUserGraph = async (req, res) => {
   try {
     res.status(200).json({
@@ -292,5 +548,6 @@ const getUserGraph = async (req, res) => {
 module.exports = {
   getUserLoginAnalytics,
   getDashboardStats,
+  getDashboardStatsUnified,
   getUserGraph,
 };

@@ -3,6 +3,7 @@ const {
   formatDateToIST,
   parseDateRange,
 } = require("../utils/dateUtils");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 async function fetchAsrFromDB(
   page = 1,
@@ -12,6 +13,7 @@ async function fetchAsrFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -37,6 +39,12 @@ async function fetchAsrFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -82,7 +90,7 @@ async function fetchAsrFromDB(
   return result.rows;
 }
 
-async function getAsrCount(search = "", startDate = null, endDate = null) {
+async function getAsrCount(search = "", startDate = null, endDate = null, telemetryState = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   let query = `
@@ -93,6 +101,12 @@ async function getAsrCount(search = "", startDate = null, endDate = null) {
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -122,7 +136,7 @@ async function getAsrCount(search = "", startDate = null, endDate = null) {
   return parseInt(result.rows[0].total);
 }
 
-async function getAsrStats(startDate = null, endDate = null) {
+async function getAsrStats(startDate = null, endDate = null, telemetryState = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   let query = `
@@ -137,6 +151,12 @@ async function getAsrStats(startDate = null, endDate = null) {
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -186,6 +206,7 @@ function formatAsrRecord(row) {
 
 const getAsr = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
     const search = req.query.search ? String(req.query.search).trim() : "";
@@ -213,9 +234,9 @@ const getAsr = async (req, res) => {
     }
 
     const [rawData, totalCount, stats] = await Promise.all([
-      fetchAsrFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
-      getAsrCount(search, startDate, endDate),
-      getAsrStats(startDate, endDate),
+      fetchAsrFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder, telemetryState),
+      getAsrCount(search, startDate, endDate, telemetryState),
+      getAsrStats(startDate, endDate, telemetryState),
     ]);
 
     const formattedData = rawData.map(formatAsrRecord);

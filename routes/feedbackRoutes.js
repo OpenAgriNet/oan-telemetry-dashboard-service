@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const feedbackController = require('../controllers/feedback.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
+
+router.use(requireStateAccess);
 
 // Route for getting all feedback
 router.get('/feedback', feedbackController.getAllFeedback);

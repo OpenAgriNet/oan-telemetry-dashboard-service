@@ -10,8 +10,10 @@ const {
     fetchQuestionsFromDB,
     formatQuestionData
 } = require('../controllers/questions.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
 
 const router = express.Router();
+router.use(requireStateAccess);
 
 // Get all questions with pagination and search
 router.get('/questions', getQuestions);

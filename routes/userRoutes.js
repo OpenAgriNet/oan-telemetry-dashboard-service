@@ -8,8 +8,10 @@ const {
     formatUserDataHandler,
     getUserGraph
 } = require('../controllers/user.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
 
 const router = express.Router();
+router.use(requireStateAccess);
 
 // Get all users with pagination and search
 router.get('/users', getUsers);

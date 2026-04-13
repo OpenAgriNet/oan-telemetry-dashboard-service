@@ -4,6 +4,7 @@ const {
   formatDateToIST,
   getCurrentTimestamp,
 } = require("../utils/dateUtils");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 async function fetchQuestionsFromDB(
   page = 1,
@@ -13,6 +14,7 @@ async function fetchQuestionsFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -35,6 +37,12 @@ async function fetchQuestionsFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -93,6 +101,7 @@ async function getTotalQuestionsCount(
   search = "",
   startDate = null,
   endDate = null,
+  telemetryState = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -104,6 +113,12 @@ async function getTotalQuestionsCount(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -169,6 +184,7 @@ function formatQuestionData(row) {
 
 const getQuestions = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     // Extract and sanitize pagination parameters from query string
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -219,8 +235,9 @@ const getQuestions = async (req, res) => {
         endDate,
         sortBy,
         sortOrder,
+        telemetryState,
       ),
-      getTotalQuestionsCount(search, startDate, endDate),
+      getTotalQuestionsCount(search, startDate, endDate, telemetryState),
     ]);
 
     const formattedData = questionsData.map(formatQuestionData);
@@ -264,6 +281,7 @@ const getQuestions = async (req, res) => {
 // Get single question by ID
 const getQuestionById = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { id } = req.params;
 
     // Validate UUID format to prevent SQL injection
@@ -276,6 +294,12 @@ const getQuestionById = async (req, res) => {
         error: "Valid UUID ID is required",
       });
     }
+
+    const queryParams = [id];
+    const {
+      clause: channelClause,
+      paramIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, 1);
 
     const query = {
       text: `
@@ -293,8 +317,9 @@ const getQuestionById = async (req, res) => {
                     questionsource
                 FROM questions
                 WHERE id = $1
+                  AND ${channelClause}
             `,
-      values: [id],
+      values: queryParams,
     };
 
     const result = await pool.query(query);
@@ -626,6 +651,7 @@ const getQuestionsBySessionId = async (req, res) => {
 // Get comprehensive question statistics with date filtering
 const getQuestionStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -648,6 +674,11 @@ const getQuestionStats = async (req, res) => {
     let dateFilter = "";
     const queryParams = [];
     let paramIndex = 0;
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
 
     if (startTimestamp !== null) {
       paramIndex++;
@@ -666,7 +697,8 @@ const getQuestionStats = async (req, res) => {
       text: `
                 SELECT COUNT(*) as total_questions
                 FROM questions
-                WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                WHERE uid IS NOT NULL AND answertext IS NOT NULL
+                  AND ${channelClause} ${dateFilter}
             `,
       values: queryParams,
     };
@@ -698,6 +730,7 @@ const getQuestionStats = async (req, res) => {
 // Get questions graph data for time-series visualization
 const getQuestionsGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -740,6 +773,11 @@ const getQuestionsGraph = async (req, res) => {
     let dateFilter = "";
     const queryParams = [];
     let paramIndex = 0;
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
 
     if (startTimestamp !== null) {
       paramIndex++;
@@ -815,6 +853,7 @@ const getQuestionsGraph = async (req, res) => {
                     AND answertext IS NOT NULL
                     AND fingerprint_id IS NOT NULL 
                     AND ets IS NOT NULL
+                    AND ${channelClause}
                     ${dateFilter}
                 GROUP BY ${dateGrouping}
                 ORDER BY ${orderBy} ASC

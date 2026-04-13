@@ -133,20 +133,21 @@ cron.schedule("0 * * * *", async () => {
 });
 
 app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
+app.use("/v1", authController);
 // app.use("/", authController, (req, res) => {
 //   res.send("hi welcome");
 // });
 
-app.use("/v1", authController, questionRoutes);
-app.use("/v1", authController, userRoutes);
-app.use("/v1", authController, deviceRoutes);
-app.use("/v1", authController, sessionRoutes);
-app.use("/v1", authController, feedbackRoutes);
-app.use("/v1", authController, asrRoutes);
-app.use("/v1", authController, ttsRoutes);
-app.use("/v1", authController, errorRoutes);
-app.use("/v1", authController, dashboardRoutes);
-app.use("/v1", authController, callRoutes);
+app.use("/v1", questionRoutes);
+app.use("/v1", userRoutes);
+app.use("/v1", deviceRoutes);
+app.use("/v1", sessionRoutes);
+app.use("/v1", feedbackRoutes);
+app.use("/v1", asrRoutes);
+app.use("/v1", ttsRoutes);
+app.use("/v1", errorRoutes);
+app.use("/v1", dashboardRoutes);
+app.use("/v1", callRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 

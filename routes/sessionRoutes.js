@@ -9,8 +9,10 @@ const {
     fetchSessionsFromDB,
     formatSessionData
 } = require('../controllers/sessions.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
 
 const router = express.Router();
+router.use(requireStateAccess);
 
 // Get all sessions with pagination and search
 router.get('/sessions', getSessions);
