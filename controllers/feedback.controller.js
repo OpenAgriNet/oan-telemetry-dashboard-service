@@ -92,12 +92,16 @@ async function fetchAllFeedbackFromDB(
     queryParams.push(channel);
   }
 
-  const sortArray = ["created_at", "user_id", "feedbacktype", "feedbacktext"];
+  const sortArray = ["ets", "created_at", "user_id", "feedbacktype", "feedbacktext"];
 
   if (sortArray.includes(sortBy)) {
-    query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    if (sortBy === "ets") {
+      query += ` ORDER BY ets ${sortOrder}, created_at ${sortOrder}`;
+    } else {
+      query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    }
   } else {
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY ets DESC, created_at DESC`;
   }
 
   // Add pagination
@@ -273,22 +277,12 @@ async function getTotalLikesDislikesCount(
 }
 
 function formatFeedbackData(feedbackItem) {
-  // const dateObj = new Date(feedbackItem.created_at);
-
-  // // Use utility function to format UTC to IST date
-  // const formattedDate = formatUTCToISTDate(dateObj);
   let feedbackTime = null;
-  if (feedbackItem.created_at) {
-    // First try to parse the timestamp if it's in milliseconds
-    const timestamp = parseInt(feedbackItem.created_at);
-    if (!isNaN(timestamp)) {
-      // Convert to IST timezone
-      feedbackTime = formatDateToIST(timestamp);
-    } else {
-      // If not a timestamp, try parsing as a date string
-      const parsedDate = new Date(feedbackItem.created_at);
-      feedbackTime = formatDateToIST(parsedDate.getTime());
-    }
+  if (feedbackItem.ets) {
+    feedbackTime = formatDateToIST(feedbackItem.ets);
+  } else if (feedbackItem.created_at) {
+    const parsedDate = new Date(feedbackItem.created_at);
+    feedbackTime = formatDateToIST(parsedDate.getTime());
   }
 
   return {
@@ -553,7 +547,7 @@ const getFeedbackBySessionId = async (req, res) => {
                     AND feedbacktext IS NOT NULL
                     AND (questiontext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
                     ${dateFilter}
-                ORDER BY created_at DESC
+                ORDER BY ets DESC, created_at DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
