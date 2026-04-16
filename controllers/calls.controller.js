@@ -1,6 +1,20 @@
 const pool = require('../services/db');
 const { parseDateRange } = require('../utils/dateUtils');
 
+// Helper: Check if MV exists and has recent data
+const checkMaterializedViewHealth = async (viewName) => {
+  try {
+    const result = await pool.query(`
+      SELECT schemaname, relname
+      FROM pg_stat_user_tables 
+      WHERE relname = $1
+    `, [viewName]);
+    return result.rows.length > 0;
+  } catch (err) {
+    return false;
+  }
+};
+
 // ─── GET /calls ── paginated list with aggregated message counts ───
 const getCalls = async (req, res) => {
     try {
@@ -160,6 +174,7 @@ const getCalls = async (req, res) => {
 };
 
 // ─── GET /calls/stats ── aggregate stats for header cards ───
+// OPTIMIZED: Uses mv_call_message_counts MV to eliminate runtime JOIN + GROUP BY
 const getCallsStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
@@ -173,32 +188,63 @@ const getCallsStats = async (req, res) => {
             const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
             if (startTimestamp !== null) {
                 paramIdx++;
-                conditions.push(`c.start_datetime >= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
+                conditions.push(`start_datetime >= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
                 queryParams.push(startTimestamp);
             }
             if (endTimestamp !== null) {
                 paramIdx++;
-                conditions.push(`c.start_datetime <= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
+                conditions.push(`start_datetime <= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
                 queryParams.push(endTimestamp);
             }
         }
 
         const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
-        const query = `
-            SELECT
-                COUNT(DISTINCT c.id)                                     AS total_calls,
-                COUNT(DISTINCT NULLIF(TRIM(c.user_id), ''))              AS total_users,
-                COALESCE(SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END), 0)   AS total_questions,
-                COALESCE(COUNT(m.id), 0)                                         AS total_interactions,
-                ROUND(AVG(c.duration_in_seconds)::NUMERIC, 2)                    AS avg_duration
-            FROM calls c
-            LEFT JOIN messages m ON m.call_id = c.id
-            ${whereClause}
-        `;
+        // Check MV availability
+        const hasCallMessageCountsMV = await checkMaterializedViewHealth('mv_call_message_counts');
 
-        const result = await pool.query(query, queryParams);
-        const stats = result.rows[0];
+        let stats;
+        let querySource = 'base';
+
+        if (hasCallMessageCountsMV) {
+            try {
+                // MV-optimized query: No JOIN needed, direct scan on pre-computed data
+                const mvQuery = `
+                    SELECT
+                        COUNT(*) AS total_calls,
+                        COUNT(DISTINCT NULLIF(TRIM(user_id), '')) AS total_users,
+                        SUM(questions_count) AS total_questions,
+                        SUM(total_interactions) AS total_interactions,
+                        ROUND(AVG(duration_in_seconds)::NUMERIC, 2) AS avg_duration
+                    FROM mv_call_message_counts
+                    ${whereClause}
+                `;
+                const mvResult = await pool.query(mvQuery, queryParams);
+                if (mvResult.rows.length > 0) {
+                    stats = mvResult.rows[0];
+                    querySource = 'mv';
+                }
+            } catch (mvErr) {
+                console.warn('[CallsStats] MV query failed, falling back to base query:', mvErr.message);
+            }
+        }
+
+        // Fallback to original query if MV not available or failed
+        if (!stats) {
+            const fallbackQuery = `
+                SELECT
+                    COUNT(DISTINCT c.id)                                     AS total_calls,
+                    COUNT(DISTINCT NULLIF(TRIM(c.user_id), ''))              AS total_users,
+                    COALESCE(SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END), 0)   AS total_questions,
+                    COALESCE(COUNT(m.id), 0)                                         AS total_interactions,
+                    ROUND(AVG(c.duration_in_seconds)::NUMERIC, 2)                    AS avg_duration
+                FROM calls c
+                LEFT JOIN messages m ON m.call_id = c.id
+                ${whereClause}
+            `;
+            const result = await pool.query(fallbackQuery, queryParams);
+            stats = result.rows[0];
+        }
 
         res.status(200).json({
             success: true,
@@ -208,6 +254,9 @@ const getCallsStats = async (req, res) => {
                 totalQuestions: parseInt(stats.total_questions) || 0,
                 totalInteractions: parseInt(stats.total_interactions) || 0,
                 avgDuration: parseFloat(stats.avg_duration) || 0,
+            },
+            meta: {
+                source: querySource,
             },
             filters: { startDate, endDate },
         });
