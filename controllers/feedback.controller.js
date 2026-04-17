@@ -13,26 +13,34 @@ async function fetchAllFeedbackFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  feedbackSource = null,
+  feedbackType = null,
+  channel = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   // Base query with optional search and date filtering - using parameterized queries
   let query = `
-        SELECT 
+        SELECT
             id,
             qid,
-            fingerprint_id as user_id,
+            COALESCE(fingerprint_id, uid) as user_id,
             created_at,
-            feedbacktype,   
+            feedbacktype,
             feedbacktext,
             questiontext,
             answertext,
             channel,
             sid as session_id,
-            ets
+            ets,
+            COALESCE(feedback_source, 'chat') as feedback_source
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
+        WHERE feedbacktext IS NOT NULL
+          AND (
+            (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+            OR COALESCE(feedback_source, 'chat') = 'voice'
+          )
     `;
 
   const queryParams = [];
@@ -55,20 +63,45 @@ async function fetchAllFeedbackFromDB(
   if (search && search.trim() !== "") {
     paramIndex++;
     query += ` AND (
-            feedbacktext ILIKE $${paramIndex} OR 
-            questiontext ILIKE $${paramIndex} OR 
+            feedbacktext ILIKE $${paramIndex} OR
+            questiontext ILIKE $${paramIndex} OR
             answertext ILIKE $${paramIndex} OR
-            fingerprint_id ILIKE $${paramIndex}
+            COALESCE(fingerprint_id, uid) ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
   }
 
-  const sortArray = ["created_at", "user_id", "feedbacktype", "feedbacktext"];
+  // Add feedback source filter (chat/voice)
+  if (feedbackSource && feedbackSource !== 'all') {
+    paramIndex++;
+    query += ` AND COALESCE(feedback_source, 'chat') = $${paramIndex}`;
+    queryParams.push(feedbackSource);
+  }
+
+  // Add feedback type filter (like/dislike)
+  if (feedbackType && feedbackType !== 'all') {
+    paramIndex++;
+    query += ` AND feedbacktype = $${paramIndex}`;
+    queryParams.push(feedbackType);
+  }
+
+  // Add channel filter
+  if (channel && channel !== 'all') {
+    paramIndex++;
+    query += ` AND channel = $${paramIndex}`;
+    queryParams.push(channel);
+  }
+
+  const sortArray = ["ets", "created_at", "user_id", "feedbacktype", "feedbacktext"];
 
   if (sortArray.includes(sortBy)) {
-    query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    if (sortBy === "ets") {
+      query += ` ORDER BY ets ${sortOrder}, created_at ${sortOrder}`;
+    } else {
+      query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    }
   } else {
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY ets DESC, created_at DESC`;
   }
 
   // Add pagination
@@ -88,13 +121,20 @@ async function getTotalFeedbackCount(
   search = "",
   startDate = null,
   endDate = null,
+  feedbackSource = null,
+  feedbackType = null,
+  channel = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   let query = `
         SELECT COUNT(*) as total
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
+        WHERE feedbacktext IS NOT NULL
+          AND (
+            (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+            OR COALESCE(feedback_source, 'chat') = 'voice'
+          )
     `;
 
   const queryParams = [];
@@ -117,12 +157,33 @@ async function getTotalFeedbackCount(
   if (search && search.trim() !== "") {
     paramIndex++;
     query += ` AND (
-            feedbacktext ILIKE $${paramIndex} OR 
-            questiontext ILIKE $${paramIndex} OR 
+            feedbacktext ILIKE $${paramIndex} OR
+            questiontext ILIKE $${paramIndex} OR
             answertext ILIKE $${paramIndex} OR
-            fingerprint_id ILIKE $${paramIndex}
+            COALESCE(fingerprint_id, uid) ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
+  }
+
+  // Add feedback source filter
+  if (feedbackSource && feedbackSource !== 'all') {
+    paramIndex++;
+    query += ` AND COALESCE(feedback_source, 'chat') = $${paramIndex}`;
+    queryParams.push(feedbackSource);
+  }
+
+  // Add feedback type filter
+  if (feedbackType && feedbackType !== 'all') {
+    paramIndex++;
+    query += ` AND feedbacktype = $${paramIndex}`;
+    queryParams.push(feedbackType);
+  }
+
+  // Add channel filter
+  if (channel && channel !== 'all') {
+    paramIndex++;
+    query += ` AND channel = $${paramIndex}`;
+    queryParams.push(channel);
   }
 
   const result = await pool.query(query, queryParams);
@@ -134,15 +195,22 @@ async function getTotalLikesDislikesCount(
   startDate = null,
   endDate = null,
   sessionId = null,
+  feedbackSource = null,
+  feedbackType = null,
+  channel = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   let query = `
-        SELECT 
+        SELECT
             SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
             SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL AND fingerprint_id IS NOT NULL
+        WHERE feedbacktext IS NOT NULL
+          AND (
+            (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+            OR COALESCE(feedback_source, 'chat') = 'voice'
+          )
     `;
 
   const queryParams = [];
@@ -172,12 +240,33 @@ async function getTotalLikesDislikesCount(
   if (search && search.trim() !== "") {
     paramIndex++;
     query += ` AND (
-            feedbacktext ILIKE $${paramIndex} OR 
-            questiontext ILIKE $${paramIndex} OR 
+            feedbacktext ILIKE $${paramIndex} OR
+            questiontext ILIKE $${paramIndex} OR
             answertext ILIKE $${paramIndex} OR
-            fingerprint_id ILIKE $${paramIndex}
+            COALESCE(fingerprint_id, uid) ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
+  }
+
+  // Add feedback source filter
+  if (feedbackSource && feedbackSource !== 'all') {
+    paramIndex++;
+    query += ` AND COALESCE(feedback_source, 'chat') = $${paramIndex}`;
+    queryParams.push(feedbackSource);
+  }
+
+  // Add feedback type filter
+  if (feedbackType && feedbackType !== 'all') {
+    paramIndex++;
+    query += ` AND feedbacktype = $${paramIndex}`;
+    queryParams.push(feedbackType);
+  }
+
+  // Add channel filter
+  if (channel && channel !== 'all') {
+    paramIndex++;
+    query += ` AND channel = $${paramIndex}`;
+    queryParams.push(channel);
   }
 
   const result = await pool.query(query, queryParams);
@@ -188,35 +277,27 @@ async function getTotalLikesDislikesCount(
 }
 
 function formatFeedbackData(feedbackItem) {
-  // const dateObj = new Date(feedbackItem.created_at);
-
-  // // Use utility function to format UTC to IST date
-  // const formattedDate = formatUTCToISTDate(dateObj);
   let feedbackTime = null;
-  if (feedbackItem.created_at) {
-    // First try to parse the timestamp if it's in milliseconds
-    const timestamp = parseInt(feedbackItem.created_at);
-    if (!isNaN(timestamp)) {
-      // Convert to IST timezone
-      feedbackTime = formatDateToIST(timestamp);
-    } else {
-      // If not a timestamp, try parsing as a date string
-      const parsedDate = new Date(feedbackItem.created_at);
-      feedbackTime = formatDateToIST(parsedDate.getTime());
-    }
+  if (feedbackItem.ets) {
+    feedbackTime = formatDateToIST(feedbackItem.ets);
+  } else if (feedbackItem.created_at) {
+    const parsedDate = new Date(feedbackItem.created_at);
+    feedbackTime = formatDateToIST(parsedDate.getTime());
   }
 
   return {
     qid: feedbackItem.qid,
     date: feedbackTime,
     user: feedbackItem.user_id,
-    question: feedbackItem.questiontext,
+    question: feedbackItem.questiontext || "",
     sessionId: feedbackItem.session_id,
-    answer: feedbackItem.answertext.substring(0, 100) + "...",
+    answer: feedbackItem.answertext ? feedbackItem.answertext.substring(0, 100) + "..." : "",
     rating: feedbackItem.feedbacktype,
     feedback: feedbackItem.feedbacktext,
     id: feedbackItem.id,
     timestamp: feedbackItem.ets,
+    feedbackSource: feedbackItem.feedback_source || 'chat',
+    channel: feedbackItem.channel || '',
   };
 }
 
@@ -233,6 +314,9 @@ async function getAllFeedback(req, res) {
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
     const sortBy = req.query.sortBy;
     const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
+    const feedbackSource = req.query.feedbackSource ? String(req.query.feedbackSource).trim() : null;
+    const feedbackType = req.query.feedbackType ? String(req.query.feedbackType).trim() : null;
+    const channel = req.query.channel ? String(req.query.channel).trim() : null;
 
     // Additional validation for search term length to prevent abuse
     if (search.length > 1000) {
@@ -267,8 +351,11 @@ async function getAllFeedback(req, res) {
         endDate,
         sortBy,
         sortOrder,
+        feedbackSource,
+        feedbackType,
+        channel,
       ),
-      getTotalFeedbackCount(search, startDate, endDate),
+      getTotalFeedbackCount(search, startDate, endDate, feedbackSource, feedbackType, channel),
     ]);
 
     const formattedFeedback = rawFeedbackData.map(formatFeedbackData);
@@ -278,6 +365,10 @@ async function getAllFeedback(req, res) {
       search,
       startDate,
       endDate,
+      null,
+      feedbackSource,
+      feedbackType,
+      channel,
     );
 
     // Calculate pagination metadata
@@ -318,9 +409,9 @@ async function getAllFeedback(req, res) {
 async function fetchFeedbackByidFromDB(id) {
   const query = {
     text: `
-            SELECT 
+            SELECT
                 id,
-                uid AS user_id,
+                COALESCE(fingerprint_id, uid) AS user_id,
                 sid AS session_id,
                 groupdetails,
                 channel,
@@ -330,7 +421,8 @@ async function fetchFeedbackByidFromDB(id) {
                 answertext,
                 feedbacktype,
                 created_at,
-                qid AS question_id
+                qid AS question_id,
+                COALESCE(feedback_source, 'chat') AS feedback_source
             FROM feedback
             WHERE id = $1
         `,
@@ -437,24 +529,25 @@ const getFeedbackBySessionId = async (req, res) => {
     // Get feedback by session ID with pagination and date filtering
     const feedbackQuery = {
       text: `
-                SELECT 
+                SELECT
                     id,
                     qid,
-                    uid as user_id,
+                    COALESCE(fingerprint_id, uid) as user_id,
                     created_at,
-                    feedbacktype,   
+                    feedbacktype,
                     feedbacktext,
                     questiontext,
                     answertext,
                     channel,
                     sid as session_id,
-                    ets
+                    ets,
+                    COALESCE(feedback_source, 'chat') as feedback_source
                 FROM feedback
-                WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
+                WHERE sid = $1
+                    AND feedbacktext IS NOT NULL
+                    AND (questiontext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
                     ${dateFilter}
-                ORDER BY created_at DESC
+                ORDER BY ets DESC, created_at DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
       values: queryParams,
@@ -465,9 +558,9 @@ const getFeedbackBySessionId = async (req, res) => {
       text: `
                 SELECT COUNT(*) as total
                 FROM feedback
-                WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
+                WHERE sid = $1
+                    AND feedbacktext IS NOT NULL
+                    AND (questiontext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
                     ${countDateFilter}
             `,
       values: countParams,
@@ -570,7 +663,7 @@ const getFeedbackStats = async (req, res) => {
                     COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                     COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                 FROM feedback
-                WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                WHERE uid IS NOT NULL AND (answertext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice') ${dateFilter}
             `,
       values: queryParams,
     };
@@ -726,8 +819,10 @@ const getFeedbackGraph = async (req, res) => {
 
 FROM feedback
 WHERE feedbacktext IS NOT NULL
-  AND questiontext IS NOT NULL
-  AND fingerprint_id IS NOT NULL
+  AND (
+    (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+    OR COALESCE(feedback_source, 'chat') = 'voice'
+  )
   AND ets IS NOT NULL
   ${dateFilter}
 GROUP BY ${dateGrouping}
@@ -814,6 +909,22 @@ ORDER BY ${orderBy} ASC
   }
 };
 
+// Get distinct channels for filter dropdown
+const getDistinctChannels = async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT channel FROM feedback WHERE channel IS NOT NULL ORDER BY channel`
+    );
+    res.status(200).json({
+      success: true,
+      data: result.rows.map(r => r.channel),
+    });
+  } catch (error) {
+    console.error("Error fetching distinct channels:", error);
+    res.status(500).json({ success: false, error: "Error fetching channels" });
+  }
+};
+
 module.exports = {
   getAllFeedback,
   getFeedbackByid,
@@ -824,6 +935,7 @@ module.exports = {
   fetchAllFeedbackFromDB,
   formatFeedbackData,
   getTotalLikesDislikesCount,
+  getDistinctChannels,
 };
 
 //  SELECT

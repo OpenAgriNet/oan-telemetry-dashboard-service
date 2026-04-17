@@ -8,74 +8,16 @@ const { getTotalSessionsCount } = require("./sessions.controller");
 const { getTotalUsersCount } = require("./user.controller");
 const { parseDateRange } = require("../utils/dateUtils");
 
-// Helper: Check if MV exists and has recent data
-const checkMaterializedViewHealth = async (viewName, maxAgeMinutes = 30) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        schemaname, 
-        relname,
-        pg_size_pretty(pg_relation_size(schemaname||'.'||relname)) as size
-      FROM pg_stat_user_tables 
-      WHERE relname = $1
-    `, [viewName]);
-    return result.rows.length > 0;
-  } catch (err) {
-    return false;
-  }
-};
-
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
  * Returns user login analytics for dashboard
- * OPTIMIZED: Uses mv_active_users MV when available
  */
 const getUserLoginAnalytics = async (req, res) => {
   try {
     const granularity = req.query.granularity === "hourly" ? "hourly" : "daily";
 
-    // Try MV-first approach for daily granularity
     if (granularity === "daily") {
-      const hasActiveUsersMV = await checkMaterializedViewHealth('mv_active_users');
-      
-      if (hasActiveUsersMV) {
-        // Use materialized view for fast lookup
-        const result = await pool.query(`
-          SELECT 
-            to_char(activity_date, 'YYYY-MM-DD') as date,
-            active_users as unique_logins
-          FROM mv_active_users
-          WHERE activity_date >= CURRENT_DATE - INTERVAL '7 days'
-          ORDER BY activity_date DESC
-        `);
-
-        if (result.rows.length > 0) {
-          // Fill missing days with 0
-          const today = new Date();
-          const days = [];
-          for (let i = 7; i >= 0; i--) {
-            const d = new Date(today);
-            d.setDate(today.getDate() - i);
-            days.push(d.toISOString().slice(0, 10));
-          }
-          const dataMap = {};
-          result.rows.forEach((row) => {
-            dataMap[row.date] = {
-              uniqueLogins: parseInt(row.unique_logins),
-              uids: [], // MV doesn't store uids, use empty array
-            };
-          });
-          const data = days.map((date) => ({
-            date,
-            uniqueLogins: dataMap[date]?.uniqueLogins || 0,
-            uids: dataMap[date]?.uids || [],
-          }));
-
-          return res.json({ success: true, granularity, data, source: 'mv' });
-        }
-      }
-
-      // Fallback: Original query
+      // Last 40 days including today
       const result = await pool.query(`
                 SELECT 
                     to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
@@ -112,9 +54,9 @@ const getUserLoginAnalytics = async (req, res) => {
         uids: dataMap[date]?.uids || [],
       }));
 
-      return res.json({ success: true, granularity, data, source: 'base' });
+      return res.json({ success: true, granularity, data });
     } else {
-      // Last 12 hours including current hour (no MV for hourly yet)
+      // Last 12 hours including current hour
       const result = await pool.query(`
                 WITH combined AS (
                     SELECT uid, ets FROM questions WHERE uid IS NOT NULL
@@ -166,7 +108,7 @@ const getUserLoginAnalytics = async (req, res) => {
   }
 };
 
-// Get overall dashboard statistics - OPTIMIZED with MV-first queries
+// Get overall dashboard statistics - OPTIMIZED to return only essential metrics
 const getDashboardStats = async (req, res) => {
   try {
     const startDate = req.query.startDate
@@ -185,184 +127,125 @@ const getDashboardStats = async (req, res) => {
         .json({ success: false, error: "Invalid date format" });
     }
 
-    // Check MV availability
-    const hasEngagementMV = await checkMaterializedViewHealth('mv_user_engagement_daily');
-    const hasQuestionRateMV = await checkMaterializedViewHealth('mv_question_answer_rates');
+    const queryParams = [];
+    let paramIndex = 0;
+    let questionDateFilter = "";
+    let feedbackDateFilter = "";
+    let errordetailsDateFilter = "";
+    let futureFilter = "";
 
-    // Determine query strategy: MV-first or direct
-    const useMaterializedViews = hasEngagementMV && hasQuestionRateMV;
-
-    let stats;
-    let querySource = 'base';
-
-    if (useMaterializedViews) {
-      // MV-optimized query for fast dashboard stats
-      try {
-        const mvQuery = await pool.query(`
-          WITH engagement_stats AS (
-            SELECT 
-              SUM(total_sessions) AS total_sessions,
-              SUM(daily_active_users) AS total_users,
-              AVG(avg_session_duration) AS avg_session_duration
-            FROM mv_user_engagement_daily
-            WHERE activity_date >= $1::date AND activity_date <= $2::date
-          ),
-          question_stats AS (
-            SELECT 
-              SUM(total_questions) AS total_questions,
-              SUM(unique_users) AS question_users,
-              SUM(feedback_count) AS total_feedback,
-              ROUND(AVG(avg_feedback_rating), 2) AS avg_rating
-            FROM mv_question_answer_rates
-            WHERE question_date >= $1::date AND question_date <= $2::date
-          ),
-          session_duration_stats AS (
-            SELECT 
-              total_sessions AS all_time_sessions,
-              avg_duration AS avg_session_duration_overall
-            FROM mv_session_duration
-          )
-          SELECT
-            es.total_users,
-            es.total_sessions,
-            qs.total_questions,
-            qs.total_feedback,
-            qs.avg_rating,
-            COALESCE(qs.question_users, 0) AS active_question_users,
-            -- Estimated likes/dislikes (MV doesn't store this breakdown)
-            0 AS total_likes,
-            0 AS total_dislikes,
-            COALESCE(es.total_users - COALESCE(qs.question_users, 0), 0) AS new_users_est
-          FROM engagement_stats es
-          CROSS JOIN question_stats qs
-          CROSS JOIN session_duration_stats sd
-        `, [new Date(startTimestamp), new Date(endTimestamp)]);
-
-        if (mvQuery.rows.length > 0) {
-          stats = mvQuery.rows[0];
-          querySource = 'mv';
-        }
-      } catch (mvErr) {
-        console.warn('[DashboardStats] MV query failed, falling back to base query:', mvErr.message);
-      }
-    }
-
-    // Fallback to original optimized query if MV not available or failed
-    if (!stats) {
-      const queryParams = [];
-      let paramIndex = 0;
-      let questionDateFilter = "";
-      let feedbackDateFilter = "";
-      let errordetailsDateFilter = "";
-      let futureFilter = "";
-
-      if (startTimestamp !== null) {
-        paramIndex++;
-        questionDateFilter += ` AND ets >= $${paramIndex}`;
-        feedbackDateFilter += ` AND ets >= $${paramIndex}`;
-        errordetailsDateFilter += ` AND ets >= $${paramIndex}`;
-        queryParams.push(startTimestamp);
-      }
-
-      if (endTimestamp !== null) {
-        paramIndex++;
-        questionDateFilter += ` AND ets <= $${paramIndex}`;
-        feedbackDateFilter += ` AND ets <= $${paramIndex}`;
-        errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
-        queryParams.push(endTimestamp);
-      }
-
+    if (startTimestamp !== null) {
       paramIndex++;
-      queryParams.push(Date.now());
-      futureFilter = ` AND ets <= $${paramIndex}`;
-
-      const query = {
-        text: `
-          WITH user_stats AS (
-    SELECT
-      ( SELECT COUNT(DISTINCT fingerprint_id) from users
-        WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
-          AND DATE(first_seen_at) <= DATE($4)
-      ) AS new_users,
-      ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
-        INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
-        WHERE q.fingerprint_id IS NOT NULL
-          AND q.ets >= $1
-          AND q.ets <= $2
-          AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
-      ) AS returning_users
-  ),
-  session_stats AS (
-    WITH combined_sessions AS (
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM questions
-      WHERE sid IS NOT NULL
-        AND answertext IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-      UNION ALL
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM feedback
-      WHERE sid IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-      UNION ALL
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM errordetails
-      WHERE sid IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-    )
-    SELECT COUNT(*) AS total_sessions
-    FROM (
-      SELECT sid, uid
-      FROM combined_sessions
-      GROUP BY sid, uid
-    ) session_groups
-  ),
-  question_stats AS (
-    SELECT
-      COUNT(*) AS total_questions
-    FROM questions
-    WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
-      AND ets >= $1
-      AND ets <= $2
-  ),
-  feedback_stats AS (
-    SELECT 
-              COUNT(*) AS total_feedback,
-              COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-              COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-            FROM feedback
-            WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL and fingerprint_id IS NOT NULL
-      AND ets >= $1
-      AND ets <= $2
-  )
-  SELECT
-    (us.new_users + us.returning_users) AS total_users,
-    us.new_users,
-    us.returning_users,
-    ss.total_sessions,
-    qs.total_questions,
-    fs.total_feedback,
-    fs.total_likes,
-    fs.total_dislikes
-  FROM user_stats us
-  CROSS JOIN session_stats ss
-  CROSS JOIN question_stats qs
-  CROSS JOIN feedback_stats fs;
-        `,
-        values: [
-          startTimestamp, // $1 → bigint
-          endTimestamp, // $2 → bigint
-          new Date(startTimestamp), // $3 → timestamp
-          new Date(endTimestamp), // $4 → timestamp
-        ],
-      };
-
-      const result = await pool.query(query);
-      stats = result.rows[0];
+      questionDateFilter += ` AND ets >= $${paramIndex}`;
+      feedbackDateFilter += ` AND ets >= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets >= $${paramIndex}`;
+      queryParams.push(startTimestamp);
     }
+
+    if (endTimestamp !== null) {
+      paramIndex++;
+      questionDateFilter += ` AND ets <= $${paramIndex}`;
+      feedbackDateFilter += ` AND ets <= $${paramIndex}`;
+      errordetailsDateFilter += ` AND ets <= $${paramIndex}`;
+      queryParams.push(endTimestamp);
+    }
+
+    paramIndex++;
+    queryParams.push(Date.now());
+    futureFilter = ` AND ets <= $${paramIndex}`;
+
+    const query = {
+      text: `
+        WITH user_stats AS (
+  SELECT
+    ( SELECT COUNT(DISTINCT fingerprint_id) from users
+      WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
+        AND DATE(first_seen_at) <= DATE($4)
+    ) AS new_users,
+    ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
+      INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
+      WHERE q.fingerprint_id IS NOT NULL
+        AND q.ets >= $1
+        AND q.ets <= $2
+        AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
+    ) AS returning_users
+),
+session_stats AS (
+  WITH combined_sessions AS (
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM questions
+    WHERE sid IS NOT NULL
+      AND answertext IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+    UNION ALL
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM feedback
+    WHERE sid IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+    UNION ALL
+    SELECT sid, fingerprint_id AS uid, ets
+    FROM errordetails
+    WHERE sid IS NOT NULL
+      AND fingerprint_id IS NOT NULL
+      AND ets >= $1 AND ets <= $2
+  )
+  SELECT COUNT(*) AS total_sessions
+  FROM (
+    SELECT sid, uid
+    FROM combined_sessions
+    GROUP BY sid, uid
+  ) session_groups
+),
+question_stats AS (
+  SELECT
+    COUNT(*) AS total_questions
+  FROM questions
+  WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
+    AND ets >= $1
+    AND ets <= $2
+),
+feedback_stats AS (
+  SELECT 
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback
+          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL and fingerprint_id IS NOT NULL
+    AND ets >= $1
+    AND ets <= $2
+)
+SELECT
+  (us.new_users + us.returning_users) AS total_users,
+  us.new_users,
+  us.returning_users,
+  ss.total_sessions,
+  qs.total_questions,
+  fs.total_feedback,
+  fs.total_likes,
+  fs.total_dislikes
+FROM user_stats us
+CROSS JOIN session_stats ss
+CROSS JOIN question_stats qs
+CROSS JOIN feedback_stats fs;
+      `,
+      values: [
+        startTimestamp, // $1 → bigint
+        endTimestamp, // $2 → bigint
+        new Date(startTimestamp), // $3 → timestamp
+        new Date(endTimestamp), // $4 → timestamp
+      ],
+    };
+
+    //     const total_questions = await getTotalQuestionsCount(null, startDate, endDate);
+    //   const users = await getTotalUsersCount(null, startDate, endDate);
+    //   const total_sessions = await getTotalSessionsCount(null, startDate, endDate);
+    //   const total_feedback = await getTotalFeedbackCount(null, startDate, endDate);
+    //   const feedbacks = await getTotalLikesDislikesCount(null, startDate, endDate);
+
+    const result = await pool.query(query);
+    const stats = result.rows[0];
 
     res.status(200).json({
       success: true,
@@ -376,9 +259,6 @@ const getDashboardStats = async (req, res) => {
         totalLikes: parseInt(stats.total_likes) || 0,
         totalDislikes: parseInt(stats.total_dislikes) || 0,
       },
-      meta: {
-        source: querySource,
-      },
       filters: {
         startDate,
         endDate,
@@ -391,140 +271,6 @@ const getDashboardStats = async (req, res) => {
     res
       .status(500)
       .json({ success: false, error: "Error fetching dashboard statistics" });
-  }
-};
-
-// Get call analytics using MVs
-const getCallAnalytics = async (req, res) => {
-  try {
-    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
-    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-    const granularity = req.query.granularity === 'hourly' ? 'hourly' : 'daily';
-
-    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-    
-    const hasCallStatsMV = await checkMaterializedViewHealth('mv_daily_call_stats');
-
-    if (hasCallStatsMV && granularity === 'daily') {
-      // Use MV for daily call stats
-      const result = await pool.query(`
-        SELECT
-          to_char(call_date, 'YYYY-MM-DD') as date,
-          channel,
-          total_calls,
-          unique_users,
-          round(avg_duration_seconds::numeric, 2) as avg_duration_seconds,
-          completed_calls,
-          failed_calls
-        FROM mv_daily_call_stats
-        WHERE call_date >= $1::date AND call_date <= $2::date
-        ORDER BY call_date DESC, channel
-      `, [new Date(startTimestamp), new Date(endTimestamp)]);
-
-      return res.json({
-        success: true,
-        granularity: 'daily',
-        data: result.rows,
-        source: 'mv'
-      });
-    }
-
-    // Fallback: Direct query (simplified, adjust as needed)
-    res.json({
-      success: true,
-      message: 'Call analytics query not yet fully implemented in MV fallback',
-      source: 'not_implemented'
-    });
-  } catch (error) {
-    console.error("Error fetching call analytics:", error);
-    res.status(500).json({ success: false, error: "Error fetching call analytics" });
-  }
-};
-
-// Get user engagement analytics using MVs
-const getUserEngagementAnalytics = async (req, res) => {
-  try {
-    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
-    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-
-    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-    
-    const hasEngagementMV = await checkMaterializedViewHealth('mv_user_engagement_daily');
-
-    if (hasEngagementMV) {
-      const result = await pool.query(`
-        SELECT
-          to_char(activity_date, 'YYYY-MM-DD') as date,
-          daily_active_users,
-          daily_devices,
-          total_sessions,
-          round(avg_session_duration::numeric, 2) as avg_session_duration,
-          voice_users,
-          chat_users
-        FROM mv_user_engagement_daily
-        WHERE activity_date >= $1::date AND activity_date <= $2::date
-        ORDER BY activity_date DESC
-      `, [new Date(startTimestamp), new Date(endTimestamp)]);
-
-      return res.json({
-        success: true,
-        data: result.rows,
-        source: 'mv'
-      });
-    }
-
-    // Fallback: Derive engagement metrics from calls + questions tables (sessions table not available)
-    const fallbackQuery = `
-      WITH voice_sessions AS (
-        SELECT
-          DATE(start_datetime) AS activity_date,
-          COUNT(DISTINCT user_id) AS voice_users,
-          COUNT(*) AS voice_sessions,
-          AVG(duration_in_seconds) AS avg_voice_duration
-        FROM calls
-        WHERE start_datetime IS NOT NULL
-          AND start_datetime >= $1::date
-          AND start_datetime <= $2::date
-        GROUP BY DATE(start_datetime)
-      ),
-      chat_sessions AS (
-        SELECT
-          DATE(TO_TIMESTAMP(ets / 1000)) AS activity_date,
-          COUNT(DISTINCT uid) AS chat_users,
-          COUNT(DISTINCT sid) AS chat_sessions
-        FROM questions
-        WHERE ets IS NOT NULL
-          AND DATE(TO_TIMESTAMP(ets / 1000)) >= $1::date
-          AND DATE(TO_TIMESTAMP(ets / 1000)) <= $2::date
-        GROUP BY DATE(TO_TIMESTAMP(ets / 1000))
-      ),
-      all_dates AS (
-        SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS activity_date
-      )
-      SELECT
-        to_char(d.activity_date, 'YYYY-MM-DD') AS date,
-        COALESCE(v.voice_users, 0) + COALESCE(c.chat_users, 0) AS daily_active_users,
-        COALESCE(v.voice_users, 0) + COALESCE(c.chat_users, 0) AS daily_devices,
-        COALESCE(v.voice_sessions, 0) + COALESCE(c.chat_sessions, 0) AS total_sessions,
-        ROUND(COALESCE(v.avg_voice_duration, 0)::numeric, 2) AS avg_session_duration,
-        COALESCE(v.voice_users, 0) AS voice_users,
-        COALESCE(c.chat_users, 0) AS chat_users
-      FROM all_dates d
-      LEFT JOIN voice_sessions v ON d.activity_date = v.activity_date
-      LEFT JOIN chat_sessions c ON d.activity_date = c.activity_date
-      ORDER BY d.activity_date DESC
-    `;
-
-    const result = await pool.query(fallbackQuery, [new Date(startTimestamp), new Date(endTimestamp)]);
-
-    return res.json({
-      success: true,
-      data: result.rows,
-      source: 'fallback'
-    });
-  } catch (error) {
-    console.error("Error fetching user engagement analytics:", error);
-    res.status(500).json({ success: false, error: "Error fetching user engagement analytics" });
   }
 };
 
@@ -543,10 +289,176 @@ const getUserGraph = async (req, res) => {
   }
 };
 
+const parseCountMap = (value) => {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
+const getLangfuseQuestionsTree = async (req, res) => {
+  try {
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid date format" });
+    }
+
+    const params = [];
+    let index = 0;
+    let dateFilter = "";
+
+    if (startTimestamp !== null) {
+      index++;
+      dateFilter += ` AND report_date >= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      params.push(startTimestamp);
+    }
+
+    if (endTimestamp !== null) {
+      index++;
+      dateFilter += ` AND report_date <= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      params.push(endTimestamp);
+    }
+
+    const [summaryResult, mappingResult] = await Promise.all([
+      pool.query(
+        `
+          SELECT
+            report_date,
+            questions_total,
+            questions_non_agri,
+            questions_agri,
+            tool_counts,
+            category_counts
+          FROM langfuse_daily_question_summary
+          WHERE 1 = 1
+          ${dateFilter}
+          ORDER BY report_date DESC
+        `,
+        params
+      ),
+      pool.query(`
+        SELECT
+          tool_name,
+          category_key
+        FROM langfuse_tool_category_map
+      `),
+    ]);
+
+    const categoryToTools = {};
+    const toolToCategory = {};
+    mappingResult.rows.forEach((row) => {
+      const category = String(row.category_key || "uncategorized");
+      const toolName = String(row.tool_name || "");
+      if (!toolName) return;
+      if (!categoryToTools[category]) {
+        categoryToTools[category] = [];
+      }
+      categoryToTools[category].push(toolName);
+      toolToCategory[toolName] = category;
+    });
+
+    const data = summaryResult.rows.map((row) => {
+      const reportDate = row.report_date;
+      const categoryCounts = parseCountMap(row.category_counts);
+      const toolCounts = parseCountMap(row.tool_counts);
+
+      const toolCountsByCategory = {};
+      Object.entries(toolCounts).forEach(([toolName, rawCount]) => {
+        const category = toolToCategory[toolName] || "uncategorized";
+        if (!toolCountsByCategory[category]) {
+          toolCountsByCategory[category] = [];
+        }
+        toolCountsByCategory[category].push({
+          toolName,
+          count: Number(rawCount) || 0,
+        });
+      });
+
+      Object.values(toolCountsByCategory).forEach((tools) => {
+        tools.sort((a, b) => b.count - a.count);
+      });
+
+      const allCategoryKeys = new Set([
+        ...Object.keys(categoryCounts),
+        ...Object.keys(toolCountsByCategory),
+      ]);
+
+      const agriCategories = [];
+      const nonAgriCategories = [];
+
+      allCategoryKeys.forEach((categoryKey) => {
+        const normalized = String(categoryKey || "uncategorized");
+        const countFromCategoryMap = Number(categoryCounts[normalized]) || 0;
+        const tools = toolCountsByCategory[normalized] || [];
+        const toolSum = tools.reduce((sum, item) => sum + item.count, 0);
+        const count = countFromCategoryMap || toolSum;
+
+        const node = {
+          categoryKey: normalized,
+          count,
+          tools,
+        };
+
+        if (normalized === "uncategorized") {
+          nonAgriCategories.push(node);
+        } else {
+          agriCategories.push(node);
+        }
+      });
+
+      agriCategories.sort((a, b) => b.count - a.count);
+      nonAgriCategories.sort((a, b) => b.count - a.count);
+
+      return {
+        reportDate,
+        totalQuestions: Number(row.questions_total) || 0,
+        questionsAgri: Number(row.questions_agri) || 0,
+        questionsNonAgri: Number(row.questions_non_agri) || 0,
+        agri: {
+          categories: agriCategories,
+        },
+        nonAgri: {
+          categories: nonAgriCategories,
+        },
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching langfuse questions tree:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Error fetching langfuse questions tree",
+    });
+  }
+};
+
 module.exports = {
   getUserLoginAnalytics,
   getDashboardStats,
-  getCallAnalytics,
-  getUserEngagementAnalytics,
   getUserGraph,
+  getLangfuseQuestionsTree,
 };
