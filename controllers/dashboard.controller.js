@@ -473,9 +473,54 @@ const getUserEngagementAnalytics = async (req, res) => {
       });
     }
 
-    res.json({
-      success: false,
-      error: 'Materialized view not available'
+    // Fallback: Derive engagement metrics from calls + questions tables (sessions table not available)
+    const fallbackQuery = `
+      WITH voice_sessions AS (
+        SELECT
+          DATE(start_datetime) AS activity_date,
+          COUNT(DISTINCT user_id) AS voice_users,
+          COUNT(*) AS voice_sessions,
+          AVG(duration_in_seconds) AS avg_voice_duration
+        FROM calls
+        WHERE start_datetime IS NOT NULL
+          AND start_datetime >= $1::date
+          AND start_datetime <= $2::date
+        GROUP BY DATE(start_datetime)
+      ),
+      chat_sessions AS (
+        SELECT
+          DATE(TO_TIMESTAMP(ets / 1000)) AS activity_date,
+          COUNT(DISTINCT uid) AS chat_users,
+          COUNT(DISTINCT sid) AS chat_sessions
+        FROM questions
+        WHERE ets IS NOT NULL
+          AND DATE(TO_TIMESTAMP(ets / 1000)) >= $1::date
+          AND DATE(TO_TIMESTAMP(ets / 1000)) <= $2::date
+        GROUP BY DATE(TO_TIMESTAMP(ets / 1000))
+      ),
+      all_dates AS (
+        SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS activity_date
+      )
+      SELECT
+        to_char(d.activity_date, 'YYYY-MM-DD') AS date,
+        COALESCE(v.voice_users, 0) + COALESCE(c.chat_users, 0) AS daily_active_users,
+        COALESCE(v.voice_users, 0) + COALESCE(c.chat_users, 0) AS daily_devices,
+        COALESCE(v.voice_sessions, 0) + COALESCE(c.chat_sessions, 0) AS total_sessions,
+        ROUND(COALESCE(v.avg_voice_duration, 0)::numeric, 2) AS avg_session_duration,
+        COALESCE(v.voice_users, 0) AS voice_users,
+        COALESCE(c.chat_users, 0) AS chat_users
+      FROM all_dates d
+      LEFT JOIN voice_sessions v ON d.activity_date = v.activity_date
+      LEFT JOIN chat_sessions c ON d.activity_date = c.activity_date
+      ORDER BY d.activity_date DESC
+    `;
+
+    const result = await pool.query(fallbackQuery, [new Date(startTimestamp), new Date(endTimestamp)]);
+
+    return res.json({
+      success: true,
+      data: result.rows,
+      source: 'fallback'
     });
   } catch (error) {
     console.error("Error fetching user engagement analytics:", error);
