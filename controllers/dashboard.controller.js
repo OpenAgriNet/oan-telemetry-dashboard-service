@@ -1,31 +1,12 @@
-const pool = require("../services/db"); // adjust path as needed
-const {
-  getTotalFeedbackCount,
-  getTotalLikesDislikesCount,
-} = require("./feedback.controller");
-const { getTotalQuestionsCount } = require("./questions.controller");
-const { getTotalSessionsCount } = require("./sessions.controller");
-const { getTotalUsersCount } = require("./user.controller");
+const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
-
-// Helper: Check if MV exists
-const checkMaterializedViewHealth = async (viewName) => {
-  try {
-    const result = await pool.query(`
-      SELECT relname
-      FROM pg_stat_user_tables 
-      WHERE relname = $1
-    `, [viewName]);
-    return result.rows.length > 0;
-  } catch (err) {
-    return false;
-  }
-};
+const { mvExists } = require("../utils/mvHealth");
 
 /**
- * GET /dashboard/user-logins?granularity=daily|hourly
- * Returns user login analytics for dashboard
- * OPTIMIZED: Uses mv_active_users (computed from questions+errordetails) when available
+ * GET /dashboard/user-analytics?granularity=daily|hourly
+ * Returns user login analytics for dashboard.
+ * - daily  -> mv_active_users (existing)
+ * - hourly -> mv_hourly_active_users (new); falls back to live UNION ALL query
  */
 const getUserLoginAnalytics = async (req, res) => {
   try {
@@ -33,11 +14,11 @@ const getUserLoginAnalytics = async (req, res) => {
 
     if (granularity === "daily") {
       // Try MV-first approach
-      const hasMV = await checkMaterializedViewHealth('mv_active_users');
+      const hasMV = await mvExists('mv_active_users');
       if (hasMV) {
         try {
           const result = await pool.query(`
-            SELECT 
+            SELECT
               to_char(activity_date, 'YYYY-MM-DD') as date,
               active_users as unique_logins
             FROM mv_active_users
@@ -57,7 +38,7 @@ const getUserLoginAnalytics = async (req, res) => {
             result.rows.forEach((row) => {
               dataMap[row.date] = {
                 uniqueLogins: parseInt(row.unique_logins),
-                uids: [], // MV doesn't store uids
+                uids: [],
               };
             });
             const data = days.map((date) => ({
@@ -75,21 +56,20 @@ const getUserLoginAnalytics = async (req, res) => {
 
       // Fallback: direct query
       const result = await pool.query(`
-                SELECT 
-                    to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
-                    COUNT(DISTINCT uid) as unique_logins,
-                    array_agg(DISTINCT uid) as uids
-                FROM (
-                    SELECT uid, ets FROM questions WHERE uid IS NOT NULL
-                    UNION ALL
-                    SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
-                ) AS combined
-                WHERE to_timestamp(ets / 1000)::date >= CURRENT_DATE - INTERVAL '7 days'
-                GROUP BY date
-                ORDER BY date DESC
-            `);
+        SELECT
+          to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
+          COUNT(DISTINCT uid) as unique_logins,
+          array_agg(DISTINCT uid) as uids
+        FROM (
+          SELECT uid, ets FROM questions WHERE uid IS NOT NULL
+          UNION ALL
+          SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
+        ) AS combined
+        WHERE to_timestamp(ets / 1000)::date >= CURRENT_DATE - INTERVAL '7 days'
+        GROUP BY date
+        ORDER BY date DESC
+      `);
 
-      // Fill missing days with 0 and empty array for uids
       const today = new Date();
       const days = [];
       for (let i = 7; i >= 0; i--) {
@@ -112,51 +92,80 @@ const getUserLoginAnalytics = async (req, res) => {
 
       return res.json({ success: true, granularity, data, source: 'base' });
     } else {
-      // Last 12 hours including current hour
-      const result = await pool.query(`
-                WITH combined AS (
-                    SELECT uid, ets FROM questions WHERE uid IS NOT NULL
-                    UNION ALL
-                    SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
-                ),
-                logins AS (
-                    SELECT 
-                        date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
-                        uid
-                    FROM combined
-                    WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
-                )
-                SELECT 
-                    hour,
-                    COUNT(DISTINCT uid) AS unique_logins
-                FROM logins
-                GROUP BY hour
-                ORDER BY hour DESC
-            `);
+      // Hourly branch -- try mv_hourly_active_users first
+      const hasHourlyMV = await mvExists('mv_hourly_active_users');
+      if (hasHourlyMV) {
+        try {
+          const result = await pool.query(`
+            SELECT hour_bucket_ist AS hour, active_users AS unique_logins
+            FROM mv_hourly_active_users
+            WHERE hour_bucket_ist >= date_trunc('hour', (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) - INTERVAL '11 hours'
+            ORDER BY hour_bucket_ist DESC
+          `);
 
-      // Get current time and generate past 12 hourly time slots
+          const now = new Date();
+          const hours = [];
+          for (let i = 11; i >= 0; i--) {
+            const h = new Date(now);
+            h.setHours(now.getHours() - i, 0, 0, 0);
+            hours.push(h.toISOString().slice(0, 13) + ":00");
+          }
+          const dataMap = {};
+          result.rows.forEach((row) => {
+            const hour = new Date(row.hour).toISOString().slice(0, 13) + ":00";
+            dataMap[hour] = parseInt(row.unique_logins, 10);
+          });
+          const data = hours.map((hour) => ({
+            hour,
+            uniqueLogins: dataMap[hour] || 0,
+          }));
+
+          return res.json({ success: true, granularity: 'hourly', data, source: 'mv' });
+        } catch (mvErr) {
+          console.warn('[UserLoginAnalytics] Hourly MV query failed, falling back:', mvErr.message);
+        }
+      }
+
+      // Fallback: live UNION ALL
+      const result = await pool.query(`
+        WITH combined AS (
+          SELECT uid, ets FROM questions WHERE uid IS NOT NULL
+          UNION ALL
+          SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
+        ),
+        logins AS (
+          SELECT
+            date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
+            uid
+          FROM combined
+          WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
+        )
+        SELECT
+          hour,
+          COUNT(DISTINCT uid) AS unique_logins
+        FROM logins
+        GROUP BY hour
+        ORDER BY hour DESC
+      `);
+
       const now = new Date();
       const hours = [];
       for (let i = 11; i >= 0; i--) {
         const h = new Date(now);
         h.setHours(now.getHours() - i, 0, 0, 0);
-        hours.push(h.toISOString().slice(0, 13) + ":00"); // Format: YYYY-MM-DD HH:00
+        hours.push(h.toISOString().slice(0, 13) + ":00");
       }
-
-      // Build a map of hour => unique login count
       const dataMap = {};
       result.rows.forEach((row) => {
         const hour = new Date(row.hour).toISOString().slice(0, 13) + ":00";
         dataMap[hour] = parseInt(row.unique_logins, 10);
       });
-
-      // Map all 12 hours, filling missing hours with 0
       const data = hours.map((hour) => ({
         hour,
         uniqueLogins: dataMap[hour] || 0,
       }));
 
-      return res.json({ success: true, granularity: "hourly", data });
+      return res.json({ success: true, granularity: "hourly", data, source: 'base' });
     }
   } catch (error) {
     console.error("Error in getUserLoginAnalytics:", error);
@@ -164,58 +173,77 @@ const getUserLoginAnalytics = async (req, res) => {
   }
 };
 
-// Get overall dashboard statistics
-// OPTIMIZED: Uses mv_daily_session_counts + mv_question_answer_rates for the
-// heaviest CTEs (sessions, questions, feedback). User stats (new/returning)
-// still uses base query since it requires COUNT(DISTINCT) over the range.
+// GET /dashboard/stats — MV-first dashboard aggregates.
+// All four sub-totals (new, returning, sessions, questions) are now served
+// from materialized views. Feedback uses mv_feedback_daily when available.
 const getDashboardStats = async (req, res) => {
   try {
-    const startDate = req.query.startDate
-      ? String(req.query.startDate).trim()
-      : null;
-    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-    if (
-      (startDate && startTimestamp === null) ||
-      (endDate && endTimestamp === null)
-    ) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid date format" });
+    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+      return res.status(400).json({ success: false, error: "Invalid date format" });
     }
 
-    // Check MV availability for the heavy aggregations
-    const [hasSessionMV, hasQuestionRateMV] = await Promise.all([
-      checkMaterializedViewHealth('mv_daily_session_counts'),
-      checkMaterializedViewHealth('mv_question_answer_rates'),
+    // Discover which MVs are available.
+    const [
+      hasSessionMV,
+      hasQuestionRateMV,
+      hasNewUsersMV,
+      hasReturningUsersMV,
+      hasFeedbackDailyMV,
+    ] = await Promise.all([
+      mvExists('mv_daily_session_counts'),
+      mvExists('mv_question_answer_rates'),
+      mvExists('mv_users_daily_firstseen_ist'),
+      mvExists('mv_users_daily_returning_ist'),
+      mvExists('mv_feedback_daily'),
     ]);
 
-    const useMVs = hasSessionMV && hasQuestionRateMV;
+    const canUseMvPath =
+      hasSessionMV && hasQuestionRateMV && hasNewUsersMV && hasReturningUsersMV;
 
     let stats;
     let querySource = 'base';
+    const sources = {};
 
-    if (useMVs) {
+    if (canUseMvPath) {
       try {
-        // MV-optimized: use pre-computed daily aggregates for sessions + questions.
-        // Feedback is queried directly (voice feedback may not be in mv_question_answer_rates).
-        // Only user_stats (new/returning) hits base tables with JOINs.
+        // Pure MV path. Feedback CTE picks MV when available, otherwise
+        // falls back to a bounded base-table scan for the date range.
+        const feedbackCte = hasFeedbackDailyMV
+          ? `SELECT
+               COALESCE(SUM(total_feedback), 0) AS total_feedback,
+               COALESCE(SUM(likes), 0) AS total_likes,
+               COALESCE(SUM(dislikes), 0) AS total_dislikes
+             FROM mv_feedback_daily
+             WHERE feedback_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+               AND feedback_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`
+          : `SELECT
+               COUNT(*) AS total_feedback,
+               COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+               COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+             FROM feedback
+             WHERE feedbacktext IS NOT NULL
+               AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+                    OR COALESCE(feedback_source, 'chat') = 'voice')
+               AND ets >= $1 AND ets <= $2`;
+
         const mvQuery = {
           text: `
             WITH user_stats AS (
               SELECT
-                ( SELECT COUNT(DISTINCT fingerprint_id) FROM users
-                  WHERE fingerprint_id IS NOT NULL
-                    AND DATE(first_seen_at) >= DATE($3)
-                    AND DATE(first_seen_at) <= DATE($4)
+                ( SELECT COALESCE(SUM(new_users), 0)
+                  FROM mv_users_daily_firstseen_ist
+                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
                 ) AS new_users,
-                ( SELECT COUNT(DISTINCT q.fingerprint_id) FROM questions q
-                  INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
-                  WHERE q.fingerprint_id IS NOT NULL
-                    AND q.ets >= $1 AND q.ets <= $2
-                    AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
+                ( SELECT COALESCE(SUM(returning_users), 0)
+                  FROM mv_users_daily_returning_ist
+                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
                 ) AS returning_users
             ),
             mv_sessions AS (
@@ -229,17 +257,7 @@ const getDashboardStats = async (req, res) => {
               WHERE question_date >= DATE($3) AND question_date <= DATE($4)
             ),
             feedback_stats AS (
-              SELECT
-                COUNT(*) AS total_feedback,
-                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-                COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-              FROM feedback
-              WHERE feedbacktext IS NOT NULL
-                AND (
-                  (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
-                  OR COALESCE(feedback_source, 'chat') = 'voice'
-                )
-                AND ets >= $1 AND ets <= $2
+              ${feedbackCte}
             )
             SELECT
               (us.new_users + us.returning_users) AS total_users,
@@ -267,109 +285,86 @@ const getDashboardStats = async (req, res) => {
         if (result.rows.length > 0) {
           stats = result.rows[0];
           querySource = 'mv';
+          sources.users = 'mv';
+          sources.sessions = 'mv';
+          sources.questions = 'mv';
+          sources.feedback = hasFeedbackDailyMV ? 'mv' : 'base';
         }
       } catch (mvErr) {
         console.warn('[DashboardStats] MV query failed, falling back to base query:', mvErr.message);
       }
     }
 
-    // Fallback: full base query
+    // Fallback: legacy full base query (kept verbatim for correctness when
+    // any required MV is missing or the MV query errors).
     if (!stats) {
       const queryParams = [];
-      let paramIndex = 0;
-
-      if (startTimestamp !== null) {
-        paramIndex++;
-        queryParams.push(startTimestamp);
-      }
-
-      if (endTimestamp !== null) {
-        paramIndex++;
-        queryParams.push(endTimestamp);
-      }
-
-      paramIndex++;
+      if (startTimestamp !== null) queryParams.push(startTimestamp);
+      if (endTimestamp !== null) queryParams.push(endTimestamp);
       queryParams.push(Date.now());
 
       const query = {
         text: `
           WITH user_stats AS (
-    SELECT
-      ( SELECT COUNT(DISTINCT fingerprint_id) from users
-        WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
-          AND DATE(first_seen_at) <= DATE($4)
-      ) AS new_users,
-      ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
-        INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
-        WHERE q.fingerprint_id IS NOT NULL
-          AND q.ets >= $1
-          AND q.ets <= $2
-          AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
-      ) AS returning_users
-  ),
-  session_stats AS (
-    WITH combined_sessions AS (
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM questions
-      WHERE sid IS NOT NULL
-        AND answertext IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-      UNION ALL
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM feedback
-      WHERE sid IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-      UNION ALL
-      SELECT sid, fingerprint_id AS uid, ets
-      FROM errordetails
-      WHERE sid IS NOT NULL
-        AND fingerprint_id IS NOT NULL
-        AND ets >= $1 AND ets <= $2
-    )
-    SELECT COUNT(*) AS total_sessions
-    FROM (
-      SELECT sid, uid
-      FROM combined_sessions
-      GROUP BY sid, uid
-    ) session_groups
-  ),
-  question_stats AS (
-    SELECT
-      COUNT(*) AS total_questions
-    FROM questions
-    WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
-      AND ets >= $1
-      AND ets <= $2
-  ),
-  feedback_stats AS (
-    SELECT 
+            SELECT
+              ( SELECT COUNT(DISTINCT fingerprint_id) from users
+                WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
+                  AND DATE(first_seen_at) <= DATE($4)
+              ) AS new_users,
+              ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
+                INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
+                WHERE q.fingerprint_id IS NOT NULL
+                  AND q.ets >= $1 AND q.ets <= $2
+                  AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
+              ) AS returning_users
+          ),
+          session_stats AS (
+            WITH combined_sessions AS (
+              SELECT sid, fingerprint_id AS uid, ets FROM questions
+              WHERE sid IS NOT NULL AND answertext IS NOT NULL AND fingerprint_id IS NOT NULL
+                AND ets >= $1 AND ets <= $2
+              UNION ALL
+              SELECT sid, fingerprint_id AS uid, ets FROM feedback
+              WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL
+                AND ets >= $1 AND ets <= $2
+              UNION ALL
+              SELECT sid, fingerprint_id AS uid, ets FROM errordetails
+              WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL
+                AND ets >= $1 AND ets <= $2
+            )
+            SELECT COUNT(*) AS total_sessions
+            FROM (SELECT sid, uid FROM combined_sessions GROUP BY sid, uid) session_groups
+          ),
+          question_stats AS (
+            SELECT COUNT(*) AS total_questions
+            FROM questions
+            WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
+              AND ets >= $1 AND ets <= $2
+          ),
+          feedback_stats AS (
+            SELECT
               COUNT(*) AS total_feedback,
               COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
               COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
             FROM feedback
             WHERE feedbacktext IS NOT NULL
-              AND (
-                (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
-                OR COALESCE(feedback_source, 'chat') = 'voice'
-              )
-      AND ets >= $1
-      AND ets <= $2
-  )
-  SELECT
-    (us.new_users + us.returning_users) AS total_users,
-    us.new_users,
-    us.returning_users,
-    ss.total_sessions,
-    qs.total_questions,
-    fs.total_feedback,
-    fs.total_likes,
-    fs.total_dislikes
-  FROM user_stats us
-  CROSS JOIN session_stats ss
-  CROSS JOIN question_stats qs
-  CROSS JOIN feedback_stats fs;
+              AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+                   OR COALESCE(feedback_source, 'chat') = 'voice')
+              AND ets >= $1 AND ets <= $2
+          )
+          SELECT
+            (us.new_users + us.returning_users) AS total_users,
+            us.new_users,
+            us.returning_users,
+            ss.total_sessions,
+            qs.total_questions,
+            fs.total_feedback,
+            fs.total_likes,
+            fs.total_dislikes
+          FROM user_stats us
+          CROSS JOIN session_stats ss
+          CROSS JOIN question_stats qs
+          CROSS JOIN feedback_stats fs;
         `,
         values: [
           startTimestamp,
@@ -397,6 +392,7 @@ const getDashboardStats = async (req, res) => {
       },
       meta: {
         source: querySource,
+        sources,
       },
       filters: {
         startDate,
@@ -407,24 +403,17 @@ const getDashboardStats = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching dashboard stats:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Error fetching dashboard statistics" });
+    res.status(500).json({ success: false, error: "Error fetching dashboard statistics" });
   }
 };
 
+// Legacy stub kept for backwards compatibility with /dashboard/user-graph.
 const getUserGraph = async (req, res) => {
   try {
-    res.status(200).json({
-      success: true,
-      data: "test",
-    });
+    res.status(200).json({ success: true, data: "test" });
   } catch (error) {
     console.error("Error fetching user graph:", error);
-    res.status(500).json({
-      success: false,
-      error: "Error fetching user graph",
-    });
+    res.status(500).json({ success: false, error: "Error fetching user graph" });
   }
 };
 
@@ -440,20 +429,13 @@ const parseCountMap = (value) => {
 
 const getLangfuseQuestionsTree = async (req, res) => {
   try {
-    const startDate = req.query.startDate
-      ? String(req.query.startDate).trim()
-      : null;
-    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-    if (
-      (startDate && startTimestamp === null) ||
-      (endDate && endTimestamp === null)
-    ) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Invalid date format" });
+    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+      return res.status(400).json({ success: false, error: "Invalid date format" });
     }
 
     const params = [];
@@ -465,7 +447,6 @@ const getLangfuseQuestionsTree = async (req, res) => {
       dateFilter += ` AND report_date >= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
       params.push(startTimestamp);
     }
-
     if (endTimestamp !== null) {
       index++;
       dateFilter += ` AND report_date <= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
@@ -475,13 +456,7 @@ const getLangfuseQuestionsTree = async (req, res) => {
     const [summaryResult, mappingResult] = await Promise.all([
       pool.query(
         `
-          SELECT
-            report_date,
-            questions_total,
-            questions_non_agri,
-            questions_agri,
-            tool_counts,
-            category_counts
+          SELECT report_date, questions_total, questions_non_agri, questions_agri, tool_counts, category_counts
           FROM langfuse_daily_question_summary
           WHERE 1 = 1
           ${dateFilter}
@@ -489,12 +464,7 @@ const getLangfuseQuestionsTree = async (req, res) => {
         `,
         params
       ),
-      pool.query(`
-        SELECT
-          tool_name,
-          category_key
-        FROM langfuse_tool_category_map
-      `),
+      pool.query(`SELECT tool_name, category_key FROM langfuse_tool_category_map`),
     ]);
 
     const categoryToTools = {};
@@ -503,9 +473,7 @@ const getLangfuseQuestionsTree = async (req, res) => {
       const category = String(row.category_key || "uncategorized");
       const toolName = String(row.tool_name || "");
       if (!toolName) return;
-      if (!categoryToTools[category]) {
-        categoryToTools[category] = [];
-      }
+      if (!categoryToTools[category]) categoryToTools[category] = [];
       categoryToTools[category].push(toolName);
       toolToCategory[toolName] = category;
     });
@@ -518,18 +486,10 @@ const getLangfuseQuestionsTree = async (req, res) => {
       const toolCountsByCategory = {};
       Object.entries(toolCounts).forEach(([toolName, rawCount]) => {
         const category = toolToCategory[toolName] || "uncategorized";
-        if (!toolCountsByCategory[category]) {
-          toolCountsByCategory[category] = [];
-        }
-        toolCountsByCategory[category].push({
-          toolName,
-          count: Number(rawCount) || 0,
-        });
+        if (!toolCountsByCategory[category]) toolCountsByCategory[category] = [];
+        toolCountsByCategory[category].push({ toolName, count: Number(rawCount) || 0 });
       });
-
-      Object.values(toolCountsByCategory).forEach((tools) => {
-        tools.sort((a, b) => b.count - a.count);
-      });
+      Object.values(toolCountsByCategory).forEach((tools) => tools.sort((a, b) => b.count - a.count));
 
       const allCategoryKeys = new Set([
         ...Object.keys(categoryCounts),
@@ -545,20 +505,10 @@ const getLangfuseQuestionsTree = async (req, res) => {
         const tools = toolCountsByCategory[normalized] || [];
         const toolSum = tools.reduce((sum, item) => sum + item.count, 0);
         const count = countFromCategoryMap || toolSum;
-
-        const node = {
-          categoryKey: normalized,
-          count,
-          tools,
-        };
-
-        if (normalized === "uncategorized") {
-          nonAgriCategories.push(node);
-        } else {
-          agriCategories.push(node);
-        }
+        const node = { categoryKey: normalized, count, tools };
+        if (normalized === "uncategorized") nonAgriCategories.push(node);
+        else agriCategories.push(node);
       });
-
       agriCategories.sort((a, b) => b.count - a.count);
       nonAgriCategories.sort((a, b) => b.count - a.count);
 
@@ -567,12 +517,8 @@ const getLangfuseQuestionsTree = async (req, res) => {
         totalQuestions: Number(row.questions_total) || 0,
         questionsAgri: Number(row.questions_agri) || 0,
         questionsNonAgri: Number(row.questions_non_agri) || 0,
-        agri: {
-          categories: agriCategories,
-        },
-        nonAgri: {
-          categories: nonAgriCategories,
-        },
+        agri: { categories: agriCategories },
+        nonAgri: { categories: nonAgriCategories },
       };
     });
 
@@ -588,10 +534,7 @@ const getLangfuseQuestionsTree = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching langfuse questions tree:", error);
-    return res.status(500).json({
-      success: false,
-      error: "Error fetching langfuse questions tree",
-    });
+    return res.status(500).json({ success: false, error: "Error fetching langfuse questions tree" });
   }
 };
 

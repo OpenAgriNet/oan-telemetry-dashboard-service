@@ -5,6 +5,7 @@ const {
   formatDateToIST,
   getCurrentTimestamp,
 } = require("../utils/dateUtils");
+const { mvExists } = require("../utils/mvHealth");
 
 // Simple in-memory cache for user stats
 const userStatsCache = new Map();
@@ -27,6 +28,68 @@ async function fetchUsersFromDB(
 
   if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
     return cachedResult.data;
+  }
+
+  // MV fast-path: no date filter + rollup MV available.
+  // The old 4-CTE query is only meaningful when a date window is supplied;
+  // the "show me all users" case can be served directly from mv_user_rollup.
+  if (startTimestamp === null && endTimestamp === null && await mvExists('mv_user_rollup')) {
+    try {
+      const params = [];
+      let idx = 0;
+      const conditions = [];
+      if (search && search.trim() !== "") {
+        idx++;
+        conditions.push(`user_id ILIKE $${idx}`);
+        params.push(`%${search.trim()}%`);
+      }
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      const sortArray = [
+        "user_id",
+        "session_count",
+        "total_questions",
+        "feedback_count",
+        "last_activity",
+        "latest_session",
+      ];
+      let orderBy;
+      if (sortArray.includes(sortBy)) {
+        orderBy = `ORDER BY ${sortBy} ${sortOrder}`;
+      } else {
+        orderBy = `ORDER BY latest_session DESC NULLS LAST`;
+      }
+
+      idx++;
+      const limitParam = idx;
+      params.push(limit);
+      idx++;
+      const offsetParam = idx;
+      params.push(offset);
+
+      const sql = `
+        SELECT
+          user_id,
+          session_count,
+          total_questions,
+          latest_session,
+          first_session,
+          last_activity,
+          session_id,
+          feedback_count,
+          likes,
+          dislikes
+        FROM mv_user_rollup
+        ${where}
+        ${orderBy}
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+      `;
+      const mvResult = await pool.query(sql, params);
+      userStatsCache.set(cacheKey, { data: mvResult.rows, timestamp: Date.now() });
+      return mvResult.rows;
+    } catch (mvErr) {
+      console.warn('[Users] MV rollup query failed, falling back:', mvErr.message);
+    }
   }
 
   const queryParams = [];
@@ -189,6 +252,27 @@ async function getTotalUsersCount(
 
   if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
     return cachedResult.data;
+  }
+
+  // MV fast-path for the no-date-filter case.
+  if (startTimestamp === null && endTimestamp === null && await mvExists('mv_user_rollup')) {
+    try {
+      const params = [];
+      let where = '';
+      if (search && search.trim() !== "") {
+        params.push(`%${search.trim()}%`);
+        where = `WHERE user_id ILIKE $1`;
+      }
+      const mvRes = await pool.query(
+        `SELECT COUNT(*)::bigint AS total FROM mv_user_rollup ${where}`,
+        params
+      );
+      const totalCount = parseInt(mvRes.rows[0].total, 10) || 0;
+      userStatsCache.set(cacheKey, { data: totalCount, timestamp: Date.now() });
+      return totalCount;
+    } catch (mvErr) {
+      console.warn('[UsersCount] MV query failed, falling back:', mvErr.message);
+    }
   }
 
   // Optimized count query with early filtering
@@ -1366,50 +1450,86 @@ const getUserGraph = async (req, res) => {
         break;
     }
 
-    const query = {
-      text: `
-             WITH user_buckets AS (
-  SELECT
-    ${dateGrouping} AS bucket_date,
-    fingerprint_id,
-    first_seen_at
-  FROM users
-  WHERE fingerprint_id IS NOT NULL
-    AND first_seen_at IS NOT NULL
-    ${dateFilter}
-)
-SELECT
-  TO_CHAR(bucket_date, 'YYYY-MM-DD') AS date,
+    // MV fast-path: daily granularity uses mv_users_daily_firstseen_ist +
+    // mv_users_daily_returning_ist (IST-bucketed, pre-aggregated).
+    let result = null;
+    let source = 'base';
+    if (granularity === 'daily' && await mvExists('mv_users_daily_firstseen_ist') && await mvExists('mv_users_daily_returning_ist')) {
+      try {
+        const mvParams = [];
+        const conds = [];
+        if (startTimestamp !== null) {
+          mvParams.push(new Date(startTimestamp));
+          conds.push(`bucket_date >= DATE($${mvParams.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+        }
+        if (endTimestamp !== null) {
+          mvParams.push(new Date(endTimestamp));
+          conds.push(`bucket_date <= DATE($${mvParams.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+        }
+        const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+        const mvSql = `
+          WITH n AS (
+            SELECT bucket_date, new_users FROM mv_users_daily_firstseen_ist ${where}
+          ),
+          r AS (
+            SELECT bucket_date, returning_users FROM mv_users_daily_returning_ist ${where}
+          ),
+          merged AS (
+            SELECT COALESCE(n.bucket_date, r.bucket_date) AS bucket_date,
+                   COALESCE(n.new_users, 0) AS new_users,
+                   COALESCE(r.returning_users, 0) AS returning_users
+            FROM n FULL OUTER JOIN r ON n.bucket_date = r.bucket_date
+          )
+          SELECT
+            TO_CHAR(bucket_date, 'YYYY-MM-DD') AS date,
+            (new_users + returning_users) AS uniqueUsersCount,
+            new_users AS newUsersCount,
+            returning_users AS returningUsersCount,
+            EXTRACT(EPOCH FROM bucket_date::timestamp) * 1000 AS timestamp,
+            NULL AS hour_of_day
+          FROM merged
+          ORDER BY bucket_date ASC
+        `;
+        result = await pool.query(mvSql, [...mvParams, ...mvParams]);
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[UserGraph] MV query failed, falling back:', mvErr.message);
+        result = null;
+      }
+    }
 
-  COUNT(DISTINCT fingerprint_id) AS uniqueUsersCount,
-
-  COUNT(DISTINCT CASE
-    WHEN first_seen_at >= bucket_date
-     AND first_seen_at < bucket_date + INTERVAL '1 day'
-    THEN fingerprint_id
-  END) AS newUsersCount,
-
-  COUNT(DISTINCT CASE
-    WHEN first_seen_at < bucket_date
-    THEN fingerprint_id
-  END) AS returningUsersCount,
-
-  EXTRACT(EPOCH FROM bucket_date) * 1000 AS timestamp,
-
-  ${
-    granularity === "hourly"
-      ? `EXTRACT(HOUR FROM bucket_date) AS hour_of_day`
-      : "NULL AS hour_of_day"
-  }
-
-FROM user_buckets
-GROUP BY bucket_date
-ORDER BY bucket_date ASC;
-            `,
-      values: queryParams,
-    };
-
-    const result = await pool.query(query);
+    if (!result) {
+      const query = {
+        text: `
+          WITH user_buckets AS (
+            SELECT ${dateGrouping} AS bucket_date, fingerprint_id, first_seen_at
+            FROM users
+            WHERE fingerprint_id IS NOT NULL AND first_seen_at IS NOT NULL
+            ${dateFilter}
+          )
+          SELECT
+            TO_CHAR(bucket_date, 'YYYY-MM-DD') AS date,
+            COUNT(DISTINCT fingerprint_id) AS uniqueUsersCount,
+            COUNT(DISTINCT CASE
+              WHEN first_seen_at >= bucket_date AND first_seen_at < bucket_date + INTERVAL '1 day'
+              THEN fingerprint_id
+            END) AS newUsersCount,
+            COUNT(DISTINCT CASE
+              WHEN first_seen_at < bucket_date
+              THEN fingerprint_id
+            END) AS returningUsersCount,
+            EXTRACT(EPOCH FROM bucket_date) * 1000 AS timestamp,
+            ${granularity === 'hourly'
+              ? `EXTRACT(HOUR FROM bucket_date) AS hour_of_day`
+              : "NULL AS hour_of_day"}
+          FROM user_buckets
+          GROUP BY bucket_date
+          ORDER BY bucket_date ASC;
+        `,
+        values: queryParams,
+      };
+      result = await pool.query(query);
+    }
 
     // Format the data for frontend consumption
     const graphData = result.rows.map((row) => ({
@@ -1459,6 +1579,7 @@ ORDER BY bucket_date ASC;
           },
         },
       },
+      meta: { source },
       filters: {
         search: search,
         startDate: startDate,

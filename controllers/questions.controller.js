@@ -4,6 +4,7 @@ const {
   formatDateToIST,
   getCurrentTimestamp,
 } = require("../utils/dateUtils");
+const { mvExists } = require("../utils/mvHealth");
 
 async function fetchQuestionsFromDB(
   page = 1,
@@ -661,24 +662,41 @@ const getQuestionStats = async (req, res) => {
       queryParams.push(endTimestamp);
     }
 
-    // SIMPLIFIED - Only return total questions count
-    const query = {
-      text: `
-                SELECT COUNT(*) as total_questions
-                FROM questions
-                WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-            `,
-      values: queryParams,
-    };
+    // MV-first: mv_question_answer_rates is already populated per-day.
+    let total = null;
+    let source = 'base';
+    if (await mvExists('mv_question_answer_rates') && (startTimestamp !== null && endTimestamp !== null)) {
+      try {
+        const mvRes = await pool.query(
+          `SELECT COALESCE(SUM(total_questions), 0)::bigint AS total_questions
+           FROM mv_question_answer_rates
+           WHERE question_date >= DATE(TO_TIMESTAMP($1::bigint / 1000))
+             AND question_date <= DATE(TO_TIMESTAMP($2::bigint / 1000))`,
+          [startTimestamp, endTimestamp]
+        );
+        total = parseInt(mvRes.rows[0].total_questions, 10) || 0;
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[QuestionStats] MV query failed, falling back:', mvErr.message);
+      }
+    }
 
-    const result = await pool.query(query);
-    const stats = result.rows[0];
+    if (total == null) {
+      const result = await pool.query(
+        {
+          text: `SELECT COUNT(*) as total_questions
+                 FROM questions
+                 WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}`,
+          values: queryParams,
+        }
+      );
+      total = parseInt(result.rows[0].total_questions) || 0;
+    }
 
     res.status(200).json({
       success: true,
-      data: {
-        totalQuestions: parseInt(stats.total_questions) || 0,
-      },
+      data: { totalQuestions: total },
+      meta: { source },
       filters: {
         startDate: startDate,
         endDate: endDate,
@@ -798,37 +816,66 @@ const getQuestionsGraph = async (req, res) => {
         break;
     }
 
-    const query = {
-      text: `
-                SELECT 
-                    ${dateFormat} as date,
-                    ${dateGrouping} as ${orderBy},
-                    COUNT(*) as questionsCount,
-              
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-                    ${granularity === "hourly"
-          ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
-          : "NULL as hour_of_day"
+    // MV fast-path for granularity=daily (no search): aggregate mv_question_answer_rates.
+    let result = null;
+    let source = 'base';
+    if (granularity === 'daily' && !search && await mvExists('mv_question_answer_rates')) {
+      try {
+        const mvParams = [];
+        const conds = [];
+        if (startTimestamp !== null) {
+          mvParams.push(startTimestamp);
+          conds.push(`question_date >= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000))`);
         }
-                FROM questions
-                WHERE questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL
-                    AND fingerprint_id IS NOT NULL 
-                    AND ets IS NOT NULL
-                    ${dateFilter}
-                GROUP BY ${dateGrouping}
-                ORDER BY ${orderBy} ASC
-            `,
-      values: queryParams,
-    };
+        if (endTimestamp !== null) {
+          mvParams.push(endTimestamp);
+          conds.push(`question_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000))`);
+        }
+        const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+        const mvSql = `
+          SELECT
+            TO_CHAR(question_date, 'YYYY-MM-DD') AS date,
+            question_date AS day_bucket,
+            SUM(total_questions) AS questionscount,
+            EXTRACT(EPOCH FROM question_date::timestamp) * 1000 AS timestamp,
+            NULL AS hour_of_day
+          FROM mv_question_answer_rates
+          ${where}
+          GROUP BY question_date
+          ORDER BY question_date ASC
+        `;
+        result = await pool.query(mvSql, mvParams);
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[QuestionsGraph] MV query failed, falling back:', mvErr.message);
+        result = null;
+      }
+    }
 
-    // COUNT(DISTINCT uid) as uniqueUsersCount,
-    //           COUNT(DISTINCT sid) as uniqueSessionsCount,
-    //           COUNT(DISTINCT channel) as uniqueChannelsCount,
-    //           AVG(LENGTH(questiontext)) as avgQuestionLength,
-    //           AVG(LENGTH(answertext)) as avgAnswerLength,
-
-    const result = await pool.query(query);
+    if (!result) {
+      const query = {
+        text: `
+                  SELECT
+                      ${dateFormat} as date,
+                      ${dateGrouping} as ${orderBy},
+                      COUNT(*) as questionsCount,
+                      EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+                      ${granularity === "hourly"
+                        ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
+                        : "NULL as hour_of_day"}
+                  FROM questions
+                  WHERE questiontext IS NOT NULL
+                      AND answertext IS NOT NULL
+                      AND fingerprint_id IS NOT NULL
+                      AND ets IS NOT NULL
+                      ${dateFilter}
+                  GROUP BY ${dateGrouping}
+                  ORDER BY ${orderBy} ASC
+              `,
+        values: queryParams,
+      };
+      result = await pool.query(query);
+    }
 
     // Format the data for frontend consumption
     const graphData = result.rows.map((row) => ({
@@ -887,6 +934,7 @@ const getQuestionsGraph = async (req, res) => {
           },
         },
       },
+      meta: { source },
       filters: {
         search: search,
         startDate: startDate,

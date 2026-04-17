@@ -1,11 +1,79 @@
 const pool = require('../services/db');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
+const { mvExists } = require('../utils/mvHealth');
 
 async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC', pagination = true) {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-    // Build the WHERE conditions for date filtering
+    // Try MV-first path: mv_sessions_daily has one row per (sid, uid) session
+    // with pre-computed last_ets + question_count, so no UNION is needed.
+    if (await mvExists('mv_sessions_daily')) {
+        try {
+            const params = [];
+            let idx = 0;
+            const conditions = [];
+
+            if (startTimestamp !== null) {
+                idx++;
+                conditions.push(`last_ets >= $${idx}`);
+                params.push(startTimestamp);
+            }
+            if (endTimestamp !== null) {
+                idx++;
+                conditions.push(`last_ets <= $${idx}`);
+                params.push(endTimestamp);
+            }
+            if (search && search.trim() !== '') {
+                idx++;
+                conditions.push(`(sid ILIKE $${idx} OR uid ILIKE $${idx})`);
+                params.push(`%${search.trim()}%`);
+            }
+
+            const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+            const sortArray = ["question_count", "username", "session_id", "session_time"];
+            let orderBy;
+            if (sortArray.includes(sortBy)) {
+                const col = ({
+                    question_count: 'question_count',
+                    username: 'uid',
+                    session_id: 'sid',
+                    session_time: 'last_ets',
+                })[sortBy];
+                orderBy = `ORDER BY ${col} ${sortOrder}`;
+            } else {
+                orderBy = 'ORDER BY last_ets DESC';
+            }
+
+            let paginationSql = '';
+            if (pagination) {
+                idx++;
+                paginationSql = ` LIMIT $${idx}`;
+                params.push(limit);
+                idx++;
+                paginationSql += ` OFFSET $${idx}`;
+                params.push(offset);
+            }
+
+            const sql = `
+                SELECT
+                  sid AS session_id,
+                  uid AS username,
+                  question_count,
+                  last_ets AS session_time
+                FROM mv_sessions_daily
+                ${where}
+                ${orderBy}
+                ${paginationSql}
+            `;
+            const result = await pool.query(sql, params);
+            return result.rows;
+        } catch (mvErr) {
+            console.warn('[Sessions] MV list query failed, falling back:', mvErr.message);
+        }
+    }
+
+    // Fallback: legacy 3-table UNION ALL.
     let dateConditions = '';
     const queryParams = [];
     let paramIndex = 0;
@@ -22,55 +90,34 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
         queryParams.push(endTimestamp);
     }
 
-    // Add future ETS filter (filter out bad telemetry data with future timestamps)
     paramIndex++;
-    const futureFilterParam = paramIndex;
     dateConditions += ` AND ets <= $${paramIndex}`;
     queryParams.push(Date.now());
 
-    // Base CTE query with date filtering applied to all tables
     let query = `
         WITH combined_sessions AS (
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                questiontext,
-                ets
+            SELECT sid, fingerprint_id as uid, questiontext, ets
             FROM questions
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                NULL as questiontext,
-                ets
+            SELECT sid, fingerprint_id as uid, NULL as questiontext, ets
             FROM feedback
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
             UNION ALL
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                NULL as questiontext,
-                ets
+            SELECT sid, fingerprint_id as uid, NULL as questiontext, ets
             FROM errordetails
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
         )
-        SELECT 
-            sid as session_id,
-            uid as username,
-            COUNT(questiontext) as question_count,
-            MAX(ets) as session_time
+        SELECT sid as session_id, uid as username,
+               COUNT(questiontext) as question_count,
+               MAX(ets) as session_time
         FROM combined_sessions
         GROUP BY sid, uid
     `;
 
-    // Add search functionality if search term is provided
     if (search && search.trim() !== '') {
         paramIndex++;
-        query += ` HAVING (
-            sid ILIKE $${paramIndex} OR 
-            uid ILIKE $${paramIndex}
-        )`;
+        query += ` HAVING (sid ILIKE $${paramIndex} OR uid ILIKE $${paramIndex})`;
         queryParams.push(`%${search.trim()}%`);
     }
 
@@ -78,15 +125,13 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     if (sortArray.includes(sortBy)) {
         query += ` ORDER BY ${sortBy === "session_time" ? "session_time" : sortBy} ${sortOrder}`;
     } else {
-        query += ` ORDER BY session_time DESC`
-    };
+        query += ` ORDER BY session_time DESC`;
+    }
 
-    // Add pagination
     if (pagination) {
         paramIndex++;
         query += ` LIMIT $${paramIndex}`;
         queryParams.push(limit);
-
         paramIndex++;
         query += ` OFFSET $${paramIndex}`;
         queryParams.push(offset);
@@ -99,74 +144,77 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
 async function getTotalSessionsCount(search = '', startDate = null, endDate = null) {
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-    // Build the WHERE conditions for date filtering
+    // MV-first: just count rows in mv_sessions_daily that match the filter.
+    if (await mvExists('mv_sessions_daily')) {
+        try {
+            const params = [];
+            const conditions = [];
+            let idx = 0;
+            if (startTimestamp !== null) {
+                idx++;
+                conditions.push(`last_ets >= $${idx}`);
+                params.push(startTimestamp);
+            }
+            if (endTimestamp !== null) {
+                idx++;
+                conditions.push(`last_ets <= $${idx}`);
+                params.push(endTimestamp);
+            }
+            if (search && search.trim() !== '') {
+                idx++;
+                conditions.push(`(sid ILIKE $${idx} OR uid ILIKE $${idx})`);
+                params.push(`%${search.trim()}%`);
+            }
+            const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+            const result = await pool.query(
+                `SELECT COUNT(*)::bigint AS total FROM mv_sessions_daily ${where}`,
+                params
+            );
+            return parseInt(result.rows[0].total, 10) || 0;
+        } catch (mvErr) {
+            console.warn('[Sessions] MV count query failed, falling back:', mvErr.message);
+        }
+    }
+
+    // Fallback: legacy 3-table UNION.
     let dateConditions = '';
     const queryParams = [];
     let paramIndex = 0;
-
     if (startTimestamp !== null) {
         paramIndex++;
         dateConditions += ` AND ets >= $${paramIndex}`;
         queryParams.push(startTimestamp);
     }
-
     if (endTimestamp !== null) {
         paramIndex++;
         dateConditions += ` AND ets <= $${paramIndex}`;
         queryParams.push(endTimestamp);
     }
-
-    // Add future ETS filter (filter out bad telemetry data with future timestamps)
     paramIndex++;
     dateConditions += ` AND ets <= $${paramIndex}`;
     queryParams.push(Date.now());
 
     let query = `
         WITH combined_sessions AS (
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                questiontext,
-                ets
-            FROM questions
+            SELECT sid, fingerprint_id as uid, questiontext, ets FROM questions
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
             UNION ALL
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                NULL as questiontext,
-                ets
-            FROM feedback
+            SELECT sid, fingerprint_id as uid, NULL as questiontext, ets FROM feedback
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
             UNION ALL
-            SELECT 
-                sid,
-                fingerprint_id as uid,
-                NULL as questiontext,
-                ets
-            FROM errordetails
+            SELECT sid, fingerprint_id as uid, NULL as questiontext, ets FROM errordetails
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
         ),
         session_groups AS (
-            SELECT 
-                sid,
-                uid,
-                COUNT(questiontext) as question_count,
-                MAX(ets) as session_time
-            FROM combined_sessions
-            GROUP BY sid, uid
+            SELECT sid, uid, COUNT(questiontext) as question_count, MAX(ets) as session_time
+            FROM combined_sessions GROUP BY sid, uid
         )
-        SELECT COUNT(*) as total
-        FROM session_groups
+        SELECT COUNT(*) as total FROM session_groups
     `;
 
-    // Add search filter to count query if search term is provided
     if (search && search.trim() !== '') {
         paramIndex++;
-        query += ` WHERE (
-            sid ILIKE $${paramIndex} OR 
-            uid ILIKE $${paramIndex}
-        )`;
+        query += ` WHERE (sid ILIKE $${paramIndex} OR uid ILIKE $${paramIndex})`;
         queryParams.push(`%${search.trim()}%`);
     }
 
@@ -660,35 +708,61 @@ const getSessionStats = async (req, res) => {
             queryParams.push(endTimestamp);
         }
 
-        // SIMPLIFIED - Only return total sessions count
-        const query = {
-            text: `
-                SELECT COUNT(DISTINCT session_user_pair) as total_sessions
-                FROM (
-                    SELECT CONCAT(sid, '_', uid) as session_user_pair
-                    FROM questions
-                    WHERE sid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
-                    UNION
-                    SELECT CONCAT(sid, '_', uid) as session_user_pair
-                    FROM feedback
-                    WHERE sid IS NOT NULL ${dateFilter}
-                    UNION
-                    SELECT CONCAT(sid, '_', uid) as session_user_pair
-                    FROM errordetails
-                    WHERE sid IS NOT NULL ${dateFilter}
-                ) combined_sessions
-            `,
-            values: queryParams
-        };
+        // MV-first: count rows in mv_sessions_daily.
+        let total = null;
+        let source = 'base';
+        if (await mvExists('mv_sessions_daily')) {
+            try {
+                const params = [];
+                const conds = [];
+                let idx = 0;
+                if (startTimestamp !== null) {
+                    idx++;
+                    conds.push(`last_ets >= $${idx}`);
+                    params.push(startTimestamp);
+                }
+                if (endTimestamp !== null) {
+                    idx++;
+                    conds.push(`last_ets <= $${idx}`);
+                    params.push(endTimestamp);
+                }
+                const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+                const mvRes = await pool.query(
+                    `SELECT COUNT(*)::bigint AS total_sessions FROM mv_sessions_daily ${where}`,
+                    params
+                );
+                total = parseInt(mvRes.rows[0].total_sessions, 10) || 0;
+                source = 'mv';
+            } catch (mvErr) {
+                console.warn('[SessionStats] MV query failed, falling back:', mvErr.message);
+            }
+        }
 
-        const result = await pool.query(query);
-        const stats = result.rows[0];
+        if (total == null) {
+            const query = {
+                text: `
+                    SELECT COUNT(DISTINCT session_user_pair) as total_sessions
+                    FROM (
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair FROM questions
+                        WHERE sid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                        UNION
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair FROM feedback
+                        WHERE sid IS NOT NULL ${dateFilter}
+                        UNION
+                        SELECT CONCAT(sid, '_', uid) as session_user_pair FROM errordetails
+                        WHERE sid IS NOT NULL ${dateFilter}
+                    ) combined_sessions
+                `,
+                values: queryParams,
+            };
+            const result = await pool.query(query);
+            total = parseInt(result.rows[0].total_sessions, 10) || 0;
+        }
 
         res.status(200).json({
             success: true,
-            data: {
-                totalSessions: parseInt(stats.total_sessions) || 0
-            },
+            data: { totalSessions: total },
+            meta: { source },
             filters: {
                 startDate: startDate,
                 endDate: endDate,
@@ -800,63 +874,83 @@ const getSessionsGraph = async (req, res) => {
                 break;
         }
 
-        const query = {
-            text: `
-                WITH combined_sessions AS (
-                    SELECT 
-                        sid,
-                         fingerprint_id as uid,
-                        ets,
-                        ${dateGrouping} as time_bucket,
-                        ${dateFormat} as date,
-                        'question' as activity_type
-                    FROM questions
-                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
-                    UNION ALL
-                    SELECT 
-                        sid,
-                        fingerprint_id as uid,
-                        ets,
-                        ${dateGrouping} as time_bucket,
-                        ${dateFormat} as date,
-                        'feedback' as activity_type
-                    FROM feedback
-                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
-                    UNION ALL
-                    SELECT 
-                        sid,
-                        fingerprint_id as uid,
-                        ets,
-                        ${dateGrouping} as time_bucket,
-                        ${dateFormat} as date,
-                        'error' as activity_type
-                    FROM errordetails
-                    WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
-                ),
-                session_aggregates AS (
-                    SELECT 
-                        date,
-                        time_bucket,
-                        COUNT(DISTINCT CONCAT(sid, '_', uid)) as sessionsCount,
-                        COUNT(DISTINCT sid) as uniqueSessionIdsCount,
-                        EXTRACT(EPOCH FROM time_bucket) * 1000 as timestamp,
-                        ${granularity === 'hourly' ? `EXTRACT(HOUR FROM time_bucket) as hour_of_day` : 'NULL as hour_of_day'}
-                    FROM combined_sessions
-                    GROUP BY time_bucket, date
-                )
-                SELECT 
-                    date,
-                    timestamp,
-                    hour_of_day,
-                    sessionsCount,
-                    uniqueSessionIdsCount
-                FROM session_aggregates
-                ORDER BY time_bucket ASC
-            `,
-            values: queryParams
-        };
+        // MV fast-path: daily granularity without search uses mv_sessions_daily.
+        let result = null;
+        let source = 'base';
+        if (granularity === 'daily' && !search && await mvExists('mv_sessions_daily')) {
+            try {
+                const mvParams = [];
+                const conds = [];
+                if (startTimestamp !== null) {
+                    mvParams.push(startTimestamp);
+                    conds.push(`last_ets >= $${mvParams.length}`);
+                }
+                if (endTimestamp !== null) {
+                    mvParams.push(endTimestamp);
+                    conds.push(`last_ets <= $${mvParams.length}`);
+                }
+                const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+                const mvSql = `
+                    SELECT
+                        TO_CHAR(session_date_ist, 'YYYY-MM-DD') AS date,
+                        session_date_ist AS time_bucket,
+                        COUNT(*) AS sessionscount,
+                        COUNT(DISTINCT sid) AS uniquesessionidscount,
+                        EXTRACT(EPOCH FROM session_date_ist::timestamp) * 1000 AS timestamp,
+                        NULL AS hour_of_day
+                    FROM mv_sessions_daily
+                    ${where}
+                    GROUP BY session_date_ist
+                    ORDER BY session_date_ist ASC
+                `;
+                result = await pool.query(mvSql, mvParams);
+                source = 'mv';
+            } catch (mvErr) {
+                console.warn('[SessionsGraph] MV query failed, falling back:', mvErr.message);
+                result = null;
+            }
+        }
 
-        const result = await pool.query(query);
+        if (!result) {
+            const query = {
+                text: `
+                    WITH combined_sessions AS (
+                        SELECT sid, fingerprint_id as uid, ets,
+                            ${dateGrouping} as time_bucket,
+                            ${dateFormat} as date, 'question' as activity_type
+                        FROM questions
+                        WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                        UNION ALL
+                        SELECT sid, fingerprint_id as uid, ets,
+                            ${dateGrouping} as time_bucket,
+                            ${dateFormat} as date, 'feedback' as activity_type
+                        FROM feedback
+                        WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                        UNION ALL
+                        SELECT sid, fingerprint_id as uid, ets,
+                            ${dateGrouping} as time_bucket,
+                            ${dateFormat} as date, 'error' as activity_type
+                        FROM errordetails
+                        WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    ),
+                    session_aggregates AS (
+                        SELECT
+                            date, time_bucket,
+                            COUNT(DISTINCT CONCAT(sid, '_', uid)) as sessionsCount,
+                            COUNT(DISTINCT sid) as uniqueSessionIdsCount,
+                            EXTRACT(EPOCH FROM time_bucket) * 1000 as timestamp,
+                            ${granularity === 'hourly' ? `EXTRACT(HOUR FROM time_bucket) as hour_of_day` : 'NULL as hour_of_day'}
+                        FROM combined_sessions
+                        GROUP BY time_bucket, date
+                    )
+                    SELECT date, timestamp, hour_of_day, sessionsCount, uniqueSessionIdsCount
+                    FROM session_aggregates
+                    ORDER BY time_bucket ASC
+                `,
+                values: queryParams,
+            };
+            result = await pool.query(query);
+        }
 
         // Format the data for frontend consumption
         const graphData = result.rows.map(row => ({
@@ -899,6 +993,7 @@ const getSessionsGraph = async (req, res) => {
                     }
                 }
             },
+            meta: { source },
             filters: {
                 search: search,
                 startDate: startDate,

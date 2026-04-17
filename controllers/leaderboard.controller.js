@@ -4,6 +4,7 @@ const {
   getVillagesByDistrictUtil,
 } = require("../middleware/villageMiddleware");
 const { get } = require("../routes/leaderboard.Routes");
+const { mvExists } = require("../utils/mvHealth");
 
 // Get top 10 users by taluka, district and state
 
@@ -451,30 +452,58 @@ const end = userEnd ?? new Date(
     const startIso = start.toISOString();
     const endIso = end.toISOString();
 
-    const query = `
-    SELECT
-    unique_id,
-    username,
-    registered_location,
-    COUNT(*) FILTER (WHERE answertext IS NOT NULL) AS record_count
-    FROM questions
-    WHERE registered_location->>'lgd_code' = $1
-      AND unique_id IS NOT NULL
-      AND unique_id <> ''
-      AND unique_id <> '696354'
-      AND farmer_id IS NOT NULL
-      AND farmer_id <> ''
-      AND created_at BETWEEN $2 AND $3
-    GROUP BY unique_id, username, registered_location
-    ORDER BY record_count DESC
-    LIMIT 10
-    `;
+    // MV fast-path: when the range aligns on calendar months we can read
+    // pre-aggregated mv_monthly_leaderboard. For arbitrary ranges we still
+    // fall back to the live query against questions.
+    const startIsMonthStart = start.getUTCDate() === 1 && start.getUTCHours() === 0 && start.getUTCMinutes() === 0;
+    const endIsDayEnd = true; // end is approximate — we sum over months >= start and <= end
+    let result;
+    let source = 'base';
+    if (startIsMonthStart && endIsDayEnd && await mvExists('mv_monthly_leaderboard')) {
+      try {
+        result = await pool.query(
+          `SELECT
+             unique_id,
+             MAX(username) AS username,
+             (MAX(registered_location::text))::jsonb AS registered_location,
+             SUM(record_count)::bigint AS record_count
+           FROM mv_monthly_leaderboard
+           WHERE lgd_code = $1
+             AND month_start >= DATE($2)
+             AND month_start <= DATE($3)
+           GROUP BY unique_id
+           ORDER BY record_count DESC
+           LIMIT 10`,
+          [registeredLgdCode, startIso, endIso]
+        );
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[Top10Month] MV query failed, falling back:', mvErr.message);
+        result = null;
+      }
+    }
 
-    const result = await pool.query(query, [
-      registeredLgdCode,
-      startIso,
-      endIso,
-    ]);
+    if (!result) {
+      const query = `
+      SELECT
+      unique_id,
+      username,
+      registered_location,
+      COUNT(*) FILTER (WHERE answertext IS NOT NULL) AS record_count
+      FROM questions
+      WHERE registered_location->>'lgd_code' = $1
+        AND unique_id IS NOT NULL
+        AND unique_id <> ''
+        AND unique_id <> '696354'
+        AND farmer_id IS NOT NULL
+        AND farmer_id <> ''
+        AND created_at BETWEEN $2 AND $3
+      GROUP BY unique_id, username, registered_location
+      ORDER BY record_count DESC
+      LIMIT 10
+      `;
+      result = await pool.query(query, [registeredLgdCode, startIso, endIso]);
+    }
 
     return res.json({
       success: true,
@@ -482,6 +511,7 @@ const end = userEnd ?? new Date(
       start_date: startIso,
       end_date: endIso,
       data: result.rows,
+      meta: { source },
     });
   } catch (err) {
     console.error("Error in getTop10Month:", err);
