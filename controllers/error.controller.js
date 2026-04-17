@@ -1,5 +1,6 @@
 const pool = require("../services/db");
 const { formatUTCToISTDateTime, parseDateRange } = require("../utils/dateUtils");
+const { mvExists } = require("../utils/mvHealth");
 
 async function fetchAllErrorsFromDB(
   page = 1,
@@ -129,8 +130,40 @@ async function getTotalErrorCount(
 async function getErrorStats(search = "", startDate = null, endDate = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
+  // MV-first: when no search and a date range is present, read mv_errors_daily.
+  if (!search && startTimestamp !== null && endTimestamp !== null && await mvExists('mv_errors_daily')) {
+    try {
+      const mvRes = await pool.query(
+        `SELECT
+           COALESCE(SUM(error_count), 0) AS total_errors,
+           COALESCE(SUM(unique_users), 0) AS unique_users,
+           COALESCE(SUM(unique_sessions), 0) AS unique_sessions,
+           COALESCE(COUNT(DISTINCT channel), 0) AS unique_channels
+         FROM mv_errors_daily
+         WHERE error_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+           AND error_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+        [startTimestamp, endTimestamp]
+      );
+      const row = mvRes.rows[0];
+      const total = parseInt(row.total_errors) || 0;
+      return {
+        totalErrors: total,
+        unresolvedErrors: total,
+        resolvedErrors: 0,
+        criticalErrors: total,
+        avgErrorCount: 1,
+        uniqueUsers: parseInt(row.unique_users) || 0,
+        uniqueSessions: parseInt(row.unique_sessions) || 0,
+        uniqueChannels: parseInt(row.unique_channels) || 0,
+        source: 'mv',
+      };
+    } catch (mvErr) {
+      console.warn('[ErrorStats] MV query failed, falling back:', mvErr.message);
+    }
+  }
+
   let query = `
-        SELECT 
+        SELECT
             COUNT(*) as total_errors,
             COUNT(DISTINCT fingerprint_id) as unique_users,
             COUNT(DISTINCT sid) as unique_sessions,
@@ -142,7 +175,6 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
   const queryParams = [];
   let paramIndex = 0;
 
-  // Add date range filtering
   if (startTimestamp !== null) {
     paramIndex++;
     query += ` AND ets >= $${paramIndex}`;
@@ -155,12 +187,11 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
     queryParams.push(endTimestamp);
   }
 
-  // Add search filter if search term is provided
   if (search && search.trim() !== "") {
     paramIndex++;
     query += ` AND (
-            errortext ILIKE $${paramIndex} OR 
-            channel ILIKE $${paramIndex} OR 
+            errortext ILIKE $${paramIndex} OR
+            channel ILIKE $${paramIndex} OR
             uid ILIKE $${paramIndex}
         )`;
     queryParams.push(`%${search.trim()}%`);
@@ -169,13 +200,14 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
   const result = await pool.query(query, queryParams);
   return {
     totalErrors: parseInt(result.rows[0].total_errors) || 0,
-    unresolvedErrors: parseInt(result.rows[0].total_errors) || 0, // All errors are considered unresolved
-    resolvedErrors: 0, // No resolved errors in this table structure
-    criticalErrors: parseInt(result.rows[0].total_errors) || 0, // Consider all as critical for now
-    avgErrorCount: 1, // Each row is one error occurrence
+    unresolvedErrors: parseInt(result.rows[0].total_errors) || 0,
+    resolvedErrors: 0,
+    criticalErrors: parseInt(result.rows[0].total_errors) || 0,
+    avgErrorCount: 1,
     uniqueUsers: parseInt(result.rows[0].unique_users) || 0,
     uniqueSessions: parseInt(result.rows[0].unique_sessions) || 0,
     uniqueChannels: parseInt(result.rows[0].unique_channels) || 0,
+    source: 'base',
   };
 }
 
@@ -438,90 +470,123 @@ const getErrorStatistics = async (req, res) => {
   }
 };
 
-// Controller function to get error graph data
+// Controller function to get error graph data.
+// SECURITY: granularity is now whitelisted (previous version interpolated
+// the raw query param into SQL strings inside date_trunc() and interval).
 const getErrorGraph = async (req, res) => {
   try {
-    const { startDate, endDate, granularity = "day" } = req.query;
+    const { startDate, endDate } = req.query;
+    const rawGranularity = String(req.query.granularity || "day").toLowerCase();
+    const GRANULARITY_MAP = {
+      hour:  { trunc: 'hour',  interval: '1 hour' },
+      day:   { trunc: 'day',   interval: '1 day' },
+      week:  { trunc: 'week',  interval: '1 week' },
+      month: { trunc: 'month', interval: '1 month' },
+    };
+    const granCfg = GRANULARITY_MAP[rawGranularity] || GRANULARITY_MAP.day;
+    const granularity = Object.keys(GRANULARITY_MAP).find(k => GRANULARITY_MAP[k] === granCfg);
+
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-
-    let dateFormat, dateInterval;
-    switch (granularity) {
-      case "hour":
-        dateFormat = "YYYY-MM-DD HH24:00:00";
-        dateInterval = "1 hour";
-        break;
-      case "day":
-        dateFormat = "YYYY-MM-DD";
-        dateInterval = "1 day";
-        break;
-      case "week":
-        dateFormat = 'YYYY-"W"WW';
-        dateInterval = "1 week";
-        break;
-      case "month":
-        dateFormat = "YYYY-MM";
-        dateInterval = "1 month";
-        break;
-      default:
-        dateFormat = "YYYY-MM-DD";
-        dateInterval = "1 day";
-    }
-
-    let query = `
-            WITH date_series AS (
-                SELECT generate_series(
-                    date_trunc('${granularity}', $1::timestamp),
-                    date_trunc('${granularity}', $2::timestamp),
-                    interval '${dateInterval}'
-                ) AS date_period
-            ),
-            error_counts AS (
-                SELECT 
-                    date_trunc('${granularity}', created_at) as error_period,
-                    COUNT(*) as error_count,
-                    COUNT(DISTINCT uid) as unique_users,
-                    COUNT(DISTINCT sid) as unique_sessions,
-                    COUNT(DISTINCT channel) as unique_channels
-                FROM errordetails
-                WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL
-                GROUP BY date_trunc('${granularity}', created_at)
-            )
-            SELECT 
-                ds.date_period,
-                COALESCE(ec.error_count, 0) as error_count,
-                COALESCE(ec.error_count, 0) as critical_count,
-                COALESCE(ec.error_count, 0) as unresolved_count,
-                COALESCE(ec.unique_users, 0) as unique_users,
-                COALESCE(ec.unique_sessions, 0) as unique_sessions,
-                COALESCE(ec.unique_channels, 0) as unique_channels
-            FROM date_series ds
-            LEFT JOIN error_counts ec ON ds.date_period = ec.error_period
-            ORDER BY ds.date_period
-        `;
 
     const queryParams = [];
     if (startTimestamp !== null && endTimestamp !== null) {
       queryParams.push(startTimestamp, endTimestamp);
     } else {
-      // Default to last 30 days if no date range provided
-      const endDate = Date.now();
-      const startDate = endDate - (30 * 24 * 60 * 60 * 1000); // 30 days ago in milliseconds
-      queryParams.push(startDate, endDate);
+      const endMs = Date.now();
+      const startMs = endMs - (30 * 24 * 60 * 60 * 1000);
+      queryParams.push(startMs, endMs);
     }
 
-    const result = await pool.query(query, queryParams);
+    // MV fast-path: daily granularity via mv_errors_daily.
+    let graphData = null;
+    let source = 'base';
+    if (granularity === 'day' && await mvExists('mv_errors_daily')) {
+      try {
+        const mvSql = `
+          WITH date_series AS (
+            SELECT generate_series(
+              date_trunc('day', TO_TIMESTAMP($1::bigint / 1000)),
+              date_trunc('day', TO_TIMESTAMP($2::bigint / 1000)),
+              interval '1 day'
+            )::date AS date_period
+          )
+          SELECT
+            ds.date_period,
+            COALESCE(SUM(m.error_count), 0) AS error_count,
+            COALESCE(SUM(m.error_count), 0) AS critical_count,
+            COALESCE(SUM(m.error_count), 0) AS unresolved_count,
+            COALESCE(SUM(m.unique_users), 0) AS unique_users,
+            COALESCE(SUM(m.unique_sessions), 0) AS unique_sessions,
+            COUNT(DISTINCT m.channel) AS unique_channels
+          FROM date_series ds
+          LEFT JOIN mv_errors_daily m ON m.error_date = ds.date_period
+          GROUP BY ds.date_period
+          ORDER BY ds.date_period
+        `;
+        const mvResult = await pool.query(mvSql, queryParams);
+        graphData = mvResult.rows.map((row) => ({
+          date: row.date_period,
+          errorCount: parseInt(row.error_count),
+          criticalCount: parseInt(row.critical_count),
+          unresolvedCount: parseInt(row.unresolved_count),
+          uniqueUsers: parseInt(row.unique_users),
+          uniqueSessions: parseInt(row.unique_sessions),
+          uniqueChannels: parseInt(row.unique_channels),
+        }));
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[ErrorGraph] MV query failed, falling back:', mvErr.message);
+        graphData = null;
+      }
+    }
 
-    const graphData = result.rows.map((row) => ({
-      date: row.date_period,
-      errorCount: parseInt(row.error_count),
-      criticalCount: parseInt(row.critical_count),
-      unresolvedCount: parseInt(row.unresolved_count),
-      uniqueUsers: parseInt(row.unique_users),
-      uniqueSessions: parseInt(row.unique_sessions),
-      uniqueChannels: parseInt(row.unique_channels),
-    }));
+    if (!graphData) {
+      // Parameters for date_trunc granularity are taken from the whitelist
+      // (granCfg.trunc / granCfg.interval) — NOT from req.query directly.
+      const query = `
+        WITH date_series AS (
+          SELECT generate_series(
+            date_trunc('${granCfg.trunc}', TO_TIMESTAMP($1::bigint / 1000)),
+            date_trunc('${granCfg.trunc}', TO_TIMESTAMP($2::bigint / 1000)),
+            interval '${granCfg.interval}'
+          ) AS date_period
+        ),
+        error_counts AS (
+          SELECT
+            date_trunc('${granCfg.trunc}', created_at) as error_period,
+            COUNT(*) as error_count,
+            COUNT(DISTINCT uid) as unique_users,
+            COUNT(DISTINCT sid) as unique_sessions,
+            COUNT(DISTINCT channel) as unique_channels
+          FROM errordetails
+          WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL
+          GROUP BY date_trunc('${granCfg.trunc}', created_at)
+        )
+        SELECT
+          ds.date_period,
+          COALESCE(ec.error_count, 0) as error_count,
+          COALESCE(ec.error_count, 0) as critical_count,
+          COALESCE(ec.error_count, 0) as unresolved_count,
+          COALESCE(ec.unique_users, 0) as unique_users,
+          COALESCE(ec.unique_sessions, 0) as unique_sessions,
+          COALESCE(ec.unique_channels, 0) as unique_channels
+        FROM date_series ds
+        LEFT JOIN error_counts ec ON ds.date_period = ec.error_period
+        ORDER BY ds.date_period
+      `;
+      const result = await pool.query(query, queryParams);
+      graphData = result.rows.map((row) => ({
+        date: row.date_period,
+        errorCount: parseInt(row.error_count),
+        criticalCount: parseInt(row.critical_count),
+        unresolvedCount: parseInt(row.unresolved_count),
+        uniqueUsers: parseInt(row.unique_users),
+        uniqueSessions: parseInt(row.unique_sessions),
+        uniqueChannels: parseInt(row.unique_channels),
+      }));
+    }
 
-    res.json({ data: graphData });
+    res.json({ data: graphData, meta: { source } });
   } catch (error) {
     console.error("Error fetching error graph data:", error);
     res.status(500).json({

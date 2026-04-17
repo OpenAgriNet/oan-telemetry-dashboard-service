@@ -4,6 +4,11 @@ const {
   formatDateToIST,
   parseDateRange,
 } = require("../utils/dateUtils");
+const { mvExists } = require("../utils/mvHealth");
+
+// Small in-process cache for distinct channels (see getDistinctChannels).
+let distinctChannelsCache = { value: null, expiresAt: 0 };
+const DISTINCT_CHANNELS_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function fetchAllFeedbackFromDB(
   page = 1,
@@ -115,6 +120,142 @@ async function fetchAllFeedbackFromDB(
 
   const result = await pool.query(query, queryParams);
   return result.rows;
+}
+
+// Merged list + totals query. One filtered scan over `feedback` produces:
+//  - the page rows (LIMIT/OFFSET)
+//  - total row count matching the filter (COUNT(*) OVER ())
+//  - total likes / dislikes for the same filter (COUNT(...) OVER ())
+async function fetchAllFeedbackAndTotals({
+  page = 1,
+  limit = 10,
+  search = "",
+  startDate = null,
+  endDate = null,
+  sortBy = null,
+  sortOrder = "DESC",
+  feedbackSource = null,
+  feedbackType = null,
+  channel = null,
+}) {
+  const offset = (page - 1) * limit;
+  const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+  const params = [];
+  let idx = 0;
+  const conditions = [
+    "feedbacktext IS NOT NULL",
+    "((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL) OR COALESCE(feedback_source, 'chat') = 'voice')",
+  ];
+
+  if (startTimestamp !== null) {
+    idx++;
+    conditions.push(`ets >= $${idx}`);
+    params.push(startTimestamp);
+  }
+  if (endTimestamp !== null) {
+    idx++;
+    conditions.push(`ets <= $${idx}`);
+    params.push(endTimestamp);
+  }
+  if (search && search.trim() !== "") {
+    idx++;
+    conditions.push(`(
+      feedbacktext ILIKE $${idx} OR
+      questiontext ILIKE $${idx} OR
+      answertext ILIKE $${idx} OR
+      COALESCE(fingerprint_id, uid) ILIKE $${idx}
+    )`);
+    params.push(`%${search.trim()}%`);
+  }
+  if (feedbackSource && feedbackSource !== 'all') {
+    idx++;
+    conditions.push(`COALESCE(feedback_source, 'chat') = $${idx}`);
+    params.push(feedbackSource);
+  }
+  if (feedbackType && feedbackType !== 'all') {
+    idx++;
+    conditions.push(`feedbacktype = $${idx}`);
+    params.push(feedbackType);
+  }
+  if (channel && channel !== 'all') {
+    idx++;
+    conditions.push(`channel = $${idx}`);
+    params.push(channel);
+  }
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  const sortArray = ["ets", "created_at", "user_id", "feedbacktype", "feedbacktext"];
+  let orderBy;
+  if (sortArray.includes(sortBy)) {
+    if (sortBy === "ets") {
+      orderBy = `ORDER BY ets ${sortOrder}, created_at ${sortOrder}`;
+    } else {
+      orderBy = `ORDER BY ${sortBy} ${sortOrder}`;
+    }
+  } else {
+    orderBy = `ORDER BY ets DESC, created_at DESC`;
+  }
+
+  idx++;
+  const limitParam = idx;
+  params.push(limit);
+  idx++;
+  const offsetParam = idx;
+  params.push(offset);
+
+  const sql = `
+    SELECT
+      id,
+      qid,
+      COALESCE(fingerprint_id, uid) AS user_id,
+      created_at,
+      feedbacktype,
+      feedbacktext,
+      questiontext,
+      answertext,
+      channel,
+      sid AS session_id,
+      ets,
+      COALESCE(feedback_source, 'chat') AS feedback_source,
+      COUNT(*) OVER () AS total_count,
+      COUNT(*) FILTER (WHERE feedbacktype = 'like') OVER () AS total_likes,
+      COUNT(*) FILTER (WHERE feedbacktype = 'dislike') OVER () AS total_dislikes
+    FROM feedback
+    ${where}
+    ${orderBy}
+    LIMIT $${limitParam} OFFSET $${offsetParam}
+  `;
+
+  const result = await pool.query(sql, params);
+
+  const totalCount = result.rows.length ? parseInt(result.rows[0].total_count, 10) : 0;
+  const totalLikes = result.rows.length ? parseInt(result.rows[0].total_likes, 10) : 0;
+  const totalDislikes = result.rows.length ? parseInt(result.rows[0].total_dislikes, 10) : 0;
+
+  // If there are zero results for this page but we still want the totals,
+  // fall back to a lightweight count-only query.
+  if (result.rows.length === 0 && (startDate || endDate || search || feedbackSource || feedbackType || channel)) {
+    const countSql = `
+      SELECT
+        COUNT(*) AS total_count,
+        COUNT(*) FILTER (WHERE feedbacktype = 'like') AS total_likes,
+        COUNT(*) FILTER (WHERE feedbacktype = 'dislike') AS total_dislikes
+      FROM feedback
+      ${where}
+    `;
+    const countRes = await pool.query(countSql, params.slice(0, params.length - 2));
+    const row = countRes.rows[0] || { total_count: 0, total_likes: 0, total_dislikes: 0 };
+    return {
+      rows: [],
+      totalCount: parseInt(row.total_count, 10) || 0,
+      totalLikes: parseInt(row.total_likes, 10) || 0,
+      totalDislikes: parseInt(row.total_dislikes, 10) || 0,
+    };
+  }
+
+  return { rows: result.rows, totalCount, totalLikes, totalDislikes };
 }
 
 async function getTotalFeedbackCount(
@@ -341,35 +482,17 @@ async function getAllFeedback(req, res) {
       });
     }
 
-    // Fetch paginated feedback data and total count
-    const [rawFeedbackData, totalCount] = await Promise.all([
-      fetchAllFeedbackFromDB(
-        page,
-        limit,
-        search,
-        startDate,
-        endDate,
-        sortBy,
-        sortOrder,
-        feedbackSource,
-        feedbackType,
-        channel,
-      ),
-      getTotalFeedbackCount(search, startDate, endDate, feedbackSource, feedbackType, channel),
-    ]);
+    // OPTIMIZED: single query with window functions replaces the original
+    // three parallel scans (list + count + like/dislike totals). All three
+    // aggregates are computed with COUNT(*) OVER () window functions on the
+    // same filtered set.
+    const { rows: rawFeedbackData, totalCount, totalLikes, totalDislikes } =
+      await fetchAllFeedbackAndTotals({
+        page, limit, search, startDate, endDate, sortBy, sortOrder,
+        feedbackSource, feedbackType, channel,
+      });
 
     const formattedFeedback = rawFeedbackData.map(formatFeedbackData);
-
-    // Get accurate total likes and dislikes counts for the entire filtered dataset
-    const { totalLikes, totalDislikes } = await getTotalLikesDislikesCount(
-      search,
-      startDate,
-      endDate,
-      null,
-      feedbackSource,
-      feedbackType,
-      channel,
-    );
 
     // Calculate pagination metadata
     const totalPages = Math.ceil(totalCount / limit);
@@ -655,21 +778,43 @@ const getFeedbackStats = async (req, res) => {
       queryParams.push(endTimestamp);
     }
 
-    // SIMPLIFIED - Only return essential feedback counts
-    const query = {
-      text: `
-                SELECT 
-                    COUNT(*) as total_feedback,
-                    COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
-                    COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
-                FROM feedback
-                WHERE uid IS NOT NULL AND (answertext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice') ${dateFilter}
-            `,
-      values: queryParams,
-    };
+    // MV-first: mv_feedback_daily when date range is present.
+    let stats = null;
+    let source = 'base';
+    if (await mvExists('mv_feedback_daily') && startTimestamp !== null && endTimestamp !== null) {
+      try {
+        const mvRes = await pool.query(
+          `SELECT
+             COALESCE(SUM(total_feedback), 0) AS total_feedback,
+             COALESCE(SUM(likes), 0) AS total_likes,
+             COALESCE(SUM(dislikes), 0) AS total_dislikes
+           FROM mv_feedback_daily
+           WHERE feedback_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+             AND feedback_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+          [startTimestamp, endTimestamp]
+        );
+        stats = mvRes.rows[0];
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[FeedbackStats] MV query failed, falling back:', mvErr.message);
+      }
+    }
 
-    const result = await pool.query(query);
-    const stats = result.rows[0];
+    if (!stats) {
+      const query = {
+        text: `SELECT
+                 COUNT(*) as total_feedback,
+                 COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
+                 COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
+               FROM feedback
+               WHERE uid IS NOT NULL
+                 AND (answertext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
+                 ${dateFilter}`,
+        values: queryParams,
+      };
+      const result = await pool.query(query);
+      stats = result.rows[0];
+    }
 
     res.status(200).json({
       success: true,
@@ -678,6 +823,7 @@ const getFeedbackStats = async (req, res) => {
         totalLikes: parseInt(stats.total_likes) || 0,
         totalDislikes: parseInt(stats.total_dislikes) || 0,
       },
+      meta: { source },
       filters: {
         startDate: startDate,
         endDate: endDate,
@@ -798,40 +944,75 @@ const getFeedbackGraph = async (req, res) => {
         break;
     }
 
-    const query = {
-      text: `
-                SELECT 
-  ${dateFormat} AS date,
-  ${dateGrouping} AS ${orderBy},
+    // MV fast-path: daily granularity without search uses mv_feedback_daily.
+    let result = null;
+    let source = 'base';
+    if (granularity === 'daily' && !search && await mvExists('mv_feedback_daily')) {
+      try {
+        const mvParams = [];
+        const conds = [];
+        if (startTimestamp !== null) {
+          mvParams.push(startTimestamp);
+          conds.push(`feedback_date >= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+        }
+        if (endTimestamp !== null) {
+          mvParams.push(endTimestamp);
+          conds.push(`feedback_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+        }
+        const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+        const mvSql = `
+          SELECT
+            TO_CHAR(feedback_date, 'YYYY-MM-DD') AS date,
+            feedback_date AS day_bucket,
+            SUM(total_feedback) AS feedbackcount,
+            SUM(likes) AS likescount,
+            SUM(dislikes) AS dislikescount,
+            ROUND(SUM(likes) * 100.0 / NULLIF(SUM(total_feedback), 0), 2) AS satisfactionrate,
+            EXTRACT(EPOCH FROM feedback_date::timestamp) * 1000 AS timestamp,
+            NULL AS hour_of_day
+          FROM mv_feedback_daily
+          ${where}
+          GROUP BY feedback_date
+          ORDER BY feedback_date ASC
+        `;
+        result = await pool.query(mvSql, mvParams);
+        source = 'mv';
+      } catch (mvErr) {
+        console.warn('[FeedbackGraph] MV query failed, falling back:', mvErr.message);
+        result = null;
+      }
+    }
 
-  COUNT(*) as feedbackCount,
-  COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
-  COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
-  ROUND(COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 /
-                        NULLIF(COUNT(*), 0), 2) as satisfactionRate,
-  EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
-
-  ${
-    granularity === "hourly"
-      ? `EXTRACT(HOUR FROM ${dateGrouping}) AS hour_of_day`
-      : "NULL AS hour_of_day"
-  }
-
-FROM feedback
-WHERE feedbacktext IS NOT NULL
-  AND (
-    (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
-    OR COALESCE(feedback_source, 'chat') = 'voice'
-  )
-  AND ets IS NOT NULL
-  ${dateFilter}
-GROUP BY ${dateGrouping}
-ORDER BY ${orderBy} ASC
-            `,
-      values: queryParams,
-    };
-
-    const result = await pool.query(query);
+    if (!result) {
+      const query = {
+        text: `
+          SELECT
+            ${dateFormat} AS date,
+            ${dateGrouping} AS ${orderBy},
+            COUNT(*) as feedbackCount,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likesCount,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikesCount,
+            ROUND(COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 /
+                                  NULLIF(COUNT(*), 0), 2) as satisfactionRate,
+            EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+            ${granularity === 'hourly'
+              ? `EXTRACT(HOUR FROM ${dateGrouping}) AS hour_of_day`
+              : 'NULL AS hour_of_day'}
+          FROM feedback
+          WHERE feedbacktext IS NOT NULL
+            AND (
+              (questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+              OR COALESCE(feedback_source, 'chat') = 'voice'
+            )
+            AND ets IS NOT NULL
+            ${dateFilter}
+          GROUP BY ${dateGrouping}
+          ORDER BY ${orderBy} ASC
+        `,
+        values: queryParams,
+      };
+      result = await pool.query(query);
+    }
 
     // Format the data for frontend consumption
     const graphData = result.rows.map((row) => ({
@@ -891,6 +1072,7 @@ ORDER BY ${orderBy} ASC
           },
         },
       },
+      meta: { source },
       filters: {
         search: search,
         startDate: startDate,
@@ -909,15 +1091,31 @@ ORDER BY ${orderBy} ASC
   }
 };
 
-// Get distinct channels for filter dropdown
+// Get distinct channels for filter dropdown. Cached in-process for 5 min.
 const getDistinctChannels = async (req, res) => {
   try {
+    const now = Date.now();
+    if (distinctChannelsCache.value && distinctChannelsCache.expiresAt > now) {
+      return res.status(200).json({
+        success: true,
+        data: distinctChannelsCache.value,
+        meta: { source: 'cache' },
+      });
+    }
+
     const result = await pool.query(
       `SELECT DISTINCT channel FROM feedback WHERE channel IS NOT NULL ORDER BY channel`
     );
+    const channels = result.rows.map(r => r.channel);
+    distinctChannelsCache = {
+      value: channels,
+      expiresAt: now + DISTINCT_CHANNELS_TTL_MS,
+    };
+
     res.status(200).json({
       success: true,
-      data: result.rows.map(r => r.channel),
+      data: channels,
+      meta: { source: 'live' },
     });
   } catch (error) {
     console.error("Error fetching distinct channels:", error);

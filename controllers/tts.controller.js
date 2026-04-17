@@ -3,6 +3,7 @@ const {
   formatDateToIST,
   parseDateRange,
 } = require("../utils/dateUtils");
+const { mvExists } = require("../utils/mvHealth");
 
 async function fetchTtsFromDB(
   page = 1,
@@ -124,6 +125,35 @@ async function getTtsCount(search = "", startDate = null, endDate = null) {
 
 async function getTtsStats(startDate = null, endDate = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+  // MV-first via mv_tts_daily.
+  if (startTimestamp !== null && endTimestamp !== null && await mvExists('mv_tts_daily')) {
+    try {
+      const mvRes = await pool.query(
+        `SELECT
+           COALESCE(SUM(total_calls), 0) AS total_calls,
+           COALESCE(SUM(success_count), 0) AS success_count,
+           ROUND(AVG(avg_latency)) AS avg_latency,
+           MAX(max_latency) AS max_latency
+         FROM mv_tts_daily
+         WHERE stat_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+           AND stat_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+        [startTimestamp, endTimestamp]
+      );
+      const row = mvRes.rows[0];
+      const totalCalls = parseInt(row.total_calls) || 0;
+      const successCount = parseInt(row.success_count) || 0;
+      return {
+        totalCalls,
+        successCount,
+        successRate: totalCalls > 0 ? Math.round((successCount / totalCalls) * 100) : 0,
+        avgLatency: parseInt(row.avg_latency) || 0,
+        maxLatency: parseInt(row.max_latency) || 0,
+      };
+    } catch (mvErr) {
+      console.warn('[TtsStats] MV query failed, falling back:', mvErr.message);
+    }
+  }
 
   let query = `
     SELECT

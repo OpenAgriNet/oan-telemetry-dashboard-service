@@ -1,21 +1,17 @@
 const pool = require('../services/db');
 const { parseDateRange } = require('../utils/dateUtils');
+const { mvExists } = require('../utils/mvHealth');
 
-// Helper: Check if MV exists and has recent data
-const checkMaterializedViewHealth = async (viewName) => {
-  try {
-    const result = await pool.query(`
-      SELECT schemaname, relname
-      FROM pg_stat_user_tables 
-      WHERE relname = $1
-    `, [viewName]);
-    return result.rows.length > 0;
-  } catch (err) {
-    return false;
-  }
-};
-
-// ─── GET /calls ── paginated list with aggregated message counts ───
+// ─── GET /calls ── paginated list driven off mv_call_message_counts when available ───
+//
+// Old path did  SELECT ... FROM calls c LEFT JOIN messages m ON m.call_id = c.id
+//              WHERE ... GROUP BY c.id ORDER BY c.start_datetime DESC LIMIT N OFFSET M
+// which scanned calls×messages every page (≈19s on production volume).
+//
+// New path drives off mv_call_message_counts which pre-aggregates total_interactions
+// and questions_count per call, then joins back to calls for the 20 rows on the page.
+// Count comes from mv_calls_daily_counts when date range is supplied.
+//
 const getCalls = async (req, res) => {
     try {
         const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -27,130 +23,91 @@ const getCalls = async (req, res) => {
         const sortOrder = req.query.sortOrder === 'asc' ? 'ASC' : 'DESC';
         const offset = (page - 1) * limit;
 
-        // Validate search
         if (search.length > 1000) {
             return res.status(400).json({ success: false, error: 'Search term too long' });
         }
 
-        // Build dynamic WHERE + params
-        const conditions = [];
-        const queryParams = [];
-        let paramIdx = 0;
+        // Validate date range params
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if (startDate && startTimestamp === null) {
+            return res.status(400).json({ success: false, error: 'Invalid startDate format' });
+        }
+        if (endDate && endTimestamp === null) {
+            return res.status(400).json({ success: false, error: 'Invalid endDate format' });
+        }
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({ success: false, error: 'startDate cannot be after endDate' });
+        }
 
-        // Date filtering (calls.start_datetime is a TIMESTAMP, not ETS)
-        if (startDate || endDate) {
-            const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-            if (startDate && startTimestamp === null) {
-                return res.status(400).json({ success: false, error: 'Invalid startDate format' });
-            }
-            if (endDate && endTimestamp === null) {
-                return res.status(400).json({ success: false, error: 'Invalid endDate format' });
-            }
-            if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
-                return res.status(400).json({ success: false, error: 'startDate cannot be after endDate' });
-            }
-            if (startTimestamp !== null) {
-                paramIdx++;
-                conditions.push(`c.start_datetime >= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
-                queryParams.push(startTimestamp);
-            }
-            if (endTimestamp !== null) {
-                paramIdx++;
-                conditions.push(`c.start_datetime <= TO_TIMESTAMP($${paramIdx} / 1000.0)`);
-                queryParams.push(endTimestamp);
+        const hasCallMessageCountsMV = await mvExists('mv_call_message_counts');
+        const hasCallsDailyCountsMV = await mvExists('mv_calls_daily_counts');
+
+        let dataResult;
+        let countResult;
+        let dataSource = 'base';
+        let countSource = 'base';
+
+        if (hasCallMessageCountsMV) {
+            try {
+                const { rows } = await runMvBackedList({
+                    startTimestamp,
+                    endTimestamp,
+                    search,
+                    sortBy,
+                    sortOrder,
+                    limit,
+                    offset,
+                });
+                dataResult = rows;
+                dataSource = 'mv';
+            } catch (mvErr) {
+                // search forces base path, and any other MV failure is logged.
+                if (mvErr && !String(mvErr.message).includes('search forces')) {
+                    console.warn('[Calls] MV list query failed, falling back:', mvErr.message);
+                }
             }
         }
 
-        // Search filtering
-        if (search) {
-            paramIdx++;
-            const searchParam = `%${search}%`;
-            conditions.push(`(
-                c.interaction_id ILIKE $${paramIdx}
-                OR c.user_contact_masked ILIKE $${paramIdx}
-                OR c.language_name ILIKE $${paramIdx}
-                OR c.end_reason ILIKE $${paramIdx}
-                OR c.current_language ILIKE $${paramIdx}
-            )`);
-            queryParams.push(searchParam);
+        if (!dataResult) {
+            dataResult = await runBaseList({
+                startTimestamp,
+                endTimestamp,
+                search,
+                sortBy,
+                sortOrder,
+                limit,
+                offset,
+            });
         }
 
-        const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+        // --- Count -----------------------------------------------------------
+        // When we have date range + no search, count via mv_calls_daily_counts.
+        // When search is active we fall back to the base count (still cheap
+        // now with trigram indexes) so search results get the right total.
+        const dateOnly = (startTimestamp && endTimestamp) && !search;
+        if (hasCallsDailyCountsMV && dateOnly) {
+            try {
+                const res = await pool.query(
+                    `SELECT COALESCE(SUM(call_count), 0)::bigint AS total
+                     FROM mv_calls_daily_counts
+                     WHERE call_date >= DATE($1 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                       AND call_date <= DATE($2 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+                    [new Date(startTimestamp), new Date(endTimestamp)]
+                );
+                countResult = parseInt(res.rows[0].total, 10) || 0;
+                countSource = 'mv';
+            } catch (mvErr) {
+                console.warn('[Calls] MV count query failed, falling back:', mvErr.message);
+            }
+        }
 
-        // Allowed sort columns (whitelist to prevent SQL injection)
-        const SORT_MAP = {
-            start_datetime: 'c.start_datetime',
-            duration: 'c.duration_in_seconds',
-            duration_in_seconds: 'c.duration_in_seconds',
-            questions_count: 'questions_count',
-            total_interactions: 'total_interactions',
-            language_name: 'c.language_name',
-            num_messages: 'c.num_messages',
-            end_reason: 'c.end_reason',
-        };
-        const orderColumn = SORT_MAP[sortBy] || 'c.start_datetime';
-        const orderClause = `ORDER BY ${orderColumn} ${sortOrder} NULLS LAST`;
+        if (countResult == null) {
+            countResult = await runBaseCount({ startTimestamp, endTimestamp, search });
+        }
 
-        // ── Data query: join calls ← messages to compute questions + interactions ──
-        paramIdx++;
-        const limitParam = paramIdx;
-        queryParams.push(limit);
-        paramIdx++;
-        const offsetParam = paramIdx;
-        queryParams.push(offset);
-
-        const dataQuery = `
-            SELECT
-                c.id,
-                c.interaction_id,
-                c.user_id,
-                c.user_contact_masked,
-                c.connectivity_status,
-                c.failure_reason,
-                c.end_reason,
-                COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
-                to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
-                to_char(c.end_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
-                c.language_name,
-                c.current_language,
-                c.num_messages,
-                c.average_agent_response_time_in_seconds,
-                c.average_user_response_time_in_seconds,
-                c.channel_direction,
-                c.channel_provider,
-                c.channel_type,
-                c.retry_attempt,
-                c.is_debug_call,
-                c.audio_url,
-                c.has_log_issues,
-                COUNT(m.id)                                      AS total_interactions,
-                COUNT(m.id) FILTER (WHERE m.role = 'user')       AS questions_count
-            FROM calls c
-            LEFT JOIN messages m ON m.call_id = c.id
-            ${whereClause}
-            GROUP BY c.id
-            ${orderClause}
-            LIMIT $${limitParam} OFFSET $${offsetParam}
-        `;
-
-        // ── Count query (same WHERE, no join needed for count) ──
-        const countQuery = `
-            SELECT COUNT(*) AS total
-            FROM calls c
-            ${whereClause}
-        `;
-        // Count query uses only the filter params (not limit/offset)
-        const countParams = queryParams.slice(0, queryParams.length - 2);
-
-        const [dataResult, countResult] = await Promise.all([
-            pool.query(dataQuery, queryParams),
-            pool.query(countQuery, countParams),
-        ]);
-
-        const totalCount = parseInt(countResult.rows[0].total);
+        const totalCount = countResult;
         const totalPages = Math.ceil(totalCount / limit);
-
-        const data = dataResult.rows.map(formatCallRow);
+        const data = dataResult.map(formatCallRow);
 
         res.status(200).json({
             success: true,
@@ -166,6 +123,10 @@ const getCalls = async (req, res) => {
                 previousPage: page > 1 ? page - 1 : null,
             },
             filters: { search, startDate, endDate },
+            meta: {
+                source: dataSource,
+                countSource,
+            },
         });
     } catch (error) {
         console.error('Error fetching calls:', error);
@@ -173,8 +134,239 @@ const getCalls = async (req, res) => {
     }
 };
 
+// Allowed sort columns whitelist. Maps external name -> expression on the outer select.
+// `start_date` alias kept because the frontend uses it.
+const SORT_MAP = {
+    start_datetime: 'c.start_datetime',
+    start_date: 'c.start_datetime',
+    duration: 'duration_in_seconds',
+    duration_in_seconds: 'duration_in_seconds',
+    questions_count: 'questions_count',
+    total_interactions: 'total_interactions',
+    language_name: 'c.language_name',
+    num_messages: 'c.num_messages',
+    end_reason: 'c.end_reason',
+};
+
+// MV-backed listing: LIMIT is applied *before* JOIN back to calls so we
+// touch at most `limit` rows of the big calls table.
+async function runMvBackedList({ startTimestamp, endTimestamp, search, sortBy, sortOrder, limit, offset }) {
+    const conditions = [];
+    const params = [];
+    let idx = 0;
+
+    if (startTimestamp !== null) {
+        idx++;
+        conditions.push(`mv.start_datetime >= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(startTimestamp);
+    }
+    if (endTimestamp !== null) {
+        idx++;
+        conditions.push(`mv.start_datetime <= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(endTimestamp);
+    }
+    // Search is applied inside the JOIN-back subquery (against c.*). If search
+    // is supplied we can't meaningfully limit first; fall back to the base path.
+    if (search) {
+        // Force base path for search-based queries.
+        throw new Error('search forces base path');
+    }
+
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const orderMap = {
+        start_datetime: 'mv.start_datetime',
+        start_date: 'mv.start_datetime',
+        duration: 'mv.duration_in_seconds',
+        duration_in_seconds: 'mv.duration_in_seconds',
+        questions_count: 'mv.questions_count',
+        total_interactions: 'mv.total_interactions',
+        language_name: 'mv.language_name',
+        end_reason: 'mv.end_reason',
+    };
+    // Inner (CTE) ORDER BY refers to mv.*; outer ORDER BY must reuse the same
+    // sort key but pointing at the joined rows.
+    const innerOrderColumn = orderMap[sortBy] || 'mv.start_datetime';
+    const innerOrderClause = `ORDER BY ${innerOrderColumn} ${sortOrder} NULLS LAST`;
+
+    const outerOrderMap = {
+        'mv.start_datetime': 'c.start_datetime',
+        'mv.duration_in_seconds': 'p.duration_in_seconds',
+        'mv.questions_count': 'p.questions_count',
+        'mv.total_interactions': 'p.total_interactions',
+        'mv.language_name': 'c.language_name',
+        'mv.end_reason': 'c.end_reason',
+    };
+    const outerOrderColumn = outerOrderMap[innerOrderColumn] || 'c.start_datetime';
+    const outerOrderClause = `ORDER BY ${outerOrderColumn} ${sortOrder} NULLS LAST`;
+
+    idx++;
+    const limitParam = idx;
+    params.push(limit);
+    idx++;
+    const offsetParam = idx;
+    params.push(offset);
+
+    // Step 1: pick the page's N ids from the MV.
+    // Step 2: join back to calls for all the metadata columns the UI needs.
+    const sql = `
+        WITH page_ids AS (
+            SELECT mv.id,
+                   mv.total_interactions,
+                   mv.questions_count,
+                   mv.duration_in_seconds
+            FROM mv_call_message_counts mv
+            ${whereClause}
+            ${innerOrderClause}
+            LIMIT $${limitParam} OFFSET $${offsetParam}
+        )
+        SELECT
+            c.id,
+            c.interaction_id,
+            c.user_id,
+            c.user_contact_masked,
+            c.connectivity_status,
+            c.failure_reason,
+            c.end_reason,
+            COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
+            to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
+            to_char(c.end_datetime   AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
+            c.language_name,
+            c.current_language,
+            c.num_messages,
+            c.average_agent_response_time_in_seconds,
+            c.average_user_response_time_in_seconds,
+            c.channel_direction,
+            c.channel_provider,
+            c.channel_type,
+            c.retry_attempt,
+            c.is_debug_call,
+            c.audio_url,
+            c.has_log_issues,
+            p.total_interactions,
+            p.questions_count
+        FROM page_ids p
+        JOIN calls c ON c.id = p.id
+        ${outerOrderClause}
+    `;
+
+    const { rows } = await pool.query(sql, params);
+    return { rows, orderClause: outerOrderClause };
+}
+
+// Base path: live JOIN to messages. Used when search is active or MV is missing.
+async function runBaseList({ startTimestamp, endTimestamp, search, sortBy, sortOrder, limit, offset }) {
+    const conditions = [];
+    const params = [];
+    let idx = 0;
+
+    if (startTimestamp !== null) {
+        idx++;
+        conditions.push(`c.start_datetime >= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(startTimestamp);
+    }
+    if (endTimestamp !== null) {
+        idx++;
+        conditions.push(`c.start_datetime <= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(endTimestamp);
+    }
+    if (search) {
+        idx++;
+        const s = `%${search}%`;
+        conditions.push(`(
+            c.interaction_id ILIKE $${idx}
+            OR c.user_contact_masked ILIKE $${idx}
+            OR c.language_name ILIKE $${idx}
+            OR c.end_reason ILIKE $${idx}
+            OR c.current_language ILIKE $${idx}
+        )`);
+        params.push(s);
+    }
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const orderColumn = SORT_MAP[sortBy] || 'c.start_datetime';
+    const orderClause = `ORDER BY ${orderColumn} ${sortOrder} NULLS LAST`;
+
+    idx++;
+    const limitParam = idx;
+    params.push(limit);
+    idx++;
+    const offsetParam = idx;
+    params.push(offset);
+
+    const sql = `
+        SELECT
+            c.id,
+            c.interaction_id,
+            c.user_id,
+            c.user_contact_masked,
+            c.connectivity_status,
+            c.failure_reason,
+            c.end_reason,
+            COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
+            to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
+            to_char(c.end_datetime   AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
+            c.language_name,
+            c.current_language,
+            c.num_messages,
+            c.average_agent_response_time_in_seconds,
+            c.average_user_response_time_in_seconds,
+            c.channel_direction,
+            c.channel_provider,
+            c.channel_type,
+            c.retry_attempt,
+            c.is_debug_call,
+            c.audio_url,
+            c.has_log_issues,
+            COUNT(m.id)                                AS total_interactions,
+            COUNT(m.id) FILTER (WHERE m.role = 'user') AS questions_count
+        FROM calls c
+        LEFT JOIN messages m ON m.call_id = c.id
+        ${whereClause}
+        GROUP BY c.id
+        ${orderClause}
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+    `;
+    const { rows } = await pool.query(sql, params);
+    return rows;
+}
+
+// Base count path: used when search is active, date range absent, or
+// MV fallback required.
+async function runBaseCount({ startTimestamp, endTimestamp, search }) {
+    const conditions = [];
+    const params = [];
+    let idx = 0;
+    if (startTimestamp !== null) {
+        idx++;
+        conditions.push(`c.start_datetime >= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(startTimestamp);
+    }
+    if (endTimestamp !== null) {
+        idx++;
+        conditions.push(`c.start_datetime <= TO_TIMESTAMP($${idx} / 1000.0)`);
+        params.push(endTimestamp);
+    }
+    if (search) {
+        idx++;
+        const s = `%${search}%`;
+        conditions.push(`(
+            c.interaction_id ILIKE $${idx}
+            OR c.user_contact_masked ILIKE $${idx}
+            OR c.language_name ILIKE $${idx}
+            OR c.end_reason ILIKE $${idx}
+            OR c.current_language ILIKE $${idx}
+        )`);
+        params.push(s);
+    }
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const { rows } = await pool.query(
+        `SELECT COUNT(*)::bigint AS total FROM calls c ${whereClause}`,
+        params
+    );
+    return parseInt(rows[0].total, 10) || 0;
+}
+
 // ─── GET /calls/stats ── aggregate stats for header cards ───
-// OPTIMIZED: Uses mv_call_message_counts MV to eliminate runtime JOIN + GROUP BY
+// Uses mv_call_message_counts when available.
 const getCallsStats = async (req, res) => {
     try {
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
@@ -200,15 +392,13 @@ const getCallsStats = async (req, res) => {
 
         const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
-        // Check MV availability
-        const hasCallMessageCountsMV = await checkMaterializedViewHealth('mv_call_message_counts');
+        const hasCallMessageCountsMV = await mvExists('mv_call_message_counts');
 
         let stats;
         let querySource = 'base';
 
         if (hasCallMessageCountsMV) {
             try {
-                // MV-optimized query: No JOIN needed, direct scan on pre-computed data
                 const mvQuery = `
                     SELECT
                         COUNT(*) AS total_calls,
@@ -229,7 +419,6 @@ const getCallsStats = async (req, res) => {
             }
         }
 
-        // Fallback to original query if MV not available or failed
         if (!stats) {
             const fallbackQuery = `
                 SELECT
@@ -240,7 +429,7 @@ const getCallsStats = async (req, res) => {
                     ROUND(AVG(c.duration_in_seconds)::NUMERIC, 2)                    AS avg_duration
                 FROM calls c
                 LEFT JOIN messages m ON m.call_id = c.id
-                ${whereClause}
+                ${whereClause.replace(/start_datetime/g, 'c.start_datetime')}
             `;
             const result = await pool.query(fallbackQuery, queryParams);
             stats = result.rows[0];
@@ -255,9 +444,7 @@ const getCallsStats = async (req, res) => {
                 totalInteractions: parseInt(stats.total_interactions) || 0,
                 avgDuration: parseFloat(stats.avg_duration) || 0,
             },
-            meta: {
-                source: querySource,
-            },
+            meta: { source: querySource },
             filters: { startDate, endDate },
         });
     } catch (error) {
@@ -270,7 +457,6 @@ const getCallsStats = async (req, res) => {
 const getCallById = async (req, res) => {
     try {
         const { callId } = req.params;
-        // For wildcard route, use req.params[0]; fall back to callId for named param
         const rawId = req.params[0] || callId;
 
         if (!rawId || rawId.trim() === '') {
@@ -279,7 +465,6 @@ const getCallById = async (req, res) => {
 
         const interactionId = rawId.trim();
 
-        // Fetch call metadata + aggregated counts
         const callQuery = `
             SELECT
                 c.id,
@@ -317,7 +502,6 @@ const getCallById = async (req, res) => {
             return res.status(404).json({ success: false, error: 'Call not found' });
         }
 
-        // Fetch ordered messages
         const messagesQuery = `
             SELECT m.id, m.role, m.content, m.message_order
             FROM messages m
@@ -335,10 +519,7 @@ const getCallById = async (req, res) => {
             messageOrder: row.message_order,
         }));
 
-        res.status(200).json({
-            success: true,
-            data: { call, messages },
-        });
+        res.status(200).json({ success: true, data: { call, messages } });
     } catch (error) {
         console.error('Error fetching call by ID:', error);
         res.status(500).json({ success: false, error: 'Internal server error' });
