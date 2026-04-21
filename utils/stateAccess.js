@@ -13,6 +13,7 @@ const STATE_CONFIG = {
         "sessions",
         "questions",
         "feedback",
+        "langfuse-questions",
         "errors",
         "asr",
         "tts",
