@@ -134,6 +134,7 @@ cron.schedule("0 * * * *", async () => {
 });
 
 app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
+app.use("/v1", authController);
 // app.use("/", authController, (req, res) => {
 //   res.send("hi welcome");
 // });
