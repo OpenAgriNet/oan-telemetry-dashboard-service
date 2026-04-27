@@ -5,6 +5,7 @@ const {
   getCurrentTimestamp,
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 async function fetchQuestionsFromDB(
   page = 1,
@@ -14,6 +15,7 @@ async function fetchQuestionsFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -36,6 +38,13 @@ async function fetchQuestionsFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -94,6 +103,7 @@ async function getTotalQuestionsCount(
   search = "",
   startDate = null,
   endDate = null,
+  telemetryState = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -105,6 +115,13 @@ async function getTotalQuestionsCount(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -170,6 +187,7 @@ function formatQuestionData(row) {
 
 const getQuestions = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     // Extract and sanitize pagination parameters from query string
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -220,8 +238,9 @@ const getQuestions = async (req, res) => {
         endDate,
         sortBy,
         sortOrder,
+        telemetryState,
       ),
-      getTotalQuestionsCount(search, startDate, endDate),
+      getTotalQuestionsCount(search, startDate, endDate, telemetryState),
     ]);
 
     const formattedData = questionsData.map(formatQuestionData);
@@ -265,6 +284,7 @@ const getQuestions = async (req, res) => {
 // Get single question by ID
 const getQuestionById = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { id } = req.params;
 
     // Validate UUID format to prevent SQL injection
@@ -277,6 +297,11 @@ const getQuestionById = async (req, res) => {
         error: "Valid UUID ID is required",
       });
     }
+
+    const queryParams = [id];
+    const {
+      clause: channelClause,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, 1);
 
     const query = {
       text: `
@@ -293,9 +318,9 @@ const getQuestionById = async (req, res) => {
                     groupdetails,
                     questionsource
                 FROM questions
-                WHERE id = $1
+                WHERE id = $1 AND ${channelClause}
             `,
-      values: [id],
+      values: queryParams,
     };
 
     const result = await pool.query(query);
@@ -325,6 +350,7 @@ const getQuestionById = async (req, res) => {
 // Get questions by user ID with date filtering
 const getQuestionsByUserId = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { userId } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -359,23 +385,38 @@ const getQuestionsByUserId = async (req, res) => {
     let countDateFilter = "";
     const queryParams = [userId.trim()];
     const countParams = [userId.trim()];
-    let paramIndex = 1;
+    let queryParamIndex = 1;
+    let countParamIndex = 1;
 
     if (startTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets >= $${paramIndex}`;
-      countDateFilter += ` AND ets >= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets >= $${queryParamIndex}`;
+      countDateFilter += ` AND ets >= $${countParamIndex}`;
       queryParams.push(startTimestamp);
       countParams.push(startTimestamp);
     }
 
     if (endTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets <= $${paramIndex}`;
-      countDateFilter += ` AND ets <= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets <= $${queryParamIndex}`;
+      countDateFilter += ` AND ets <= $${countParamIndex}`;
       queryParams.push(endTimestamp);
       countParams.push(endTimestamp);
     }
+
+    const {
+      clause: queryChannelClause,
+      paramIndex: queryChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, queryParamIndex);
+    queryParamIndex = queryChannelParamIndex;
+
+    const {
+      clause: countChannelClause,
+      paramIndex: countChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, countParams, countParamIndex);
+    countParamIndex = countChannelParamIndex;
 
     // Add pagination params
     queryParams.push(limit, offset);
@@ -398,9 +439,10 @@ const getQuestionsByUserId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${dateFilter}
+                    AND ${queryChannelClause}
                     AND ets <= ${Date.now()}
                 ORDER BY ets DESC
-                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+                LIMIT $${queryParamIndex + 1} OFFSET $${queryParamIndex + 2}
             `,
       values: queryParams,
     };
@@ -414,6 +456,7 @@ const getQuestionsByUserId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${countDateFilter}
+                    AND ${countChannelClause}
             `,
       values: countParams,
     };
@@ -464,6 +507,7 @@ const getQuestionsByUserId = async (req, res) => {
 // Get questions by session ID with date filtering
 const getQuestionsBySessionId = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { sessionId } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -502,23 +546,38 @@ const getQuestionsBySessionId = async (req, res) => {
     let countDateFilter = "";
     const queryParams = [sessionId.trim()];
     const countParams = [sessionId.trim()];
-    let paramIndex = 1;
+    let queryParamIndex = 1;
+    let countParamIndex = 1;
 
     if (startTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets >= $${paramIndex}`;
-      countDateFilter += ` AND ets >= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets >= $${queryParamIndex}`;
+      countDateFilter += ` AND ets >= $${countParamIndex}`;
       queryParams.push(startTimestamp);
       countParams.push(startTimestamp);
     }
 
     if (endTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets <= $${paramIndex}`;
-      countDateFilter += ` AND ets <= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets <= $${queryParamIndex}`;
+      countDateFilter += ` AND ets <= $${countParamIndex}`;
       queryParams.push(endTimestamp);
       countParams.push(endTimestamp);
     }
+
+    const {
+      clause: queryChannelClause,
+      paramIndex: queryChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, queryParamIndex);
+    queryParamIndex = queryChannelParamIndex;
+
+    const {
+      clause: countChannelClause,
+      paramIndex: countChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, countParams, countParamIndex);
+    countParamIndex = countChannelParamIndex;
 
     // Support pagination=false to return all questions without LIMIT/OFFSET
     const usePagination = req.query.pagination !== 'false';
@@ -546,9 +605,10 @@ const getQuestionsBySessionId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${dateFilter}
+                    AND ${queryChannelClause}
                     AND ets <= ${Date.now()}
                 ORDER BY ets DESC
-                ${usePagination ? `LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}` : ''}
+                ${usePagination ? `LIMIT $${queryParamIndex + 1} OFFSET $${queryParamIndex + 2}` : ''}
             `,
       values: queryParams,
     };
@@ -562,6 +622,7 @@ const getQuestionsBySessionId = async (req, res) => {
                     AND questiontext IS NOT NULL 
                     AND answertext IS NOT NULL
                     ${countDateFilter}
+                    AND ${countChannelClause}
             `,
       values: countParams,
     };
@@ -627,6 +688,7 @@ const getQuestionsBySessionId = async (req, res) => {
 // Get comprehensive question statistics with date filtering
 const getQuestionStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -667,12 +729,17 @@ const getQuestionStats = async (req, res) => {
     let source = 'base';
     if (await mvExists('mv_question_answer_rates') && (startTimestamp !== null && endTimestamp !== null)) {
       try {
+        const mvParams = [startTimestamp, endTimestamp];
+        const {
+          clause: mvChannelClause,
+        } = buildChannelFilterClause("channel", telemetryState, mvParams, 2);
         const mvRes = await pool.query(
           `SELECT COALESCE(SUM(total_questions), 0)::bigint AS total_questions
            FROM mv_question_answer_rates
            WHERE question_date >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-             AND question_date <= DATE(TO_TIMESTAMP($2::bigint / 1000))`,
-          [startTimestamp, endTimestamp]
+             AND question_date <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+             AND ${mvChannelClause}`,
+          mvParams
         );
         total = parseInt(mvRes.rows[0].total_questions, 10) || 0;
         source = 'mv';
@@ -680,6 +747,13 @@ const getQuestionStats = async (req, res) => {
         console.warn('[QuestionStats] MV query failed, falling back:', mvErr.message);
       }
     }
+
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
 
     if (total == null) {
       const result = await pool.query(
@@ -716,6 +790,7 @@ const getQuestionStats = async (req, res) => {
 // Get questions graph data for time-series visualization
 const getQuestionsGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -783,6 +858,13 @@ const getQuestionsGraph = async (req, res) => {
       queryParams.push(`%${search.trim()}%`);
     }
 
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
+
     // Define the date truncation and formatting based on granularity
     let dateGrouping;
     let dateFormat;
@@ -830,6 +912,12 @@ const getQuestionsGraph = async (req, res) => {
         if (endTimestamp !== null) {
           mvParams.push(endTimestamp);
           conds.push(`question_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000))`);
+        }
+        const {
+          clause: mvChannelClause,
+        } = buildChannelFilterClause("channel", telemetryState, mvParams, mvParams.length);
+        if (mvChannelClause !== "1=1") {
+          conds.push(mvChannelClause);
         }
         const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
         const mvSql = `

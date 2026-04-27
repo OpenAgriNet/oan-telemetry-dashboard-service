@@ -5,6 +5,7 @@ const {
   parseDateRange,
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 // Small in-process cache for distinct channels (see getDistinctChannels).
 let distinctChannelsCache = { value: null, expiresAt: 0 };
@@ -21,6 +22,7 @@ async function fetchAllFeedbackFromDB(
   feedbackSource = null,
   feedbackType = null,
   channel = null,
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -50,6 +52,13 @@ async function fetchAllFeedbackFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: stateChannelClause,
+    paramIndex: stateChannelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = stateChannelParamIndex;
+  query += ` AND ${stateChannelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -137,6 +146,7 @@ async function fetchAllFeedbackAndTotals({
   feedbackSource = null,
   feedbackType = null,
   channel = null,
+  telemetryState = null,
 }) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -147,6 +157,13 @@ async function fetchAllFeedbackAndTotals({
     "feedbacktext IS NOT NULL",
     "((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL) OR COALESCE(feedback_source, 'chat') = 'voice')",
   ];
+
+  const {
+    clause: stateChannelClause,
+    paramIndex: stateChannelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, params, idx);
+  idx = stateChannelParamIndex;
+  conditions.push(stateChannelClause);
 
   if (startTimestamp !== null) {
     idx++;
@@ -265,6 +282,7 @@ async function getTotalFeedbackCount(
   feedbackSource = null,
   feedbackType = null,
   channel = null,
+  telemetryState = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -280,6 +298,13 @@ async function getTotalFeedbackCount(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: stateChannelClause,
+    paramIndex: stateChannelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = stateChannelParamIndex;
+  query += ` AND ${stateChannelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -339,6 +364,7 @@ async function getTotalLikesDislikesCount(
   feedbackSource = null,
   feedbackType = null,
   channel = null,
+  telemetryState = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -356,6 +382,13 @@ async function getTotalLikesDislikesCount(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: stateChannelClause,
+    paramIndex: stateChannelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = stateChannelParamIndex;
+  query += ` AND ${stateChannelClause}`;
 
   // Add session ID filtering if provided
   if (sessionId) {
@@ -445,6 +478,7 @@ function formatFeedbackData(feedbackItem) {
 // Controller function to get all feedback with pagination, search, and date filtering
 async function getAllFeedback(req, res) {
   try {
+    const telemetryState = req.telemetryState;
     // Extract and sanitize pagination parameters from query string
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -489,7 +523,7 @@ async function getAllFeedback(req, res) {
     const { rows: rawFeedbackData, totalCount, totalLikes, totalDislikes } =
       await fetchAllFeedbackAndTotals({
         page, limit, search, startDate, endDate, sortBy, sortOrder,
-        feedbackSource, feedbackType, channel,
+        feedbackSource, feedbackType, channel, telemetryState,
       });
 
     const formattedFeedback = rawFeedbackData.map(formatFeedbackData);
@@ -529,7 +563,12 @@ async function getAllFeedback(req, res) {
 }
 
 // New function to fetch feedback by QID from the database
-async function fetchFeedbackByidFromDB(id) {
+async function fetchFeedbackByidFromDB(id, telemetryState = null) {
+  const values = [id];
+  const {
+    clause: stateChannelClause,
+  } = buildChannelFilterClause("channel", telemetryState, values, 1);
+
   const query = {
     text: `
             SELECT
@@ -548,8 +587,9 @@ async function fetchFeedbackByidFromDB(id) {
                 COALESCE(feedback_source, 'chat') AS feedback_source
             FROM feedback
             WHERE id = $1
+              AND ${stateChannelClause}
         `,
-    values: [id],
+    values,
   };
   const result = await pool.query(query);
   return result.rows;
@@ -558,6 +598,7 @@ async function fetchFeedbackByidFromDB(id) {
 // Controller function to get feedback by ID with proper validation
 async function getFeedbackByid(req, res) {
   try {
+    const telemetryState = req.telemetryState;
     const { id } = req.params;
 
     // Validate UUID format to prevent SQL injection
@@ -568,7 +609,7 @@ async function getFeedbackByid(req, res) {
       return res.status(400).json({ message: "Valid UUID ID is required" });
     }
 
-    const feedbackDetails = await fetchFeedbackByidFromDB(id);
+    const feedbackDetails = await fetchFeedbackByidFromDB(id, telemetryState);
 
     if (feedbackDetails.length === 0) {
       return res
@@ -586,6 +627,7 @@ async function getFeedbackByid(req, res) {
 // Get feedback by session ID with date filtering
 const getFeedbackBySessionId = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { sessionId } = req.params;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -628,23 +670,38 @@ const getFeedbackBySessionId = async (req, res) => {
     let countDateFilter = "";
     const queryParams = [sessionId.trim()];
     const countParams = [sessionId.trim()];
-    let paramIndex = 1;
+    let queryParamIndex = 1;
+    let countParamIndex = 1;
 
     if (startTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets >= $${paramIndex}`;
-      countDateFilter += ` AND ets >= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets >= $${queryParamIndex}`;
+      countDateFilter += ` AND ets >= $${countParamIndex}`;
       queryParams.push(startTimestamp);
       countParams.push(startTimestamp);
     }
 
     if (endTimestamp !== null) {
-      paramIndex++;
-      dateFilter += ` AND ets <= $${paramIndex}`;
-      countDateFilter += ` AND ets <= $${paramIndex}`;
+      queryParamIndex++;
+      countParamIndex++;
+      dateFilter += ` AND ets <= $${queryParamIndex}`;
+      countDateFilter += ` AND ets <= $${countParamIndex}`;
       queryParams.push(endTimestamp);
       countParams.push(endTimestamp);
     }
+
+    const {
+      clause: queryChannelClause,
+      paramIndex: queryChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, queryParamIndex);
+    queryParamIndex = queryChannelParamIndex;
+
+    const {
+      clause: countChannelClause,
+      paramIndex: countChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, countParams, countParamIndex);
+    countParamIndex = countChannelParamIndex;
 
     // Add pagination params
     queryParams.push(limit, offset);
@@ -670,8 +727,9 @@ const getFeedbackBySessionId = async (req, res) => {
                     AND feedbacktext IS NOT NULL
                     AND (questiontext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
                     ${dateFilter}
+                    AND ${queryChannelClause}
                 ORDER BY ets DESC, created_at DESC
-                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+                LIMIT $${queryParamIndex + 1} OFFSET $${queryParamIndex + 2}
             `,
       values: queryParams,
     };
@@ -685,6 +743,7 @@ const getFeedbackBySessionId = async (req, res) => {
                     AND feedbacktext IS NOT NULL
                     AND (questiontext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
                     ${countDateFilter}
+                    AND ${countChannelClause}
             `,
       values: countParams,
     };
@@ -703,6 +762,10 @@ const getFeedbackBySessionId = async (req, res) => {
       startDate,
       endDate,
       sessionId.trim(),
+      null,
+      null,
+      null,
+      telemetryState,
     );
 
     // Calculate pagination metadata
@@ -743,6 +806,7 @@ const getFeedbackBySessionId = async (req, res) => {
 // Get comprehensive feedback statistics with date filtering
 const getFeedbackStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -778,11 +842,22 @@ const getFeedbackStats = async (req, res) => {
       queryParams.push(endTimestamp);
     }
 
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
+
     // MV-first: mv_feedback_daily when date range is present.
     let stats = null;
     let source = 'base';
     if (await mvExists('mv_feedback_daily') && startTimestamp !== null && endTimestamp !== null) {
       try {
+        const mvParams = [startTimestamp, endTimestamp];
+        const {
+          clause: mvChannelClause,
+        } = buildChannelFilterClause("channel", telemetryState, mvParams, 2);
         const mvRes = await pool.query(
           `SELECT
              COALESCE(SUM(total_feedback), 0) AS total_feedback,
@@ -790,8 +865,9 @@ const getFeedbackStats = async (req, res) => {
              COALESCE(SUM(dislikes), 0) AS total_dislikes
            FROM mv_feedback_daily
            WHERE feedback_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-             AND feedback_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
-          [startTimestamp, endTimestamp]
+             AND feedback_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+             AND ${mvChannelClause}`,
+          mvParams
         );
         stats = mvRes.rows[0];
         source = 'mv';
@@ -843,6 +919,7 @@ const getFeedbackStats = async (req, res) => {
 // Get feedback graph data for time-series visualization
 const getFeedbackGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -911,6 +988,13 @@ const getFeedbackGraph = async (req, res) => {
       queryParams.push(`%${search.trim()}%`);
     }
 
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
+
     // Define the date truncation and formatting based on granularity
     let dateGrouping;
     let dateFormat;
@@ -958,6 +1042,12 @@ const getFeedbackGraph = async (req, res) => {
         if (endTimestamp !== null) {
           mvParams.push(endTimestamp);
           conds.push(`feedback_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+        }
+        const {
+          clause: mvChannelClause,
+        } = buildChannelFilterClause("channel", telemetryState, mvParams, mvParams.length);
+        if (mvChannelClause !== "1=1") {
+          conds.push(mvChannelClause);
         }
         const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
         const mvSql = `
@@ -1094,6 +1184,7 @@ const getFeedbackGraph = async (req, res) => {
 // Get distinct channels for filter dropdown. Cached in-process for 5 min.
 const getDistinctChannels = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const now = Date.now();
     if (distinctChannelsCache.value && distinctChannelsCache.expiresAt > now) {
       return res.status(200).json({
@@ -1103,8 +1194,13 @@ const getDistinctChannels = async (req, res) => {
       });
     }
 
+    const queryParams = [];
+    const {
+      clause: channelClause,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, 0);
     const result = await pool.query(
-      `SELECT DISTINCT channel FROM feedback WHERE channel IS NOT NULL ORDER BY channel`
+      `SELECT DISTINCT channel FROM feedback WHERE channel IS NOT NULL AND ${channelClause} ORDER BY channel`,
+      queryParams
     );
     const channels = result.rows.map(r => r.channel);
     distinctChannelsCache = {

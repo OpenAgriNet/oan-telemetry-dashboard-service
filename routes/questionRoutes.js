@@ -7,8 +7,10 @@ const {
     getQuestionStats,
     getQuestionsGraph,
 } = require('../controllers/questions.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
 
 const router = express.Router();
+router.use(requireStateAccess);
 
 // Specific routes FIRST so they are not shadowed by /:id.
 router.get('/questions', getQuestions);

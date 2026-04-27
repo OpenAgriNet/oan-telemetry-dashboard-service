@@ -1,6 +1,7 @@
 const pool = require("../services/db");
 const { formatUTCToISTDateTime, parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 async function fetchAllErrorsFromDB(
   page = 1,
@@ -10,7 +11,8 @@ async function fetchAllErrorsFromDB(
   endDate = null,
   errorType = "",
   sortBy = null,
-  sortOrder = "DESC"
+  sortOrder = "DESC",
+  telemetryState = null
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -33,6 +35,12 @@ async function fetchAllErrorsFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering using ets (Unix milliseconds)
   if (startTimestamp !== null) {
@@ -84,7 +92,8 @@ async function getTotalErrorCount(
   search = "",
   startDate = null,
   endDate = null,
-  errorType = ""
+  errorType = "",
+  telemetryState = null
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -96,6 +105,12 @@ async function getTotalErrorCount(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -127,11 +142,21 @@ async function getTotalErrorCount(
   return parseInt(result.rows[0].total);
 }
 
-async function getErrorStats(search = "", startDate = null, endDate = null) {
+async function getErrorStats(search = "", startDate = null, endDate = null, telemetryState = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+  const mvFilterParams = [startTimestamp, endTimestamp];
+  const {
+    clause: mvChannelClause,
+  } = buildChannelFilterClause("channel", telemetryState, mvFilterParams, 2);
 
   // MV-first: when no search and a date range is present, read mv_errors_daily.
-  if (!search && startTimestamp !== null && endTimestamp !== null && await mvExists('mv_errors_daily')) {
+  if (
+    !search &&
+    startTimestamp !== null &&
+    endTimestamp !== null &&
+    await mvExists("mv_errors_daily") &&
+    mvChannelClause === "1=1"
+  ) {
     try {
       const mvRes = await pool.query(
         `SELECT
@@ -174,6 +199,12 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -248,6 +279,7 @@ function formatErrorData(errorItem) {
 // Controller function to get all errors with pagination
 async function getAllErrors(req, res) {
   try {
+    const telemetryState = req.telemetryState;
     const {
       page = 1,
       limit = 10,
@@ -279,7 +311,8 @@ async function getAllErrors(req, res) {
       endDate,
       errorType,
       sortBy,
-      sortOrder
+      sortOrder,
+      telemetryState
     );
 
     // Get total count for pagination
@@ -287,7 +320,8 @@ async function getAllErrors(req, res) {
       search,
       startDate,
       endDate,
-      errorType
+      errorType,
+      telemetryState
     );
 
     // Format error data
@@ -316,7 +350,12 @@ async function getAllErrors(req, res) {
 }
 
 // Controller function to get error by ID
-async function fetchErrorByIdFromDB(id) {
+async function fetchErrorByIdFromDB(id, telemetryState = null) {
+  const queryParams = [id];
+  const {
+    clause: channelClause,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, 1);
+
   const query = `
         SELECT 
             id,
@@ -330,9 +369,10 @@ async function fetchErrorByIdFromDB(id) {
             created_at
         FROM errordetails 
         WHERE id = $1
+          AND ${channelClause}
     `;
 
-  const result = await pool.query(query, [id]);
+  const result = await pool.query(query, queryParams);
   return result.rows[0];
 }
 
@@ -341,7 +381,8 @@ async function fetchErrorsBySessionIdFromDB(
   page = 1,
   limit = 10,
   startDate = null,
-  endDate = null
+  endDate = null,
+  telemetryState = null
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -363,6 +404,12 @@ async function fetchErrorsBySessionIdFromDB(
 
   const queryParams = [sessionId];
   let paramIndex = 1;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -395,7 +442,8 @@ async function fetchErrorsBySessionIdFromDB(
 async function getTotalErrorsCountBySession(
   sessionId,
   startDate = null,
-  endDate = null
+  endDate = null,
+  telemetryState = null
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -407,6 +455,12 @@ async function getTotalErrorsCountBySession(
 
   const queryParams = [sessionId];
   let paramIndex = 1;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -427,13 +481,14 @@ async function getTotalErrorsCountBySession(
 
 async function getErrorById(req, res) {
   try {
+    const telemetryState = req.telemetryState;
     const { id } = req.params;
 
     if (!id) {
       return res.status(400).json({ error: "Error ID is required" });
     }
 
-    const error = await fetchErrorByIdFromDB(id);
+    const error = await fetchErrorByIdFromDB(id, telemetryState);
 
     if (!error) {
       return res.status(404).json({ error: "Error not found" });
@@ -456,9 +511,10 @@ async function getErrorById(req, res) {
 // Controller function to get error statistics
 const getErrorStatistics = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { search = "", startDate, endDate } = req.query;
 
-    const stats = await getErrorStats(search, startDate, endDate);
+    const stats = await getErrorStats(search, startDate, endDate, telemetryState);
 
     res.json(stats);
   } catch (error) {
@@ -475,6 +531,7 @@ const getErrorStatistics = async (req, res) => {
 // the raw query param into SQL strings inside date_trunc() and interval).
 const getErrorGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { startDate, endDate } = req.query;
     const rawGranularity = String(req.query.granularity || "day").toLowerCase();
     const GRANULARITY_MAP = {
@@ -497,10 +554,15 @@ const getErrorGraph = async (req, res) => {
       queryParams.push(startMs, endMs);
     }
 
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, 2);
+
     // MV fast-path: daily granularity via mv_errors_daily.
     let graphData = null;
     let source = 'base';
-    if (granularity === 'day' && await mvExists('mv_errors_daily')) {
+    if (granularity === 'day' && await mvExists('mv_errors_daily') && channelClause === '1=1') {
       try {
         const mvSql = `
           WITH date_series AS (
@@ -543,7 +605,7 @@ const getErrorGraph = async (req, res) => {
     if (!graphData) {
       // Parameters for date_trunc granularity are taken from the whitelist
       // (granCfg.trunc / granCfg.interval) — NOT from req.query directly.
-      const query = `
+          const query = `
         WITH date_series AS (
           SELECT generate_series(
             date_trunc('${granCfg.trunc}', TO_TIMESTAMP($1::bigint / 1000)),
@@ -559,7 +621,7 @@ const getErrorGraph = async (req, res) => {
             COUNT(DISTINCT sid) as unique_sessions,
             COUNT(DISTINCT channel) as unique_channels
           FROM errordetails
-          WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL
+          WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL AND ${channelClause}
           GROUP BY date_trunc('${granCfg.trunc}', created_at)
         )
         SELECT
@@ -599,6 +661,7 @@ const getErrorGraph = async (req, res) => {
 // Controller function to get errors by session ID
 const getErrorsBySessionId = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { sessionId } = req.params;
 
     if (!sessionId || sessionId.trim() === "") {
@@ -640,9 +703,10 @@ const getErrorsBySessionId = async (req, res) => {
         page,
         limit,
         startDate,
-        endDate
+        endDate,
+        telemetryState
       ),
-      getTotalErrorsCountBySession(sessionId.trim(), startDate, endDate),
+      getTotalErrorsCountBySession(sessionId.trim(), startDate, endDate, telemetryState),
     ]);
 
     // Format error data

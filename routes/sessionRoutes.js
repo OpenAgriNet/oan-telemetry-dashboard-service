@@ -6,8 +6,10 @@ const {
     getSessionStats,
     getSessionsGraph,
 } = require('../controllers/sessions.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
 
 const router = express.Router();
+router.use(requireStateAccess);
 
 // Specific routes FIRST so they are not shadowed by /:sessionId.
 router.get('/sessions', getSessions);

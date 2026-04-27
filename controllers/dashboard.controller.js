@@ -1,6 +1,7 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 /**
  * GET /dashboard/user-analytics?granularity=daily|hourly
@@ -10,12 +11,14 @@ const { mvExists } = require("../utils/mvHealth");
  */
 const getUserLoginAnalytics = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const granularity = req.query.granularity === "hourly" ? "hourly" : "daily";
+    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
 
     if (granularity === "daily") {
       // Try MV-first approach
       const hasMV = await mvExists('mv_active_users');
-      if (hasMV) {
+      if (hasMV && mvStateClause === "1=1") {
         try {
           const result = await pool.query(`
             SELECT
@@ -55,20 +58,32 @@ const getUserLoginAnalytics = async (req, res) => {
       }
 
       // Fallback: direct query
-      const result = await pool.query(`
+      const baseParams = [];
+      const {
+        clause: questionsChannelClause,
+        paramIndex: questionsChannelParamIndex,
+      } = buildChannelFilterClause("q.channel", telemetryState, baseParams, 0);
+      const {
+        clause: errorsChannelClause,
+      } = buildChannelFilterClause("e.channel", telemetryState, baseParams, questionsChannelParamIndex);
+
+      const result = await pool.query(
+        `
         SELECT
           to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
           COUNT(DISTINCT uid) as unique_logins,
           array_agg(DISTINCT uid) as uids
         FROM (
-          SELECT uid, ets FROM questions WHERE uid IS NOT NULL
+          SELECT q.uid, q.ets FROM questions q WHERE q.uid IS NOT NULL AND ${questionsChannelClause}
           UNION ALL
-          SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
+          SELECT e.uid, e.ets FROM errordetails e WHERE e.uid IS NOT NULL AND ${errorsChannelClause}
         ) AS combined
         WHERE to_timestamp(ets / 1000)::date >= CURRENT_DATE - INTERVAL '7 days'
         GROUP BY date
         ORDER BY date DESC
-      `);
+      `,
+        baseParams
+      );
 
       const today = new Date();
       const days = [];
@@ -94,7 +109,7 @@ const getUserLoginAnalytics = async (req, res) => {
     } else {
       // Hourly branch -- try mv_hourly_active_users first
       const hasHourlyMV = await mvExists('mv_hourly_active_users');
-      if (hasHourlyMV) {
+      if (hasHourlyMV && mvStateClause === "1=1") {
         try {
           const result = await pool.query(`
             SELECT hour_bucket_ist AS hour, active_users AS unique_logins
@@ -127,11 +142,20 @@ const getUserLoginAnalytics = async (req, res) => {
       }
 
       // Fallback: live UNION ALL
+      const baseParams = [];
+      const {
+        clause: questionsChannelClause,
+        paramIndex: questionsChannelParamIndex,
+      } = buildChannelFilterClause("q.channel", telemetryState, baseParams, 0);
+      const {
+        clause: errorsChannelClause,
+      } = buildChannelFilterClause("e.channel", telemetryState, baseParams, questionsChannelParamIndex);
+
       const result = await pool.query(`
         WITH combined AS (
-          SELECT uid, ets FROM questions WHERE uid IS NOT NULL
+          SELECT q.uid, q.ets FROM questions q WHERE q.uid IS NOT NULL AND ${questionsChannelClause}
           UNION ALL
-          SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
+          SELECT e.uid, e.ets FROM errordetails e WHERE e.uid IS NOT NULL AND ${errorsChannelClause}
         ),
         logins AS (
           SELECT
@@ -146,7 +170,7 @@ const getUserLoginAnalytics = async (req, res) => {
         FROM logins
         GROUP BY hour
         ORDER BY hour DESC
-      `);
+      `, baseParams);
 
       const now = new Date();
       const hours = [];
@@ -178,6 +202,7 @@ const getUserLoginAnalytics = async (req, res) => {
 // from materialized views. Feedback uses mv_feedback_daily when available.
 const getDashboardStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
 
@@ -195,12 +220,14 @@ const getDashboardStats = async (req, res) => {
       hasReturningUsersMV,
       hasFeedbackDailyMV,
     ] = await Promise.all([
-      mvExists('mv_daily_session_counts'),
+      mvExists('mv_sessions_daily'),
       mvExists('mv_question_answer_rates'),
       mvExists('mv_users_daily_firstseen_ist'),
       mvExists('mv_users_daily_returning_ist'),
       mvExists('mv_feedback_daily'),
     ]);
+
+    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
 
     const canUseMvPath =
       hasSessionMV && hasQuestionRateMV && hasNewUsersMV && hasReturningUsersMV;
@@ -209,7 +236,7 @@ const getDashboardStats = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath) {
+    if (canUseMvPath && mvStateClause === "1=1") {
       try {
         // Pure MV path. Feedback CTE picks MV when available, otherwise
         // falls back to a bounded base-table scan for the date range.
@@ -247,9 +274,10 @@ const getDashboardStats = async (req, res) => {
                 ) AS returning_users
             ),
             mv_sessions AS (
-              SELECT COALESCE(SUM(session_count), 0) AS total_sessions
-              FROM mv_daily_session_counts
-              WHERE stat_date >= DATE($3) AND stat_date <= DATE($4)
+              SELECT COALESCE(COUNT(*), 0) AS total_sessions
+              FROM mv_sessions_daily
+              WHERE session_date_ist >= DATE($3)
+                AND session_date_ist <= DATE($4)
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
@@ -298,59 +326,86 @@ const getDashboardStats = async (req, res) => {
     // Fallback: legacy full base query (kept verbatim for correctness when
     // any required MV is missing or the MV query errors).
     if (!stats) {
-      const queryParams = [];
-      if (startTimestamp !== null) queryParams.push(startTimestamp);
-      if (endTimestamp !== null) queryParams.push(endTimestamp);
-      queryParams.push(Date.now());
+      const queryParams = [startTimestamp, endTimestamp];
+      const {
+        clause: questionsChannelClause,
+        paramIndex: questionsChannelParamIndex,
+      } = buildChannelFilterClause("q.channel", telemetryState, queryParams, 2);
+      const {
+        clause: feedbackChannelClause,
+        paramIndex: feedbackChannelParamIndex,
+      } = buildChannelFilterClause("f.channel", telemetryState, queryParams, questionsChannelParamIndex);
+      const {
+        clause: errorsChannelClause,
+      } = buildChannelFilterClause("e.channel", telemetryState, queryParams, feedbackChannelParamIndex);
 
       const query = {
         text: `
-          WITH user_stats AS (
+          WITH filtered_questions AS (
+            SELECT q.fingerprint_id, q.sid, q.uid, q.ets
+            FROM questions q
+            WHERE q.answertext IS NOT NULL
+              AND q.fingerprint_id IS NOT NULL
+              AND q.ets >= $1 AND q.ets <= $2
+              AND ${questionsChannelClause}
+          ),
+          filtered_feedback AS (
+            SELECT f.fingerprint_id, f.sid, f.uid, f.ets
+            FROM feedback f
+            WHERE f.fingerprint_id IS NOT NULL
+              AND f.ets >= $1 AND f.ets <= $2
+              AND ${feedbackChannelClause}
+          ),
+          filtered_errors AS (
+            SELECT e.fingerprint_id, e.sid, e.uid, e.ets
+            FROM errordetails e
+            WHERE e.fingerprint_id IS NOT NULL
+              AND e.ets >= $1 AND e.ets <= $2
+              AND ${errorsChannelClause}
+          ),
+          user_stats AS (
             SELECT
-              ( SELECT COUNT(DISTINCT fingerprint_id) from users
-                WHERE fingerprint_id is not null and DATE(first_seen_at) >= DATE($3)
-                  AND DATE(first_seen_at) <= DATE($4)
-              ) AS new_users,
-              ( SELECT COUNT(DISTINCT q.fingerprint_id) from questions q
-                INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
-                WHERE q.fingerprint_id IS NOT NULL
-                  AND q.ets >= $1 AND q.ets <= $2
-                  AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
-              ) AS returning_users
+              COUNT(DISTINCT CASE
+                WHEN DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
+                 AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+                THEN fq.fingerprint_id
+              END) AS new_users,
+              COUNT(DISTINCT CASE
+                WHEN DATE(TO_TIMESTAMP(fq.ets / 1000)) != DATE(u.first_seen_at)
+                THEN fq.fingerprint_id
+              END) AS returning_users
+            FROM filtered_questions fq
+            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
           ),
           session_stats AS (
             WITH combined_sessions AS (
-              SELECT sid, fingerprint_id AS uid, ets FROM questions
-              WHERE sid IS NOT NULL AND answertext IS NOT NULL AND fingerprint_id IS NOT NULL
-                AND ets >= $1 AND ets <= $2
+              SELECT sid, fingerprint_id AS uid, ets FROM filtered_questions
+              WHERE sid IS NOT NULL AND uid IS NOT NULL
               UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM feedback
-              WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL
-                AND ets >= $1 AND ets <= $2
+              SELECT sid, fingerprint_id AS uid, ets FROM filtered_feedback
+              WHERE sid IS NOT NULL AND uid IS NOT NULL
               UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM errordetails
-              WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL
-                AND ets >= $1 AND ets <= $2
+              SELECT sid, fingerprint_id AS uid, ets FROM filtered_errors
+              WHERE sid IS NOT NULL AND uid IS NOT NULL
             )
             SELECT COUNT(*) AS total_sessions
             FROM (SELECT sid, uid FROM combined_sessions GROUP BY sid, uid) session_groups
           ),
           question_stats AS (
             SELECT COUNT(*) AS total_questions
-            FROM questions
-            WHERE answertext IS NOT NULL AND fingerprint_id IS NOT NULL
-              AND ets >= $1 AND ets <= $2
+            FROM filtered_questions
           ),
           feedback_stats AS (
             SELECT
               COUNT(*) AS total_feedback,
               COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
               COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-            FROM feedback
-            WHERE feedbacktext IS NOT NULL
-              AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
-                   OR COALESCE(feedback_source, 'chat') = 'voice')
-              AND ets >= $1 AND ets <= $2
+            FROM feedback f
+            WHERE f.feedbacktext IS NOT NULL
+              AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
+                   OR COALESCE(f.feedback_source, 'chat') = 'voice')
+              AND f.ets >= $1 AND f.ets <= $2
+              AND ${feedbackChannelClause}
           )
           SELECT
             (us.new_users + us.returning_users) AS total_users,
@@ -369,8 +424,6 @@ const getDashboardStats = async (req, res) => {
         values: [
           startTimestamp,
           endTimestamp,
-          new Date(startTimestamp),
-          new Date(endTimestamp),
         ],
       };
 
@@ -538,9 +591,21 @@ const getLangfuseQuestionsTree = async (req, res) => {
   }
 };
 
+const getDashboardStatsUnified = async (req, res) => {
+  if (!req.telemetryState?.capabilities?.unifiedMetrics) {
+    return res.status(403).json({
+      success: false,
+      error: "Unified dashboard metrics are not available for the requested state",
+    });
+  }
+
+  return getDashboardStats(req, res);
+};
+
 module.exports = {
   getUserLoginAnalytics,
   getDashboardStats,
+  getDashboardStatsUnified,
   getUserGraph,
   getLangfuseQuestionsTree,
 };
