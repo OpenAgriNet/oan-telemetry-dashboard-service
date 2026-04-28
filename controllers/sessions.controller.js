@@ -1,14 +1,17 @@
 const pool = require('../services/db');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 const { mvExists } = require('../utils/mvHealth');
+const { buildChannelFilterClause } = require('../utils/stateAccess');
 
-async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC', pagination = true) {
+async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC', pagination = true, telemetryState = null) {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
+    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
+
     // Try MV-first path: mv_sessions_daily has one row per (sid, uid) session
     // with pre-computed last_ets + question_count, so no UNION is needed.
-    if (await mvExists('mv_sessions_daily')) {
+    if (await mvExists('mv_sessions_daily') && mvStateClause === "1=1") {
         try {
             const params = [];
             let idx = 0;
@@ -78,6 +81,12 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     const queryParams = [];
     let paramIndex = 0;
 
+    const {
+        clause: channelClause,
+        paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+
     if (startTimestamp !== null) {
         paramIndex++;
         dateConditions += ` AND ets >= $${paramIndex}`;
@@ -99,14 +108,17 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
             SELECT sid, fingerprint_id as uid, questiontext, ets
             FROM questions
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+              AND ${channelClause}
             UNION ALL
             SELECT sid, fingerprint_id as uid, NULL as questiontext, ets
             FROM feedback
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
+              AND ${channelClause}
             UNION ALL
             SELECT sid, fingerprint_id as uid, NULL as questiontext, ets
             FROM errordetails
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
+              AND ${channelClause}
         )
         SELECT sid as session_id, uid as username,
                COUNT(questiontext) as question_count,
@@ -141,11 +153,12 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     return result.rows;
 }
 
-async function getTotalSessionsCount(search = '', startDate = null, endDate = null) {
+async function getTotalSessionsCount(search = '', startDate = null, endDate = null, telemetryState = null) {
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
 
     // MV-first: just count rows in mv_sessions_daily that match the filter.
-    if (await mvExists('mv_sessions_daily')) {
+    if (await mvExists('mv_sessions_daily') && mvStateClause === "1=1") {
         try {
             const params = [];
             const conditions = [];
@@ -180,6 +193,11 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
     let dateConditions = '';
     const queryParams = [];
     let paramIndex = 0;
+    const {
+        clause: channelClause,
+        paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
     if (startTimestamp !== null) {
         paramIndex++;
         dateConditions += ` AND ets >= $${paramIndex}`;
@@ -198,12 +216,15 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
         WITH combined_sessions AS (
             SELECT sid, fingerprint_id as uid, questiontext, ets FROM questions
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+              AND ${channelClause}
             UNION ALL
             SELECT sid, fingerprint_id as uid, NULL as questiontext, ets FROM feedback
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL ${dateConditions}
+              AND ${channelClause}
             UNION ALL
             SELECT sid, fingerprint_id as uid, NULL as questiontext, ets FROM errordetails
             WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL${dateConditions}
+              AND ${channelClause}
         ),
         session_groups AS (
             SELECT sid, uid, COUNT(questiontext) as question_count, MAX(ets) as session_time
@@ -254,6 +275,7 @@ function formatSessionData(row) {
 
 const getSessions = async (req, res) => {
     try {
+        const telemetryState = req.telemetryState;
         // Extract and sanitize pagination parameters from query string
         const pagination = req.query.pagination !== 'false';
         const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -290,8 +312,8 @@ const getSessions = async (req, res) => {
 
         // Fetch paginated sessions data and total count
         const [sessionsData, totalCount] = await Promise.all([
-            fetchSessionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder, pagination),
-            getTotalSessionsCount(search, startDate, endDate)
+            fetchSessionsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder, pagination, telemetryState),
+            getTotalSessionsCount(search, startDate, endDate, telemetryState)
         ]);
 
         const formattedData = sessionsData.map(formatSessionData);
@@ -350,6 +372,7 @@ const getSessions = async (req, res) => {
 // Get single session details by session ID with date filtering
 const getSessionById = async (req, res) => {
     try {
+        const telemetryState = req.telemetryState;
         const { sessionId } = req.params;
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
@@ -387,6 +410,12 @@ const getSessionById = async (req, res) => {
             queryParams.push(endTimestamp);
         }
 
+        const {
+            clause: channelClause,
+            paramIndex: channelParamIndex,
+        } = buildChannelFilterClause('channel', telemetryState, queryParams, paramIndex);
+        paramIndex = channelParamIndex;
+
         // Get session details with all related data and date filtering
         const query = {
             text: `
@@ -403,6 +432,7 @@ const getSessionById = async (req, res) => {
                         'question' as type
                     FROM questions
                     WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
+                      AND ${channelClause}
                 ),
                 session_feedback AS (
                     SELECT 
@@ -417,6 +447,7 @@ const getSessionById = async (req, res) => {
                         'feedback' as type
                     FROM feedback
                     WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
+                      AND ${channelClause}
                 ),
                 session_errors AS (
                     SELECT 
@@ -431,6 +462,7 @@ const getSessionById = async (req, res) => {
                         'error' as type
                     FROM errordetails
                     WHERE sid = $1${dateConditions}
+                      AND ${channelClause}
                 )
                 SELECT * FROM session_questions
                 UNION ALL
@@ -512,6 +544,7 @@ const getSessionById = async (req, res) => {
 // Get sessions by user ID with date filtering
 const getSessionsByUserId = async (req, res) => {
     try {
+        const telemetryState = req.telemetryState;
         const { userId } = req.params;
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -539,21 +572,34 @@ const getSessionsByUserId = async (req, res) => {
         let dateConditions = '';
         const queryParams = [userId.trim()];
         const countParams = [userId.trim()];
-        let paramIndex = 1;
+        let queryParamIndex = 1;
+        let countParamIndex = 1;
 
         if (startTimestamp !== null) {
-            paramIndex++;
-            dateConditions += ` AND ets >= $${paramIndex}`;
+            queryParamIndex++;
+            countParamIndex++;
+            dateConditions += ` AND ets >= $${queryParamIndex}`;
             queryParams.push(startTimestamp);
             countParams.push(startTimestamp);
         }
 
         if (endTimestamp !== null) {
-            paramIndex++;
-            dateConditions += ` AND ets <= $${paramIndex}`;
+            queryParamIndex++;
+            countParamIndex++;
+            dateConditions += ` AND ets <= $${queryParamIndex}`;
             queryParams.push(endTimestamp);
             countParams.push(endTimestamp);
         }
+
+        const {
+            clause: queryChannelClause,
+            paramIndex: queryChannelParamIndex,
+        } = buildChannelFilterClause('channel', telemetryState, queryParams, queryParamIndex);
+        queryParamIndex = queryChannelParamIndex;
+
+        const {
+            clause: countChannelClause,
+        } = buildChannelFilterClause('channel', telemetryState, countParams, countParamIndex);
 
         // Add pagination params
         queryParams.push(limit, offset);
@@ -569,6 +615,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM questions
                     WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
+                      AND ${queryChannelClause}
                     UNION ALL
                     SELECT 
                         sid,
@@ -577,6 +624,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM feedback
                     WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                      AND ${queryChannelClause}
                     UNION ALL
                     SELECT 
                         sid,
@@ -585,6 +633,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM errordetails
                     WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                      AND ${queryChannelClause}
                 )
                 SELECT 
                     sid as session_id,
@@ -594,7 +643,7 @@ const getSessionsByUserId = async (req, res) => {
                 FROM combined_sessions
                 GROUP BY sid, uid
                 ORDER BY session_time DESC
-                LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
+                LIMIT $${queryParamIndex + 1} OFFSET $${queryParamIndex + 2}
             `,
             values: queryParams,
         };
@@ -610,6 +659,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM questions
                     WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
+                      AND ${countChannelClause}
                     UNION ALL
                     SELECT 
                         sid,
@@ -618,6 +668,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM feedback
                     WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                      AND ${countChannelClause}
                     UNION ALL
                     SELECT 
                         sid,
@@ -626,6 +677,7 @@ const getSessionsByUserId = async (req, res) => {
                         ets
                     FROM errordetails
                     WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                      AND ${countChannelClause}
                 )
                 SELECT COUNT(DISTINCT sid) as total
                 FROM combined_sessions
@@ -679,6 +731,7 @@ const getSessionsByUserId = async (req, res) => {
 // Get comprehensive session statistics with date filtering
 const getSessionStats = async (req, res) => {
     try {
+        const telemetryState = req.telemetryState;
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
@@ -708,10 +761,12 @@ const getSessionStats = async (req, res) => {
             queryParams.push(endTimestamp);
         }
 
+        const mvStateClause = buildChannelFilterClause('channel', telemetryState, [], 0).clause;
+
         // MV-first: count rows in mv_sessions_daily.
         let total = null;
         let source = 'base';
-        if (await mvExists('mv_sessions_daily')) {
+        if (await mvExists('mv_sessions_daily') && mvStateClause === '1=1') {
             try {
                 const params = [];
                 const conds = [];
@@ -737,6 +792,13 @@ const getSessionStats = async (req, res) => {
                 console.warn('[SessionStats] MV query failed, falling back:', mvErr.message);
             }
         }
+
+        const {
+            clause: channelClause,
+            paramIndex: channelParamIndex,
+        } = buildChannelFilterClause('channel', telemetryState, queryParams, paramIndex);
+        paramIndex = channelParamIndex;
+        dateFilter += ` AND ${channelClause}`;
 
         if (total == null) {
             const query = {
@@ -782,6 +844,7 @@ const getSessionStats = async (req, res) => {
 // Get sessions graph data for time-series visualization
 const getSessionsGraph = async (req, res) => {
     try {
+        const telemetryState = req.telemetryState;
         const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
         const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
         const granularity = req.query.granularity ? String(req.query.granularity).trim() : 'daily';
@@ -839,6 +902,14 @@ const getSessionsGraph = async (req, res) => {
             queryParams.push(`%${search.trim()}%`);
         }
 
+        const {
+            clause: channelClause,
+            paramIndex: channelParamIndex,
+        } = buildChannelFilterClause('channel', telemetryState, queryParams, paramIndex);
+        paramIndex = channelParamIndex;
+
+        const mvStateClause = buildChannelFilterClause('channel', telemetryState, [], 0).clause;
+
         // Exclude future sessions (ets > now)
         let futureFilter = '';
         paramIndex++;
@@ -877,7 +948,7 @@ const getSessionsGraph = async (req, res) => {
         // MV fast-path: daily granularity without search uses mv_sessions_daily.
         let result = null;
         let source = 'base';
-        if (granularity === 'daily' && !search && await mvExists('mv_sessions_daily')) {
+        if (granularity === 'daily' && !search && mvStateClause === '1=1' && await mvExists('mv_sessions_daily')) {
             try {
                 const mvParams = [];
                 const conds = [];
@@ -920,18 +991,21 @@ const getSessionsGraph = async (req, res) => {
                             ${dateFormat} as date, 'question' as activity_type
                         FROM questions
                         WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                          AND ${channelClause}
                         UNION ALL
                         SELECT sid, fingerprint_id as uid, ets,
                             ${dateGrouping} as time_bucket,
                             ${dateFormat} as date, 'feedback' as activity_type
                         FROM feedback
                         WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                          AND ${channelClause}
                         UNION ALL
                         SELECT sid, fingerprint_id as uid, ets,
                             ${dateGrouping} as time_bucket,
                             ${dateFormat} as date, 'error' as activity_type
                         FROM errordetails
                         WHERE sid IS NOT NULL AND fingerprint_id IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                          AND ${channelClause}
                     ),
                     session_aggregates AS (
                         SELECT

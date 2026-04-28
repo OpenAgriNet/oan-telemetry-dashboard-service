@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const errorController = require('../controllers/error.controller');
+const { requireStateAccess } = require("../utils/stateAccess");
+
+router.use(requireStateAccess);
 
 // Route for getting all errors with pagination
 router.get('/errors', errorController.getAllErrors);

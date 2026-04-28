@@ -6,6 +6,7 @@ const {
   getCurrentTimestamp,
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 // Simple in-memory cache for user stats
 const userStatsCache = new Map();
@@ -19,11 +20,14 @@ async function fetchUsersFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+  const telemetryStateId = telemetryState?.id || "all";
+  const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
   // Create cache key for this specific query
-  const cacheKey = `users_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}_${sortBy}_${sortOrder}`;
+  const cacheKey = `users_${telemetryStateId}_${page}_${limit}_${search}_${startTimestamp}_${endTimestamp}_${sortBy}_${sortOrder}`;
   const cachedResult = userStatsCache.get(cacheKey);
 
   if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
@@ -33,7 +37,7 @@ async function fetchUsersFromDB(
   // MV fast-path: no date filter + rollup MV available.
   // The old 4-CTE query is only meaningful when a date window is supplied;
   // the "show me all users" case can be served directly from mv_user_rollup.
-  if (startTimestamp === null && endTimestamp === null && await mvExists('mv_user_rollup')) {
+  if (startTimestamp === null && endTimestamp === null && mvStateClause === "1=1" && await mvExists('mv_user_rollup')) {
     try {
       const params = [];
       let idx = 0;
@@ -98,6 +102,13 @@ async function fetchUsersFromDB(
   // Build WHERE conditions efficiently
   let whereConditions = ["uid IS NOT NULL", "answertext IS NOT NULL"];
 
+  const {
+    clause: baseChannelClause,
+    paramIndex: baseChannelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = baseChannelParamIndex;
+  whereConditions.push(baseChannelClause);
+
   if (startTimestamp !== null) {
     paramIndex++;
     whereConditions.push(`ets >= $${paramIndex}`);
@@ -122,6 +133,18 @@ async function fetchUsersFromDB(
   }
 
   const baseWhere = whereConditions.join(" AND ");
+
+  const {
+    clause: userQuestionsChannelClause,
+    paramIndex: userQuestionsChannelParamIndex,
+  } = buildChannelFilterClause("q.channel", telemetryState, queryParams, paramIndex);
+  paramIndex = userQuestionsChannelParamIndex;
+
+  const {
+    clause: userFeedbackChannelClause,
+    paramIndex: userFeedbackChannelParamIndex,
+  } = buildChannelFilterClause("f.channel", telemetryState, queryParams, paramIndex);
+  paramIndex = userFeedbackChannelParamIndex;
 
   //  WITH base_users AS (
   //         SELECT uid, ets
@@ -153,6 +176,7 @@ async function fetchUsersFromDB(
             ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ""}
             ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ""}
             AND q.ets <= ${getCurrentTimestamp()}
+            AND ${userQuestionsChannelClause}
             GROUP BY bu.uid
         ),
         latest_sessions AS (
@@ -164,6 +188,7 @@ async function fetchUsersFromDB(
             ${startTimestamp ? `AND q.ets >= ${startTimestamp}` : ""}
             ${endTimestamp ? `AND q.ets <= ${endTimestamp}` : ""}
             AND q.ets <= ${getCurrentTimestamp()}
+            AND ${userQuestionsChannelClause}
             ORDER BY bu.uid, q.ets DESC
         ),
         user_feedback AS (
@@ -177,6 +202,7 @@ async function fetchUsersFromDB(
             ${startTimestamp ? `AND f.ets >= ${startTimestamp}` : ""}
             ${endTimestamp ? `AND f.ets <= ${endTimestamp}` : ""}
             AND f.ets <= ${getCurrentTimestamp()}
+            AND ${userFeedbackChannelClause}
             GROUP BY bu.uid
         )
         SELECT 
@@ -243,11 +269,14 @@ async function getTotalUsersCount(
   search = "",
   startDate = null,
   endDate = null,
+  telemetryState = null,
 ) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+  const telemetryStateId = telemetryState?.id || "all";
+  const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
 
   // Create cache key for count query
-  const cacheKey = `count_${search}_${startTimestamp}_${endTimestamp}`;
+  const cacheKey = `count_${telemetryStateId}_${search}_${startTimestamp}_${endTimestamp}`;
   const cachedResult = userStatsCache.get(cacheKey);
 
   if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
@@ -255,7 +284,7 @@ async function getTotalUsersCount(
   }
 
   // MV fast-path for the no-date-filter case.
-  if (startTimestamp === null && endTimestamp === null && await mvExists('mv_user_rollup')) {
+  if (startTimestamp === null && endTimestamp === null && mvStateClause === "1=1" && await mvExists('mv_user_rollup')) {
     try {
       const params = [];
       let where = '';
@@ -284,6 +313,13 @@ async function getTotalUsersCount(
 
   const queryParams = [];
   let paramIndex = 0;
+
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   // Add date range filtering
   if (startTimestamp !== null) {
@@ -395,6 +431,7 @@ const formatUserDataHandler = async (req, res) => {
 // Route handler for fetching users from DB endpoint
 const fetchUsersFromDBHandler = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
     const search = req.query.search ? String(req.query.search).trim() : "";
@@ -409,6 +446,9 @@ const fetchUsersFromDBHandler = async (req, res) => {
       search,
       startDate,
       endDate,
+      null,
+      "DESC",
+      telemetryState,
     );
 
     res.status(200).json({
@@ -432,13 +472,14 @@ const fetchUsersFromDBHandler = async (req, res) => {
 // Route handler for getting total users count endpoint
 const getTotalUsersCountHandler = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const search = req.query.search ? String(req.query.search).trim() : "";
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
-    const totalCount = await getTotalUsersCount(search, startDate, endDate);
+    const totalCount = await getTotalUsersCount(search, startDate, endDate, telemetryState);
 
     res.status(200).json({
       success: true,
@@ -462,6 +503,7 @@ const getTotalUsersCountHandler = async (req, res) => {
 
 const getUsers = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     // Extract and sanitize pagination parameters from query string
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
@@ -511,8 +553,9 @@ const getUsers = async (req, res) => {
         endDate,
         sortBy,
         sortOrder,
+        telemetryState,
       ),
-      getTotalUsersCount(search, startDate, endDate),
+      getTotalUsersCount(search, startDate, endDate, telemetryState),
     ]);
 
     const formattedData = usersData.map(formatUserData);
@@ -556,6 +599,7 @@ const getUsers = async (req, res) => {
 // Get single user details by username with date filtering
 const getUserByUsername = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const { username } = req.params;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
@@ -599,6 +643,18 @@ const getUserByUsername = async (req, res) => {
       queryParams.push(endTimestamp);
     }
 
+    const {
+      clause: questionsChannelClause,
+      paramIndex: questionsChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = questionsChannelParamIndex;
+
+    const {
+      clause: feedbackChannelClause,
+      paramIndex: feedbackChannelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = feedbackChannelParamIndex;
+
     // Get comprehensive user details with date filtering
     const query = {
       text: `
@@ -613,6 +669,7 @@ const getUserByUsername = async (req, res) => {
                         COUNT(DISTINCT channel) as channels_used
                     FROM questions
                     WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                      AND ${questionsChannelClause}
                     GROUP BY uid
                 ),
                 user_feedback AS (
@@ -623,6 +680,7 @@ const getUserByUsername = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
                     FROM feedback
                     WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                      AND ${feedbackChannelClause}
                     GROUP BY uid
                 ),
                 user_channels AS (
@@ -631,8 +689,10 @@ const getUserByUsername = async (req, res) => {
                         array_agg(DISTINCT channel) FILTER (WHERE channel IS NOT NULL) as channels
                     FROM (
                         SELECT uid, channel FROM questions WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                          AND ${questionsChannelClause}
                         UNION
                         SELECT uid, channel FROM feedback WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                          AND ${feedbackChannelClause}
                     ) combined
                     GROUP BY uid
                 )
@@ -690,6 +750,7 @@ const getUserByUsername = async (req, res) => {
 // Get user statistics and activity summary with date filtering
 const getUserStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -715,9 +776,12 @@ const getUserStats = async (req, res) => {
       "WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'";
     const queryParams = [];
     let paramIndex = 0;
+    let startParamIndex = null;
+    let endParamIndex = null;
 
     if (startTimestamp !== null) {
       paramIndex++;
+      startParamIndex = paramIndex;
       dateFilter += ` AND ets >= $${paramIndex}`;
       feedbackDateFilter += ` AND ets >= $${paramIndex}`;
       queryParams.push(startTimestamp);
@@ -725,21 +789,31 @@ const getUserStats = async (req, res) => {
 
     if (endTimestamp !== null) {
       paramIndex++;
+      endParamIndex = paramIndex;
       dateFilter += ` AND ets <= $${paramIndex}`;
       feedbackDateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
 
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
+    feedbackDateFilter += ` AND ${channelClause}`;
+
     // If date filtering is applied, use it for activity as well
     if (startTimestamp !== null || endTimestamp !== null) {
       activityDateFilter = "WHERE true";
-      if (startTimestamp !== null) {
-        activityDateFilter += ` AND ets >= $${paramIndex - 1}`;
+      if (startParamIndex !== null) {
+        activityDateFilter += ` AND ets >= $${startParamIndex}`;
       }
-      if (endTimestamp !== null) {
-        activityDateFilter += ` AND ets <= $${paramIndex}`;
+      if (endParamIndex !== null) {
+        activityDateFilter += ` AND ets <= $${endParamIndex}`;
       }
     }
+    activityDateFilter += ` AND ${channelClause}`;
 
     const query = {
       text: `
@@ -837,6 +911,7 @@ const getUserStats = async (req, res) => {
 // Get comprehensive session statistics with date filtering
 const getSessionStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -871,6 +946,13 @@ const getSessionStats = async (req, res) => {
       dateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
+
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
 
     const query = {
       text: `
@@ -986,6 +1068,7 @@ const getSessionStats = async (req, res) => {
 // Get comprehensive question statistics with date filtering
 const getQuestionStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -1020,6 +1103,13 @@ const getQuestionStats = async (req, res) => {
       dateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
+
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
 
     const query = {
       text: `
@@ -1140,6 +1230,7 @@ const getQuestionStats = async (req, res) => {
 // Get comprehensive feedback statistics with date filtering
 const getFeedbackStats = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -1174,6 +1265,13 @@ const getFeedbackStats = async (req, res) => {
       dateFilter += ` AND ets <= $${paramIndex}`;
       queryParams.push(endTimestamp);
     }
+
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+    dateFilter += ` AND ${channelClause}`;
 
     const query = {
       text: `
@@ -1311,6 +1409,7 @@ const getFeedbackStats = async (req, res) => {
 
 const getUserGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate
       ? String(req.query.startDate).trim()
       : null;
@@ -1365,6 +1464,14 @@ const getUserGraph = async (req, res) => {
       dateFilter += ` AND first_seen_at <= $${paramIndex}`;
       queryParams.push(new Date(endTimestamp));
     }
+
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("q.channel", telemetryState, queryParams, paramIndex);
+    paramIndex = channelParamIndex;
+
+    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
 
     // Add search filter if provided
     // if (search && search.trim() !== "") {
@@ -1454,7 +1561,7 @@ const getUserGraph = async (req, res) => {
     // mv_users_daily_returning_ist (IST-bucketed, pre-aggregated).
     let result = null;
     let source = 'base';
-    if (granularity === 'daily' && await mvExists('mv_users_daily_firstseen_ist') && await mvExists('mv_users_daily_returning_ist')) {
+    if (granularity === 'daily' && mvStateClause === "1=1" && await mvExists('mv_users_daily_firstseen_ist') && await mvExists('mv_users_daily_returning_ist')) {
       try {
         const mvParams = [];
         const conds = [];
@@ -1502,9 +1609,12 @@ const getUserGraph = async (req, res) => {
       const query = {
         text: `
           WITH user_buckets AS (
-            SELECT ${dateGrouping} AS bucket_date, fingerprint_id, first_seen_at
-            FROM users
-            WHERE fingerprint_id IS NOT NULL AND first_seen_at IS NOT NULL
+            SELECT ${dateGrouping} AS bucket_date, u.fingerprint_id, u.first_seen_at
+            FROM users u
+            INNER JOIN questions q ON q.fingerprint_id = u.fingerprint_id
+            WHERE u.fingerprint_id IS NOT NULL AND u.first_seen_at IS NOT NULL
+              AND q.answertext IS NOT NULL
+              AND ${channelClause}
             ${dateFilter}
           )
           SELECT

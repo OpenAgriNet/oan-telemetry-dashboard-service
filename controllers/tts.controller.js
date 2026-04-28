@@ -4,6 +4,7 @@ const {
   parseDateRange,
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 async function fetchTtsFromDB(
   page = 1,
@@ -13,6 +14,7 @@ async function fetchTtsFromDB(
   endDate = null,
   sortBy = null,
   sortOrder = "DESC",
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -38,6 +40,12 @@ async function fetchTtsFromDB(
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -83,7 +91,7 @@ async function fetchTtsFromDB(
   return result.rows;
 }
 
-async function getTtsCount(search = "", startDate = null, endDate = null) {
+async function getTtsCount(search = "", startDate = null, endDate = null, telemetryState = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   let query = `
@@ -94,6 +102,12 @@ async function getTtsCount(search = "", startDate = null, endDate = null) {
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -123,11 +137,21 @@ async function getTtsCount(search = "", startDate = null, endDate = null) {
   return parseInt(result.rows[0].total);
 }
 
-async function getTtsStats(startDate = null, endDate = null) {
+async function getTtsStats(startDate = null, endDate = null, telemetryState = null) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
+  const mvFilterParams = [startTimestamp, endTimestamp];
+  const {
+    clause: mvChannelClause,
+  } = buildChannelFilterClause("channel", telemetryState, mvFilterParams, 2);
+
   // MV-first via mv_tts_daily.
-  if (startTimestamp !== null && endTimestamp !== null && await mvExists('mv_tts_daily')) {
+  if (
+    startTimestamp !== null &&
+    endTimestamp !== null &&
+    await mvExists("mv_tts_daily") &&
+    mvChannelClause === "1=1"
+  ) {
     try {
       const mvRes = await pool.query(
         `SELECT
@@ -167,6 +191,12 @@ async function getTtsStats(startDate = null, endDate = null) {
 
   const queryParams = [];
   let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  query += ` AND ${channelClause}`;
 
   if (startTimestamp !== null) {
     paramIndex++;
@@ -216,6 +246,7 @@ function formatTtsRecord(row) {
 
 const getTts = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
     const search = req.query.search ? String(req.query.search).trim() : "";
@@ -243,9 +274,9 @@ const getTts = async (req, res) => {
     }
 
     const [rawData, totalCount, stats] = await Promise.all([
-      fetchTtsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder),
-      getTtsCount(search, startDate, endDate),
-      getTtsStats(startDate, endDate),
+      fetchTtsFromDB(page, limit, search, startDate, endDate, sortBy, sortOrder, telemetryState),
+      getTtsCount(search, startDate, endDate, telemetryState),
+      getTtsStats(startDate, endDate, telemetryState),
     ]);
 
     const formattedData = rawData.map(formatTtsRecord);

@@ -2,6 +2,7 @@ const pool = require("../services/db");
 
 const { parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
+const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 // List of devices (one row per distinct fingerprint_id in the window).
 // Uses questions + users join; this is cheap enough already. Keep it as-is.
@@ -10,15 +11,25 @@ async function fetchDevicesFromDB(
   limit = 10,
   search = "",
   startDate = null,
-  endDate = null
+  endDate = null,
+  telemetryState = null,
 ) {
   const offset = (page - 1) * limit;
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
   const params = [];
   let idx = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("q.channel", telemetryState, params, idx);
+  idx = channelParamIndex;
 
-  let where = [`q.fingerprint_id IS NOT NULL`];
+  let where = [
+    `q.fingerprint_id IS NOT NULL`,
+    `q.answertext IS NOT NULL`,
+    channelClause,
+  ];
 
   if (startTimestamp !== null) {
     idx++;
@@ -71,15 +82,54 @@ async function fetchDevicesFromDB(
 
 // Returns new/returning/total device counts for a date range.
 // Prefer the IST-bucketed MVs so this is an O(days) scan, not O(users×questions).
-async function getTotalAndNewDevicesCount(search = "", startDate = null, endDate = null) {
+async function getTotalAndNewDevicesCount(
+  search = "",
+  startDate = null,
+  endDate = null,
+  telemetryState = null,
+) {
   const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+  const params = [];
+  let paramIndex = 0;
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("q.channel", telemetryState, params, paramIndex);
+  paramIndex = channelParamIndex;
+
+  const periodConditions = [];
+  if (startTimestamp !== null) {
+    paramIndex += 1;
+    periodConditions.push(`q.ets >= $${paramIndex}`);
+    params.push(startTimestamp);
+  }
+  if (endTimestamp !== null) {
+    paramIndex += 1;
+    periodConditions.push(`q.ets <= $${paramIndex}`);
+    params.push(endTimestamp);
+  }
+  if (search && search.trim()) {
+    paramIndex += 1;
+    periodConditions.push(`q.fingerprint_id ILIKE $${paramIndex}`);
+    params.push(`%${search.trim()}%`);
+  }
+
+  const periodFilter =
+    periodConditions.length > 0 ? ` AND ${periodConditions.join(" AND ")}` : "";
 
   const [hasNewMV, hasReturningMV] = await Promise.all([
     mvExists('mv_users_daily_firstseen_ist'),
     mvExists('mv_users_daily_returning_ist'),
   ]);
 
-  if (hasNewMV && hasReturningMV && startTimestamp !== null && endTimestamp !== null) {
+  if (
+    hasNewMV &&
+    hasReturningMV &&
+    startTimestamp !== null &&
+    endTimestamp !== null &&
+    channelClause === "1=1"
+  ) {
     try {
       const result = await pool.query(
         `
@@ -118,29 +168,39 @@ async function getTotalAndNewDevicesCount(search = "", startDate = null, endDate
 
   // Fallback: legacy base query
   const query = `
-    WITH new_devices AS (
-      SELECT COUNT(DISTINCT fingerprint_id) AS new
-      FROM users
-      WHERE fingerprint_id IS NOT NULL
-        AND DATE(first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-        AND DATE(first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
-    ),
-    returning_devices AS (
-      SELECT COUNT(DISTINCT q.fingerprint_id) AS returning
+    WITH first_seen AS (
+      SELECT
+        q.fingerprint_id,
+        MIN(q.ets) AS first_seen_ets
       FROM questions q
-      INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
       WHERE q.fingerprint_id IS NOT NULL
-        AND q.ets >= $1::bigint AND q.ets <= $2::bigint
-        AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
+        AND q.answertext IS NOT NULL
+        AND ${channelClause}
+      GROUP BY q.fingerprint_id
+    ),
+    period_users AS (
+      SELECT
+        q.fingerprint_id,
+        MIN(q.ets) AS period_first_seen_ets
+      FROM questions q
+      WHERE q.fingerprint_id IS NOT NULL
+        AND q.answertext IS NOT NULL
+        AND ${channelClause}
+        ${periodFilter}
+      GROUP BY q.fingerprint_id
     )
     SELECT
-      new_devices.new AS new_users,
-      returning_devices.returning AS returning_users,
-      (new_devices.new + returning_devices.returning) AS total_users
-    FROM new_devices CROSS JOIN returning_devices;
+      COUNT(DISTINCT pu.fingerprint_id) AS total_users,
+      COUNT(DISTINCT CASE
+        WHEN fs.first_seen_ets = pu.period_first_seen_ets THEN pu.fingerprint_id
+      END) AS new_users,
+      COUNT(DISTINCT CASE
+        WHEN fs.first_seen_ets < pu.period_first_seen_ets THEN pu.fingerprint_id
+      END) AS returning_users
+    FROM period_users pu
+    INNER JOIN first_seen fs ON fs.fingerprint_id = pu.fingerprint_id;
   `;
-  const values = [startTimestamp ?? null, endTimestamp ?? null];
-  const result = await pool.query(query, values);
+  const result = await pool.query(query, params);
   const row = result.rows[0];
   return {
     newUsers: Number(row.new_users) || 0,
@@ -152,6 +212,7 @@ async function getTotalAndNewDevicesCount(search = "", startDate = null, endDate
 
 const getDevices = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
     const search = req.query.search ? String(req.query.search).trim() : "";
@@ -167,8 +228,8 @@ const getDevices = async (req, res) => {
     }
 
     const [devices, counts] = await Promise.all([
-      fetchDevicesFromDB(page, limit, search, startDate, endDate),
-      getTotalAndNewDevicesCount(search, startDate, endDate),
+      fetchDevicesFromDB(page, limit, search, startDate, endDate, telemetryState),
+      getTotalAndNewDevicesCount(search, startDate, endDate, telemetryState),
     ]);
 
     res.status(200).json({
@@ -208,6 +269,7 @@ const getDevices = async (req, res) => {
 // back to the legacy path.
 const getDeviceGraph = async (req, res) => {
   try {
+    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
     const granularity = req.query.granularity ? String(req.query.granularity).trim() : "daily";
@@ -231,7 +293,13 @@ const getDeviceGraph = async (req, res) => {
     let graphData;
     let source = 'base';
 
-    if (granularity === 'daily') {
+    const baseParams = [];
+    const {
+      clause: channelClause,
+      paramIndex: channelParamIndex,
+    } = buildChannelFilterClause("q.channel", telemetryState, baseParams, 0);
+
+    if (granularity === 'daily' && channelClause === '1=1') {
       const [hasNewMV, hasReturningMV] = await Promise.all([
         mvExists('mv_users_daily_firstseen_ist'),
         mvExists('mv_users_daily_returning_ist'),
@@ -326,8 +394,14 @@ const getDeviceGraph = async (req, res) => {
               COUNT(DISTINCT u.fingerprint_id) AS new_users
             FROM users u
             WHERE u.fingerprint_id IS NOT NULL
-              AND DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-              AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+              ${channelClause === '1=1' ? '' : `AND EXISTS (
+                SELECT 1 FROM questions q
+                WHERE q.fingerprint_id = u.fingerprint_id
+                  AND q.answertext IS NOT NULL
+                  AND ${channelClause}
+              )`}
+              AND DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($${baseParams.length + 1}::bigint / 1000))
+              AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($${baseParams.length + 2}::bigint / 1000))
             GROUP BY bucket_date
           ),
           returning_users_by_bucket AS (
@@ -337,7 +411,8 @@ const getDeviceGraph = async (req, res) => {
             FROM questions q
             INNER JOIN users u ON q.fingerprint_id = u.fingerprint_id
             WHERE q.fingerprint_id IS NOT NULL
-              AND q.ets >= $1::bigint AND q.ets <= $2::bigint
+              AND ${channelClause}
+              AND q.ets >= $${baseParams.length + 1}::bigint AND q.ets <= $${baseParams.length + 2}::bigint
               AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
             GROUP BY bucket_date
           ),
@@ -358,7 +433,7 @@ const getDeviceGraph = async (req, res) => {
           FROM merged
           ORDER BY bucket_date ASC;
         `,
-        values: [startTimestamp ?? null, endTimestamp ?? null],
+        values: [...baseParams, startTimestamp ?? null, endTimestamp ?? null],
       };
 
       const result = await pool.query(query);
