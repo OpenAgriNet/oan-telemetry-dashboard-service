@@ -145,63 +145,63 @@ const getDashboardStats = async (req, res) => {
     queryParams.push(Date.now());
     futureFilter = ` AND ets <= $${paramIndex}`;
 
+    // Users and Sessions are derived from the same universe of completed
+    // interactions (an answered question, a feedback, or an error). The chat
+    // backend currently writes uid='guest' on the response event while the
+    // submit event carries a phone-derived id; for each session we pick the
+    // most specific identity available (phone over 'guest'), falling back to
+    // sid so 'guest'-only sessions are not collapsed into a single user.
+    // Once the upstream uid is fixed the COALESCE becomes a no-op.
     const query = {
       text: `
-        WITH user_stats AS (
-          SELECT
-            COUNT(DISTINCT uid) AS total_users,
-            COUNT(DISTINCT CASE WHEN COALESCE(is_new, 0) = 1 THEN uid END) AS new_users
+        WITH combined_sessions AS (
+          SELECT sid FROM questions
+          WHERE sid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter} ${futureFilter}
+          UNION ALL
+          SELECT sid FROM feedback
+          WHERE sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
+          UNION ALL
+          SELECT sid FROM errordetails
+          WHERE sid IS NOT NULL ${errordetailsDateFilter} ${futureFilter}
+        ),
+        question_per_sid AS (
+          SELECT sid,
+                 MAX(NULLIF(uid, 'guest')) AS phone_uid,
+                 MAX(COALESCE(is_new, 0)) AS is_new
           FROM questions
-          WHERE uid IS NOT NULL ${questionDateFilter}
+          WHERE sid IS NOT NULL AND uid IS NOT NULL ${questionDateFilter} ${futureFilter}
+          GROUP BY sid
+        ),
+        session_identity AS (
+          SELECT cs.sid,
+                 COALESCE(qps.phone_uid, cs.sid) AS user_id,
+                 COALESCE(qps.is_new, 0) AS is_new
+          FROM (SELECT DISTINCT sid FROM combined_sessions) cs
+          LEFT JOIN question_per_sid qps USING (sid)
+        ),
+        user_stats AS (
+          SELECT
+            COUNT(DISTINCT user_id) AS total_users,
+            COUNT(DISTINCT CASE WHEN is_new = 1 THEN user_id END) AS new_users
+          FROM session_identity
         ),
         session_stats AS (
-          -- combine all session-related rows from questions, feedback and errordetails
-          WITH combined_sessions AS (
-            SELECT
-              sid,
-              uid,
-              questiontext,
-              ets
-            FROM questions
-            WHERE sid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter} ${futureFilter}
-            UNION ALL
-            SELECT
-              sid,
-              uid,
-              NULL AS questiontext,
-              ets
-            FROM feedback
-            WHERE sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
-            UNION ALL
-            SELECT
-              sid,
-              uid,
-              NULL AS questiontext,
-              ets
-            FROM errordetails
-            WHERE sid IS NOT NULL ${errordetailsDateFilter} ${futureFilter}
-          )
-          SELECT COUNT(*) AS total_sessions
-          FROM (
-            SELECT sid, uid, COUNT(questiontext) AS question_count, MAX(ets) AS session_time
-            FROM combined_sessions
-            GROUP BY sid, uid
-          ) session_groups
+          SELECT COUNT(*) AS total_sessions FROM session_identity
         ),
         question_stats AS (
           SELECT COUNT(*) AS total_questions
           FROM questions
-          WHERE uid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter}
+          WHERE uid IS NOT NULL AND answertext IS NOT NULL ${questionDateFilter} ${futureFilter}
         ),
         feedback_stats AS (
-          SELECT 
+          SELECT
             COUNT(*) AS total_feedback,
             COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
             COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
           FROM feedback
-          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL ${feedbackDateFilter}
+          WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL ${feedbackDateFilter} ${futureFilter}
         )
-        SELECT 
+        SELECT
           us.total_users,
           us.new_users,
           ss.total_sessions,
