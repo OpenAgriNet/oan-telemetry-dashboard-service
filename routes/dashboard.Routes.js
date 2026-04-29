@@ -9,6 +9,7 @@ router.get('/dashboard/user-analytics', dashboardController.getUserLoginAnalytic
 
 // Route for getting state-specific dashboard statistics (Chat Metrics)
 router.get('/dashboard/stats', dashboardController.getDashboardStats);
+router.get('/dashboard/downloads', dashboardController.getAppDownloads);
 
 // Route for getting unified dashboard statistics (always Bharat Vistaar)
 router.get('/dashboard/stats-unified', dashboardController.getDashboardStatsUnified);
