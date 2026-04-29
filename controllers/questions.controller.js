@@ -6,6 +6,7 @@ const {
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const { epochMsToIstDate, epochMsDateTruncIst } = require("../utils/istSql");
 
 async function fetchQuestionsFromDB(
   page = 1,
@@ -734,13 +735,13 @@ const getQuestionStats = async (req, res) => {
           clause: mvChannelClause,
         } = buildChannelFilterClause("channel", telemetryState, mvParams, 2);
         const mvRes = await pool.query(
-          `SELECT COALESCE(SUM(total_questions), 0)::bigint AS total_questions
-           FROM mv_question_answer_rates
-           WHERE question_date >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-             AND question_date <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+           `SELECT COALESCE(SUM(total_questions), 0)::bigint AS total_questions
+            FROM mv_question_answer_rates
+            WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+             AND question_date <= ${epochMsToIstDate("$2::bigint")}
              AND ${mvChannelClause}`,
-          mvParams
-        );
+           mvParams
+         );
         total = parseInt(mvRes.rows[0].total_questions, 10) || 0;
         source = 'mv';
       } catch (mvErr) {
@@ -760,10 +761,10 @@ const getQuestionStats = async (req, res) => {
         {
           text: `SELECT COUNT(*) as total_questions
                  FROM questions
-                 WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}`,
-          values: queryParams,
-        }
-      );
+                 WHERE fingerprint_id IS NOT NULL AND answertext IS NOT NULL ${dateFilter}`,
+           values: queryParams,
+         }
+       );
       total = parseInt(result.rows[0].total_questions) || 0;
     }
 
@@ -872,28 +873,28 @@ const getQuestionsGraph = async (req, res) => {
 
     switch (granularity) {
       case "hourly":
-        dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
+        dateGrouping = epochMsDateTruncIst("hour", "ets");
         dateFormat =
-          "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+          `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD HH24:00')`;
         orderBy = "hour_bucket";
         break;
       case "weekly":
-        dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
+        dateGrouping = epochMsDateTruncIst("week", "ets");
         dateFormat =
-          "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+          `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
         orderBy = "week_bucket";
         break;
       case "monthly":
-        dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
+        dateGrouping = epochMsDateTruncIst("month", "ets");
         dateFormat =
-          "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+          `TO_CHAR(${dateGrouping}, 'YYYY-MM')`;
         orderBy = "month_bucket";
         break;
       case "daily":
       default:
-        dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
+        dateGrouping = epochMsDateTruncIst("day", "ets");
         dateFormat =
-          "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+          `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
         orderBy = "day_bucket";
         break;
     }
@@ -907,11 +908,11 @@ const getQuestionsGraph = async (req, res) => {
         const conds = [];
         if (startTimestamp !== null) {
           mvParams.push(startTimestamp);
-          conds.push(`question_date >= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000))`);
+          conds.push(`question_date >= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         if (endTimestamp !== null) {
           mvParams.push(endTimestamp);
-          conds.push(`question_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000))`);
+          conds.push(`question_date <= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         const {
           clause: mvChannelClause,
@@ -952,8 +953,7 @@ const getQuestionsGraph = async (req, res) => {
                         ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day`
                         : "NULL as hour_of_day"}
                   FROM questions
-                  WHERE questiontext IS NOT NULL
-                      AND answertext IS NOT NULL
+                  WHERE answertext IS NOT NULL
                       AND fingerprint_id IS NOT NULL
                       AND ets IS NOT NULL
                       ${dateFilter}

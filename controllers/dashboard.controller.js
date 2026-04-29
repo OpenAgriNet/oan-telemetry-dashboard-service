@@ -2,6 +2,11 @@ const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const {
+  epochMsToIstDate,
+  epochMsToIstTimestamp,
+  utcTimestampToIstDate,
+} = require("../utils/istSql");
 
 /**
  * GET /dashboard/user-analytics?granularity=daily|hourly
@@ -70,7 +75,7 @@ const getUserLoginAnalytics = async (req, res) => {
       const result = await pool.query(
         `
         SELECT
-          to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
+          to_char(${epochMsToIstDate("ets")}, 'YYYY-MM-DD') as date,
           COUNT(DISTINCT uid) as unique_logins,
           array_agg(DISTINCT uid) as uids
         FROM (
@@ -78,7 +83,7 @@ const getUserLoginAnalytics = async (req, res) => {
           UNION ALL
           SELECT e.uid, e.ets FROM errordetails e WHERE e.uid IS NOT NULL AND ${errorsChannelClause}
         ) AS combined
-        WHERE to_timestamp(ets / 1000)::date >= CURRENT_DATE - INTERVAL '7 days'
+        WHERE ${epochMsToIstDate("ets")} >= (timezone('Asia/Kolkata', now()))::date - INTERVAL '7 days'
         GROUP BY date
         ORDER BY date DESC
       `,
@@ -114,7 +119,7 @@ const getUserLoginAnalytics = async (req, res) => {
           const result = await pool.query(`
             SELECT hour_bucket_ist AS hour, active_users AS unique_logins
             FROM mv_hourly_active_users
-            WHERE hour_bucket_ist >= date_trunc('hour', (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) - INTERVAL '11 hours'
+            WHERE hour_bucket_ist >= date_trunc('hour', timezone('Asia/Kolkata', now())) - INTERVAL '11 hours'
             ORDER BY hour_bucket_ist DESC
           `);
 
@@ -159,10 +164,10 @@ const getUserLoginAnalytics = async (req, res) => {
         ),
         logins AS (
           SELECT
-            date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
+            date_trunc('hour', ${epochMsToIstTimestamp("ets")}) AS hour,
             uid
           FROM combined
-          WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
+          WHERE ${epochMsToIstTimestamp("ets")} >= date_trunc('hour', timezone('Asia/Kolkata', now())) - INTERVAL '11 hours'
         )
         SELECT
           hour,
@@ -246,8 +251,8 @@ const getDashboardStats = async (req, res) => {
                COALESCE(SUM(likes), 0) AS total_likes,
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
-             WHERE feedback_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-               AND feedback_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`
+             WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -264,25 +269,26 @@ const getDashboardStats = async (req, res) => {
               SELECT
                 ( SELECT COALESCE(SUM(new_users), 0)
                   FROM mv_users_daily_firstseen_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS returning_users
             ),
             mv_sessions AS (
               SELECT COALESCE(COUNT(*), 0) AS total_sessions
               FROM mv_sessions_daily
-              WHERE session_date_ist >= DATE($3)
-                AND session_date_ist <= DATE($4)
+              WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
+                AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
-              WHERE question_date >= DATE($3) AND question_date <= DATE($4)
+              WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+                AND question_date <= ${epochMsToIstDate("$2::bigint")}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -304,8 +310,6 @@ const getDashboardStats = async (req, res) => {
           values: [
             startTimestamp,
             endTimestamp,
-            new Date(startTimestamp),
-            new Date(endTimestamp),
           ],
         };
 
@@ -366,12 +370,12 @@ const getDashboardStats = async (req, res) => {
           user_stats AS (
             SELECT
               COUNT(DISTINCT CASE
-                WHEN DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-                 AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+                WHEN ${utcTimestampToIstDate("u.first_seen_at")} >= ${epochMsToIstDate("$1::bigint")}
+                 AND ${utcTimestampToIstDate("u.first_seen_at")} <= ${epochMsToIstDate("$2::bigint")}
                 THEN fq.fingerprint_id
               END) AS new_users,
               COUNT(DISTINCT CASE
-                WHEN DATE(TO_TIMESTAMP(fq.ets / 1000)) != DATE(u.first_seen_at)
+                WHEN ${epochMsToIstDate("fq.ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
                 THEN fq.fingerprint_id
               END) AS returning_users
             FROM filtered_questions fq
@@ -494,12 +498,12 @@ const getLangfuseQuestionsTree = async (req, res) => {
 
     if (startTimestamp !== null) {
       index++;
-      dateFilter += ` AND report_date >= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      dateFilter += ` AND report_date >= ${epochMsToIstDate(`$${index}::bigint`)}`;
       params.push(startTimestamp);
     }
     if (endTimestamp !== null) {
       index++;
-      dateFilter += ` AND report_date <= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      dateFilter += ` AND report_date <= ${epochMsToIstDate(`$${index}::bigint`)}`;
       params.push(endTimestamp);
     }
 
@@ -636,8 +640,8 @@ const getDashboardStatsUnified = async (req, res) => {
                COALESCE(SUM(likes), 0) AS total_likes,
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
-             WHERE feedback_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-               AND feedback_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`
+             WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -655,25 +659,26 @@ const getDashboardStatsUnified = async (req, res) => {
               SELECT
                 ( SELECT COALESCE(SUM(new_users), 0)
                   FROM mv_users_daily_firstseen_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS returning_users
             ),
             mv_sessions AS (
               SELECT COALESCE(COUNT(*), 0) AS total_sessions
               FROM mv_sessions_daily
-              WHERE session_date_ist >= DATE($3)
-                AND session_date_ist <= DATE($4)
+              WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
+                AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
-              WHERE question_date >= DATE($3) AND question_date <= DATE($4)
+              WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+                AND question_date <= ${epochMsToIstDate("$2::bigint")}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -695,8 +700,6 @@ const getDashboardStatsUnified = async (req, res) => {
           values: [
             startTimestamp,
             endTimestamp,
-            new Date(startTimestamp),
-            new Date(endTimestamp),
           ],
         };
 
@@ -756,12 +759,12 @@ const getDashboardStatsUnified = async (req, res) => {
           user_stats AS (
             SELECT
               COUNT(DISTINCT CASE
-                WHEN DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-                 AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
+                WHEN ${utcTimestampToIstDate("u.first_seen_at")} >= ${epochMsToIstDate("$1::bigint")}
+                 AND ${utcTimestampToIstDate("u.first_seen_at")} <= ${epochMsToIstDate("$2::bigint")}
                 THEN fq.fingerprint_id
               END) AS new_users,
               COUNT(DISTINCT CASE
-                WHEN DATE(TO_TIMESTAMP(fq.ets / 1000)) != DATE(u.first_seen_at)
+                WHEN ${epochMsToIstDate("fq.ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
                 THEN fq.fingerprint_id
               END) AS returning_users
             FROM filtered_questions fq
