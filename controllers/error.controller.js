@@ -627,7 +627,7 @@ const getErrorGraph = async (req, res) => {
             COUNT(DISTINCT channel) as unique_channels
           FROM errordetails
           WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL AND ${channelClause}
-          GROUP BY date_trunc('${granCfg.trunc}', created_at)
+          GROUP BY date_trunc('${granCfg.trunc}', ${utcTimestampToIstTimestamp("created_at")})
         )
         SELECT
           ds.date_period,

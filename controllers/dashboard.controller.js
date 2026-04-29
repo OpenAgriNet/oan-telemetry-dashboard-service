@@ -605,8 +605,12 @@ const getDashboardStatsUnified = async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid date format" });
     }
 
-    // Force Bharat Vistaar state for unified metrics
-    const unifiedTelemetryState = { channels: ["bharat-vistaar"] };
+    // Force Bharat Vistaar channel filters for unified metrics.
+    // buildChannelFilterClause expects exactChannels/prefixChannels.
+    const unifiedTelemetryState = {
+      exactChannels: ["BharatVistaar"],
+      prefixChannels: ["BharatVistaar-"],
+    };
     const mvStateClause = buildChannelFilterClause("channel", unifiedTelemetryState, [], 0).clause;
 
     // Discover which MVs are available
