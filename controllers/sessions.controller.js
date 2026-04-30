@@ -2,6 +2,7 @@ const pool = require('../services/db');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 const { mvExists } = require('../utils/mvHealth');
 const { buildChannelFilterClause } = require('../utils/stateAccess');
+const { epochMsDateTruncIst } = require('../utils/istSql');
 
 async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC', pagination = true, telemetryState = null) {
     const offset = (page - 1) * limit;
@@ -923,24 +924,24 @@ const getSessionsGraph = async (req, res) => {
 
         switch (granularity) {
             case 'hourly':
-                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                dateGrouping = epochMsDateTruncIst('hour', 'ets');
+                dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD HH24:00')`;
                 orderBy = "hour_bucket";
                 break;
             case 'weekly':
-                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = epochMsDateTruncIst('week', 'ets');
+                dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
                 orderBy = "week_bucket";
                 break;
             case 'monthly':
-                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                dateGrouping = epochMsDateTruncIst('month', 'ets');
+                dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM')`;
                 orderBy = "month_bucket";
                 break;
             case 'daily':
             default:
-                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = epochMsDateTruncIst('day', 'ets');
+                dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
                 orderBy = "day_bucket";
                 break;
         }
