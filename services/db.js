@@ -1,6 +1,4 @@
 const { Pool } = require("pg");
-const fs = require("fs");
-const path = require("path");
 
 const pool = new Pool({
   user: process.env.DB_USER,
@@ -15,6 +13,10 @@ const pool = new Pool({
     process.env.DB_CONN_TIMEOUT_MS || "5000",
     10
   ),
+  // Apply global query guards so long-running analytics are not cut off by
+  // implicit/default 30s limits in some environments.
+  query_timeout: parseInt(process.env.DB_QUERY_TIMEOUT_MS || "120000", 10),
+  statement_timeout: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || "120000", 10),
   ssl: {
     rejectUnauthorized: false
   }
