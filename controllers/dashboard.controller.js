@@ -419,42 +419,22 @@ const getDashboardStats = async (req, res) => {
               AND q.ets >= $1 AND q.ets <= $2
               AND ${questionsChannelClause}
           ),
-          fq_user_activity AS (
-            SELECT
-              fq.fingerprint_id,
-              MIN(fq.ets) AS min_ets,
-              MAX(fq.ets) AS max_ets
-            FROM filtered_questions fq
-            GROUP BY fq.fingerprint_id
-          ),
-          user_rollup AS (
-            SELECT
-              fqa.fingerprint_id,
-              ${utcTimestampToIstDate("u.first_seen_at")} AS first_seen_date,
-              (
-                ${epochMsToIstDate("fqa.min_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
-                OR ${epochMsToIstDate("fqa.max_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
-              ) AS has_returning
-            FROM fq_user_activity fqa
-            INNER JOIN users u ON fqa.fingerprint_id = u.fingerprint_id
-          ),
           user_stats AS (
             SELECT
-              COUNT(*) FILTER (
-                WHERE first_seen_date >= ${epochMsToIstDate("$1::bigint")}
-                  AND first_seen_date <= ${epochMsToIstDate("$2::bigint")}
+              COUNT(DISTINCT fq.fingerprint_id) FILTER (
+                WHERE ${utcTimestampToIstDate("u.first_seen_at")} >= ${epochMsToIstDate("$1::bigint")}
+                  AND ${utcTimestampToIstDate("u.first_seen_at")} <= ${epochMsToIstDate("$2::bigint")}
               ) AS new_users,
-              COUNT(*) FILTER (WHERE has_returning) AS returning_users
-            FROM user_rollup
+              COUNT(DISTINCT fq.fingerprint_id) FILTER (
+                WHERE ${epochMsToIstDate("fq.ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+              ) AS returning_users
+            FROM filtered_questions fq
+            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
           ),
           session_stats AS (
-            SELECT COUNT(*) AS total_sessions
-            FROM (
-              SELECT fq.sid, fq.fingerprint_id
-              FROM filtered_questions fq
-              WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
-              GROUP BY fq.sid, fq.fingerprint_id
-            ) session_groups
+            SELECT COUNT(DISTINCT (fq.sid, fq.fingerprint_id)) AS total_sessions
+            FROM filtered_questions fq
+            WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
           ),
           question_stats AS (
             ${questionStatsCte}
@@ -477,7 +457,7 @@ const getDashboardStats = async (req, res) => {
           CROSS JOIN feedback_stats fs;
         `,
         values: queryParams,
-        query_timeout: 15000,
+        query_timeout: 45000,
       };
 
       const result = await pool.query(query);
@@ -864,42 +844,22 @@ const getDashboardStatsUnified = async (req, res) => {
               AND q.ets >= $1 AND q.ets <= $2
               AND ${questionsChannelClause}
           ),
-          fq_user_activity AS (
-            SELECT
-              fq.fingerprint_id,
-              MIN(fq.ets) AS min_ets,
-              MAX(fq.ets) AS max_ets
-            FROM filtered_questions fq
-            GROUP BY fq.fingerprint_id
-          ),
-          user_rollup AS (
-            SELECT
-              fqa.fingerprint_id,
-              ${utcTimestampToIstDate("u.first_seen_at")} AS first_seen_date,
-              (
-                ${epochMsToIstDate("fqa.min_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
-                OR ${epochMsToIstDate("fqa.max_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
-              ) AS has_returning
-            FROM fq_user_activity fqa
-            INNER JOIN users u ON fqa.fingerprint_id = u.fingerprint_id
-          ),
           user_stats AS (
             SELECT
-              COUNT(*) FILTER (
-                WHERE first_seen_date >= ${epochMsToIstDate("$1::bigint")}
-                  AND first_seen_date <= ${epochMsToIstDate("$2::bigint")}
+              COUNT(DISTINCT fq.fingerprint_id) FILTER (
+                WHERE ${utcTimestampToIstDate("u.first_seen_at")} >= ${epochMsToIstDate("$1::bigint")}
+                  AND ${utcTimestampToIstDate("u.first_seen_at")} <= ${epochMsToIstDate("$2::bigint")}
               ) AS new_users,
-              COUNT(*) FILTER (WHERE has_returning) AS returning_users
-            FROM user_rollup
+              COUNT(DISTINCT fq.fingerprint_id) FILTER (
+                WHERE ${epochMsToIstDate("fq.ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+              ) AS returning_users
+            FROM filtered_questions fq
+            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
           ),
           session_stats AS (
-            SELECT COUNT(*) AS total_sessions
-            FROM (
-              SELECT fq.sid, fq.fingerprint_id
-              FROM filtered_questions fq
-              WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
-              GROUP BY fq.sid, fq.fingerprint_id
-            ) session_groups
+            SELECT COUNT(DISTINCT (fq.sid, fq.fingerprint_id)) AS total_sessions
+            FROM filtered_questions fq
+            WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
           ),
           question_stats AS (
             ${questionStatsCte}
@@ -922,7 +882,7 @@ const getDashboardStatsUnified = async (req, res) => {
           CROSS JOIN feedback_stats fs;
         `,
         values: queryParams,
-        query_timeout: 15000,
+        query_timeout: 45000,
       };
 
       const result = await pool.query(query);
