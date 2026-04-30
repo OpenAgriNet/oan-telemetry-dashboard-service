@@ -486,13 +486,13 @@ const getAppDownloads = async (req, res) => {
       `
         SELECT
           TO_CHAR(date, 'YYYY-MM-DD') AS date,
-          COALESCE(MAX(CASE WHEN platform = 'ios' THEN installs END), 0) AS "iosInstalls",
-          COALESCE(MAX(CASE WHEN platform = 'android' THEN installs END), 0) AS "androidInstalls"
+          platform,
+          version,
+          installs
         FROM public.app_download_daily_metrics
         WHERE ($1::bigint IS NULL OR date >= DATE(TO_TIMESTAMP($1 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
           AND ($2::bigint IS NULL OR date <= DATE(TO_TIMESTAMP($2 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
-        GROUP BY date
-        ORDER BY date DESC
+        ORDER BY date DESC, platform ASC, version ASC
       `,
       [startTimestamp, endTimestamp],
     );
@@ -501,8 +501,9 @@ const getAppDownloads = async (req, res) => {
       success: true,
       data: result.rows.map((row) => ({
         date: row.date,
-        iosInstalls: Number(row.iosInstalls) || 0,
-        androidInstalls: Number(row.androidInstalls) || 0,
+        platform: row.platform,
+        version: row.version,
+        installs: Number(row.installs) || 0,
       })),
       filters: {
         startDate,
@@ -514,7 +515,7 @@ const getAppDownloads = async (req, res) => {
   } catch (error) {
     console.error("Error fetching app downloads:", error);
     return res
-      .status(404)
+      .status(500)
       .json({ success: false, error: "Error fetching app downloads" });
   }
 };
