@@ -210,9 +210,17 @@ const getDashboardStats = async (req, res) => {
     const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
-    const hasTimeComponent =
-      (typeof startDate === "string" && startDate.includes("T")) ||
-      (typeof endDate === "string" && endDate.includes("T"));
+
+    // True only when the time portion is genuinely intra-day (not a midnight
+    // or end-of-day boundary). Day-boundary timestamps like T00:00:00... or
+    // T23:59:59... work correctly with day-granularity materialized views and
+    // should NOT block the MV fast path.
+    const isIntraDayTime = (dateStr) => {
+      if (!dateStr || !dateStr.includes("T")) return false;
+      const timePart = (dateStr.split("T")[1] || "").substring(0, 8);
+      return timePart !== "00:00:00" && timePart !== "23:59:59";
+    };
+    const hasTimeComponent = isIntraDayTime(startDate) || isIntraDayTime(endDate);
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -642,9 +650,17 @@ const getDashboardStatsUnified = async (req, res) => {
   try {
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-    const hasTimeComponent =
-      (typeof startDate === "string" && startDate.includes("T")) ||
-      (typeof endDate === "string" && endDate.includes("T"));
+
+    // True only when the time portion is genuinely intra-day (not a midnight
+    // or end-of-day boundary). Day-boundary timestamps like T00:00:00... or
+    // T23:59:59... work correctly with day-granularity materialized views and
+    // should NOT block the MV fast path.
+    const isIntraDayTime = (dateStr) => {
+      if (!dateStr || !dateStr.includes("T")) return false;
+      const timePart = (dateStr.split("T")[1] || "").substring(0, 8);
+      return timePart !== "00:00:00" && timePart !== "23:59:59";
+    };
+    const hasTimeComponent = isIntraDayTime(startDate) || isIntraDayTime(endDate);
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
