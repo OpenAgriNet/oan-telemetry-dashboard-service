@@ -1,6 +1,7 @@
 const pool = require('../services/db');
 const { parseDateRange } = require('../utils/dateUtils');
 const { mvExists } = require('../utils/mvHealth');
+const { epochMsToIstDate, utcTimestampToIstTimestamp } = require('../utils/istSql');
 
 // ─── GET /calls ── paginated list driven off mv_call_message_counts when available ───
 //
@@ -90,9 +91,9 @@ const getCalls = async (req, res) => {
                 const res = await pool.query(
                     `SELECT COALESCE(SUM(call_count), 0)::bigint AS total
                      FROM mv_calls_daily_counts
-                     WHERE call_date >= DATE($1 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                       AND call_date <= DATE($2 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
-                    [new Date(startTimestamp), new Date(endTimestamp)]
+                     WHERE call_date >= ${epochMsToIstDate('$1::bigint')}
+                       AND call_date <= ${epochMsToIstDate('$2::bigint')}`,
+                    [startTimestamp, endTimestamp]
                 );
                 countResult = parseInt(res.rows[0].total, 10) || 0;
                 countSource = 'mv';
@@ -228,8 +229,8 @@ async function runMvBackedList({ startTimestamp, endTimestamp, search, sortBy, s
             c.failure_reason,
             c.end_reason,
             COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
-            to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
-            to_char(c.end_datetime   AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
+            to_char(${utcTimestampToIstTimestamp('c.start_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
+            to_char(${utcTimestampToIstTimestamp('c.end_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
             c.language_name,
             c.current_language,
             c.num_messages,
@@ -302,8 +303,8 @@ async function runBaseList({ startTimestamp, endTimestamp, search, sortBy, sortO
             c.failure_reason,
             c.end_reason,
             COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
-            to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
-            to_char(c.end_datetime   AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
+            to_char(${utcTimestampToIstTimestamp('c.start_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
+            to_char(${utcTimestampToIstTimestamp('c.end_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
             c.language_name,
             c.current_language,
             c.num_messages,
@@ -475,8 +476,8 @@ const getCallById = async (req, res) => {
                 c.failure_reason,
                 c.end_reason,
                 COALESCE(NULLIF(c.duration_in_seconds, 0), EXTRACT(EPOCH FROM (c.end_datetime - c.start_datetime))) AS duration_in_seconds,
-                to_char(c.start_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
-                to_char(c.end_datetime AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
+                to_char(${utcTimestampToIstTimestamp('c.start_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS start_datetime,
+                to_char(${utcTimestampToIstTimestamp('c.end_datetime')}, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS end_datetime,
                 c.language_name,
                 c.current_language,
                 c.num_messages,

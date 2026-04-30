@@ -2,6 +2,11 @@ const pool = require("../services/db");
 const { formatUTCToISTDateTime, parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const {
+  epochMsToIstDate,
+  epochMsToIstTimestamp,
+  utcTimestampToIstTimestamp,
+} = require("../utils/istSql");
 
 async function fetchAllErrorsFromDB(
   page = 1,
@@ -165,8 +170,8 @@ async function getErrorStats(search = "", startDate = null, endDate = null, tele
            COALESCE(SUM(unique_sessions), 0) AS unique_sessions,
            COALESCE(COUNT(DISTINCT channel), 0) AS unique_channels
          FROM mv_errors_daily
-         WHERE error_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-           AND error_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+         WHERE error_date >= ${epochMsToIstDate("$1::bigint")}
+           AND error_date <= ${epochMsToIstDate("$2::bigint")}`,
         [startTimestamp, endTimestamp]
       );
       const row = mvRes.rows[0];
@@ -567,8 +572,8 @@ const getErrorGraph = async (req, res) => {
         const mvSql = `
           WITH date_series AS (
             SELECT generate_series(
-              date_trunc('day', TO_TIMESTAMP($1::bigint / 1000)),
-              date_trunc('day', TO_TIMESTAMP($2::bigint / 1000)),
+              ${epochMsToIstDate("$1::bigint")},
+              ${epochMsToIstDate("$2::bigint")},
               interval '1 day'
             )::date AS date_period
           )
@@ -608,21 +613,21 @@ const getErrorGraph = async (req, res) => {
           const query = `
         WITH date_series AS (
           SELECT generate_series(
-            date_trunc('${granCfg.trunc}', TO_TIMESTAMP($1::bigint / 1000)),
-            date_trunc('${granCfg.trunc}', TO_TIMESTAMP($2::bigint / 1000)),
+            date_trunc('${granCfg.trunc}', ${epochMsToIstTimestamp("$1::bigint")}),
+            date_trunc('${granCfg.trunc}', ${epochMsToIstTimestamp("$2::bigint")}),
             interval '${granCfg.interval}'
           ) AS date_period
         ),
         error_counts AS (
           SELECT
-            date_trunc('${granCfg.trunc}', created_at) as error_period,
+            date_trunc('${granCfg.trunc}', ${utcTimestampToIstTimestamp("created_at")}) as error_period,
             COUNT(*) as error_count,
             COUNT(DISTINCT uid) as unique_users,
             COUNT(DISTINCT sid) as unique_sessions,
             COUNT(DISTINCT channel) as unique_channels
           FROM errordetails
           WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL AND ${channelClause}
-          GROUP BY date_trunc('${granCfg.trunc}', created_at)
+          GROUP BY date_trunc('${granCfg.trunc}', ${utcTimestampToIstTimestamp("created_at")})
         )
         SELECT
           ds.date_period,

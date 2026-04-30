@@ -6,6 +6,7 @@ const {
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const { epochMsToIstDate, epochMsDateTruncIst } = require("../utils/istSql");
 
 // Small in-process cache for distinct channels (see getDistinctChannels).
 let distinctChannelsCache = { value: null, expiresAt: 0 };
@@ -864,8 +865,8 @@ const getFeedbackStats = async (req, res) => {
              COALESCE(SUM(likes), 0) AS total_likes,
              COALESCE(SUM(dislikes), 0) AS total_dislikes
            FROM mv_feedback_daily
-           WHERE feedback_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-             AND feedback_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+           WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+             AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
              AND ${mvChannelClause}`,
           mvParams
         );
@@ -883,8 +884,9 @@ const getFeedbackStats = async (req, res) => {
                  COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                  COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                FROM feedback
-               WHERE uid IS NOT NULL
-                 AND (answertext IS NOT NULL OR COALESCE(feedback_source, 'chat') = 'voice')
+               WHERE feedbacktext IS NOT NULL
+                 AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
+                      OR COALESCE(feedback_source, 'chat') = 'voice')
                  ${dateFilter}`,
         values: queryParams,
       };
@@ -1002,28 +1004,24 @@ const getFeedbackGraph = async (req, res) => {
 
     switch (granularity) {
       case "hourly":
-        dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-        dateFormat =
-          "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+        dateGrouping = epochMsDateTruncIst("hour", "ets");
+        dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD HH24:00')`;
         orderBy = "hour_bucket";
         break;
       case "weekly":
-        dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-        dateFormat =
-          "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+        dateGrouping = epochMsDateTruncIst("week", "ets");
+        dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
         orderBy = "week_bucket";
         break;
       case "monthly":
-        dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-        dateFormat =
-          "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+        dateGrouping = epochMsDateTruncIst("month", "ets");
+        dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM')`;
         orderBy = "month_bucket";
         break;
       case "daily":
       default:
-        dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-        dateFormat =
-          "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+        dateGrouping = epochMsDateTruncIst("day", "ets");
+        dateFormat = `TO_CHAR(${dateGrouping}, 'YYYY-MM-DD')`;
         orderBy = "day_bucket";
         break;
     }
@@ -1037,11 +1035,11 @@ const getFeedbackGraph = async (req, res) => {
         const conds = [];
         if (startTimestamp !== null) {
           mvParams.push(startTimestamp);
-          conds.push(`feedback_date >= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+          conds.push(`feedback_date >= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         if (endTimestamp !== null) {
           mvParams.push(endTimestamp);
-          conds.push(`feedback_date <= DATE(TO_TIMESTAMP($${mvParams.length}::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+          conds.push(`feedback_date <= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         const {
           clause: mvChannelClause,

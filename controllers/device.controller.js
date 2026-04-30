@@ -3,6 +3,12 @@ const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const {
+  epochMsToIstDate,
+  epochMsDateTruncIst,
+  utcTimestampToIstTimestamp,
+  utcTimestampToIstDate,
+} = require("../utils/istSql");
 
 // List of devices (one row per distinct fingerprint_id in the window).
 // Uses questions + users join; this is cheap enough already. Keep it as-is.
@@ -136,14 +142,14 @@ async function getTotalAndNewDevicesCount(
           WITH nu AS (
             SELECT COALESCE(SUM(new_users), 0) AS new_users
             FROM mv_users_daily_firstseen_ist
-            WHERE bucket_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-              AND bucket_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+            WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+              AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
           ),
           ru AS (
             SELECT COALESCE(SUM(returning_users), 0) AS returning_users
             FROM mv_users_daily_returning_ist
-            WHERE bucket_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-              AND bucket_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+            WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+              AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
           )
           SELECT
             nu.new_users AS new_users,
@@ -309,12 +315,12 @@ const getDeviceGraph = async (req, res) => {
           const params = [];
           const conditions = [];
           if (startTimestamp !== null) {
-            params.push(new Date(startTimestamp));
-            conditions.push(`bucket_date >= DATE($${params.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+            params.push(startTimestamp);
+            conditions.push(`bucket_date >= ${epochMsToIstDate(`$${params.length}::bigint`)}`);
           }
           if (endTimestamp !== null) {
-            params.push(new Date(endTimestamp));
-            conditions.push(`bucket_date <= DATE($${params.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+            params.push(endTimestamp);
+            conditions.push(`bucket_date <= ${epochMsToIstDate(`$${params.length}::bigint`)}`);
           }
           const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
@@ -346,8 +352,7 @@ const getDeviceGraph = async (req, res) => {
             FROM merged
             ORDER BY bucket_date ASC;
           `;
-          // Same params appear in both WHEREs, so double them up.
-          const mvResult = await pool.query(sql, [...params, ...params]);
+          const mvResult = await pool.query(sql, params);
           graphData = mvResult.rows.map((row) => ({
             date: row.date,
             timestamp: parseInt(row.timestamp),
@@ -369,20 +374,20 @@ const getDeviceGraph = async (req, res) => {
       let userDateGrouping;
       switch (granularity) {
         case "hourly":
-          questionDateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(q.ets / 1000) AT TIME ZONE 'Asia/Kolkata')";
-          userDateGrouping = "DATE_TRUNC('hour', u.first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+          questionDateGrouping = epochMsDateTruncIst('hour', 'q.ets');
+          userDateGrouping = `DATE_TRUNC('hour', ${utcTimestampToIstTimestamp('u.first_seen_at')})`;
           break;
         case "weekly":
-          questionDateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(q.ets / 1000) AT TIME ZONE 'Asia/Kolkata')";
-          userDateGrouping = "DATE_TRUNC('week', u.first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+          questionDateGrouping = epochMsDateTruncIst('week', 'q.ets');
+          userDateGrouping = `DATE_TRUNC('week', ${utcTimestampToIstTimestamp('u.first_seen_at')})`;
           break;
         case "monthly":
-          questionDateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(q.ets / 1000) AT TIME ZONE 'Asia/Kolkata')";
-          userDateGrouping = "DATE_TRUNC('month', u.first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+          questionDateGrouping = epochMsDateTruncIst('month', 'q.ets');
+          userDateGrouping = `DATE_TRUNC('month', ${utcTimestampToIstTimestamp('u.first_seen_at')})`;
           break;
         default:
-          questionDateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(q.ets / 1000) AT TIME ZONE 'Asia/Kolkata')";
-          userDateGrouping = "DATE_TRUNC('day', u.first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+          questionDateGrouping = epochMsDateTruncIst('day', 'q.ets');
+          userDateGrouping = `DATE_TRUNC('day', ${utcTimestampToIstTimestamp('u.first_seen_at')})`;
       }
 
       const query = {
@@ -400,8 +405,8 @@ const getDeviceGraph = async (req, res) => {
                   AND q.answertext IS NOT NULL
                   AND ${channelClause}
               )`}
-              AND DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($${baseParams.length + 1}::bigint / 1000))
-              AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($${baseParams.length + 2}::bigint / 1000))
+              AND ${utcTimestampToIstDate('u.first_seen_at')} >= ${epochMsToIstDate(`$${baseParams.length + 1}::bigint`)}
+              AND ${utcTimestampToIstDate('u.first_seen_at')} <= ${epochMsToIstDate(`$${baseParams.length + 2}::bigint`)}
             GROUP BY bucket_date
           ),
           returning_users_by_bucket AS (
@@ -413,7 +418,7 @@ const getDeviceGraph = async (req, res) => {
             WHERE q.fingerprint_id IS NOT NULL
               AND ${channelClause}
               AND q.ets >= $${baseParams.length + 1}::bigint AND q.ets <= $${baseParams.length + 2}::bigint
-              AND DATE(TO_TIMESTAMP(q.ets / 1000)) != DATE(u.first_seen_at)
+              AND ${epochMsToIstDate('q.ets')} != ${utcTimestampToIstDate('u.first_seen_at')}
             GROUP BY bucket_date
           ),
           merged AS (

@@ -2,6 +2,11 @@ const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const {
+  epochMsToIstDate,
+  epochMsToIstTimestamp,
+  utcTimestampToIstDate,
+} = require("../utils/istSql");
 
 /**
  * GET /dashboard/user-analytics?granularity=daily|hourly
@@ -70,7 +75,7 @@ const getUserLoginAnalytics = async (req, res) => {
       const result = await pool.query(
         `
         SELECT
-          to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
+          to_char(${epochMsToIstDate("ets")}, 'YYYY-MM-DD') as date,
           COUNT(DISTINCT uid) as unique_logins,
           array_agg(DISTINCT uid) as uids
         FROM (
@@ -78,7 +83,7 @@ const getUserLoginAnalytics = async (req, res) => {
           UNION ALL
           SELECT e.uid, e.ets FROM errordetails e WHERE e.uid IS NOT NULL AND ${errorsChannelClause}
         ) AS combined
-        WHERE to_timestamp(ets / 1000)::date >= CURRENT_DATE - INTERVAL '7 days'
+        WHERE ${epochMsToIstDate("ets")} >= (timezone('Asia/Kolkata', now()))::date - INTERVAL '7 days'
         GROUP BY date
         ORDER BY date DESC
       `,
@@ -114,7 +119,7 @@ const getUserLoginAnalytics = async (req, res) => {
           const result = await pool.query(`
             SELECT hour_bucket_ist AS hour, active_users AS unique_logins
             FROM mv_hourly_active_users
-            WHERE hour_bucket_ist >= date_trunc('hour', (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')) - INTERVAL '11 hours'
+            WHERE hour_bucket_ist >= date_trunc('hour', timezone('Asia/Kolkata', now())) - INTERVAL '11 hours'
             ORDER BY hour_bucket_ist DESC
           `);
 
@@ -159,10 +164,10 @@ const getUserLoginAnalytics = async (req, res) => {
         ),
         logins AS (
           SELECT
-            date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
+            date_trunc('hour', ${epochMsToIstTimestamp("ets")}) AS hour,
             uid
           FROM combined
-          WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
+          WHERE ${epochMsToIstTimestamp("ets")} >= date_trunc('hour', timezone('Asia/Kolkata', now())) - INTERVAL '11 hours'
         )
         SELECT
           hour,
@@ -205,6 +210,9 @@ const getDashboardStats = async (req, res) => {
     const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
+    const hasTimeComponent =
+      (typeof startDate === "string" && startDate.includes("T")) ||
+      (typeof endDate === "string" && endDate.includes("T"));
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -236,7 +244,7 @@ const getDashboardStats = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1") {
+    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
       try {
         // Pure MV path. Feedback CTE picks MV when available, otherwise
         // falls back to a bounded base-table scan for the date range.
@@ -246,8 +254,8 @@ const getDashboardStats = async (req, res) => {
                COALESCE(SUM(likes), 0) AS total_likes,
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
-             WHERE feedback_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-               AND feedback_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`
+             WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -264,25 +272,26 @@ const getDashboardStats = async (req, res) => {
               SELECT
                 ( SELECT COALESCE(SUM(new_users), 0)
                   FROM mv_users_daily_firstseen_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS returning_users
             ),
             mv_sessions AS (
               SELECT COALESCE(COUNT(*), 0) AS total_sessions
               FROM mv_sessions_daily
-              WHERE session_date_ist >= DATE($3)
-                AND session_date_ist <= DATE($4)
+              WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
+                AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
-              WHERE question_date >= DATE($3) AND question_date <= DATE($4)
+              WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+                AND question_date <= ${epochMsToIstDate("$2::bigint")}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -304,8 +313,6 @@ const getDashboardStats = async (req, res) => {
           values: [
             startTimestamp,
             endTimestamp,
-            new Date(startTimestamp),
-            new Date(endTimestamp),
           ],
         };
 
@@ -331,81 +338,121 @@ const getDashboardStats = async (req, res) => {
         clause: questionsChannelClause,
         paramIndex: questionsChannelParamIndex,
       } = buildChannelFilterClause("q.channel", telemetryState, queryParams, 2);
-      const {
-        clause: feedbackChannelClause,
-        paramIndex: feedbackChannelParamIndex,
-      } = buildChannelFilterClause("f.channel", telemetryState, queryParams, questionsChannelParamIndex);
-      const {
-        clause: errorsChannelClause,
-      } = buildChannelFilterClause("e.channel", telemetryState, queryParams, feedbackChannelParamIndex);
+      let nextParamIndex = questionsChannelParamIndex;
+
+      let questionStatsCte = `
+          SELECT COUNT(*) AS total_questions
+          FROM filtered_questions
+        `;
+      if (hasQuestionRateMV && !hasTimeComponent) {
+        const { clause: mvQuestionChannelClause, paramIndex } = buildChannelFilterClause(
+          "channel",
+          telemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        nextParamIndex = paramIndex;
+        questionStatsCte = `
+          SELECT COALESCE(SUM(total_questions), 0) AS total_questions
+          FROM mv_question_answer_rates
+          WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+            AND question_date <= ${epochMsToIstDate("$2::bigint")}
+            AND ${mvQuestionChannelClause}
+        `;
+      }
+
+      let feedbackStatsCte = `
+          SELECT
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback f
+          WHERE f.feedbacktext IS NOT NULL
+            AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
+                 OR COALESCE(f.feedback_source, 'chat') = 'voice')
+            AND f.ets >= $1 AND f.ets <= $2
+            AND 1=1
+        `;
+      if (hasFeedbackDailyMV && !hasTimeComponent) {
+        const { clause: mvFeedbackChannelClause, paramIndex } = buildChannelFilterClause(
+          "channel",
+          telemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        nextParamIndex = paramIndex;
+        feedbackStatsCte = `
+          SELECT
+            COALESCE(SUM(total_feedback), 0) AS total_feedback,
+            COALESCE(SUM(likes), 0) AS total_likes,
+            COALESCE(SUM(dislikes), 0) AS total_dislikes
+          FROM mv_feedback_daily
+          WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+            AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
+            AND ${mvFeedbackChannelClause}
+        `;
+      } else {
+        const { clause: feedbackChannelClause } = buildChannelFilterClause(
+          "f.channel",
+          telemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        feedbackStatsCte = feedbackStatsCte.replace("AND 1=1", `AND ${feedbackChannelClause}`);
+      }
 
       const query = {
         text: `
           WITH filtered_questions AS (
-            SELECT q.fingerprint_id, q.sid, q.uid, q.ets
+            SELECT q.fingerprint_id, q.sid, q.ets
             FROM questions q
             WHERE q.answertext IS NOT NULL
               AND q.fingerprint_id IS NOT NULL
               AND q.ets >= $1 AND q.ets <= $2
               AND ${questionsChannelClause}
           ),
-          filtered_feedback AS (
-            SELECT f.fingerprint_id, f.sid, f.uid, f.ets
-            FROM feedback f
-            WHERE f.fingerprint_id IS NOT NULL
-              AND f.ets >= $1 AND f.ets <= $2
-              AND ${feedbackChannelClause}
+          fq_user_activity AS (
+            SELECT
+              fq.fingerprint_id,
+              MIN(fq.ets) AS min_ets,
+              MAX(fq.ets) AS max_ets
+            FROM filtered_questions fq
+            GROUP BY fq.fingerprint_id
           ),
-          filtered_errors AS (
-            SELECT e.fingerprint_id, e.sid, e.uid, e.ets
-            FROM errordetails e
-            WHERE e.fingerprint_id IS NOT NULL
-              AND e.ets >= $1 AND e.ets <= $2
-              AND ${errorsChannelClause}
+          user_rollup AS (
+            SELECT
+              fqa.fingerprint_id,
+              ${utcTimestampToIstDate("u.first_seen_at")} AS first_seen_date,
+              (
+                ${epochMsToIstDate("fqa.min_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+                OR ${epochMsToIstDate("fqa.max_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+              ) AS has_returning
+            FROM fq_user_activity fqa
+            INNER JOIN users u ON fqa.fingerprint_id = u.fingerprint_id
           ),
           user_stats AS (
             SELECT
-              COUNT(DISTINCT CASE
-                WHEN DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-                 AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
-                THEN fq.fingerprint_id
-              END) AS new_users,
-              COUNT(DISTINCT CASE
-                WHEN DATE(TO_TIMESTAMP(fq.ets / 1000)) != DATE(u.first_seen_at)
-                THEN fq.fingerprint_id
-              END) AS returning_users
-            FROM filtered_questions fq
-            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
+              COUNT(*) FILTER (
+                WHERE first_seen_date >= ${epochMsToIstDate("$1::bigint")}
+                  AND first_seen_date <= ${epochMsToIstDate("$2::bigint")}
+              ) AS new_users,
+              COUNT(*) FILTER (WHERE has_returning) AS returning_users
+            FROM user_rollup
           ),
           session_stats AS (
-            WITH combined_sessions AS (
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_questions
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-              UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_feedback
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-              UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_errors
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-            )
             SELECT COUNT(*) AS total_sessions
-            FROM (SELECT sid, uid FROM combined_sessions GROUP BY sid, uid) session_groups
+            FROM (
+              SELECT fq.sid, fq.fingerprint_id
+              FROM filtered_questions fq
+              WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
+              GROUP BY fq.sid, fq.fingerprint_id
+            ) session_groups
           ),
           question_stats AS (
-            SELECT COUNT(*) AS total_questions
-            FROM filtered_questions
+            ${questionStatsCte}
           ),
           feedback_stats AS (
-            SELECT
-              COUNT(*) AS total_feedback,
-              COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-              COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-            FROM feedback f
-            WHERE f.feedbacktext IS NOT NULL
-              AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
-                   OR COALESCE(f.feedback_source, 'chat') = 'voice')
-              AND f.ets >= $1 AND f.ets <= $2
-              AND ${feedbackChannelClause}
+            ${feedbackStatsCte}
           )
           SELECT
             (us.new_users + us.returning_users) AS total_users,
@@ -422,6 +469,7 @@ const getDashboardStats = async (req, res) => {
           CROSS JOIN feedback_stats fs;
         `,
         values: queryParams,
+        query_timeout: 15000,
       };
 
       const result = await pool.query(query);
@@ -494,12 +542,12 @@ const getLangfuseQuestionsTree = async (req, res) => {
 
     if (startTimestamp !== null) {
       index++;
-      dateFilter += ` AND report_date >= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      dateFilter += ` AND report_date >= ${epochMsToIstDate(`$${index}::bigint`)}`;
       params.push(startTimestamp);
     }
     if (endTimestamp !== null) {
       index++;
-      dateFilter += ` AND report_date <= (to_timestamp(($${index}::bigint) / 1000.0) AT TIME ZONE 'Asia/Kolkata')::date`;
+      dateFilter += ` AND report_date <= ${epochMsToIstDate(`$${index}::bigint`)}`;
       params.push(endTimestamp);
     }
 
@@ -594,6 +642,9 @@ const getDashboardStatsUnified = async (req, res) => {
   try {
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const hasTimeComponent =
+      (typeof startDate === "string" && startDate.includes("T")) ||
+      (typeof endDate === "string" && endDate.includes("T"));
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -601,8 +652,12 @@ const getDashboardStatsUnified = async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid date format" });
     }
 
-    // Force Bharat Vistaar state for unified metrics
-    const unifiedTelemetryState = { channels: ["bharat-vistaar"] };
+    // Force Bharat Vistaar channel filters for unified metrics.
+    // buildChannelFilterClause expects exactChannels/prefixChannels.
+    const unifiedTelemetryState = {
+      exactChannels: ["BharatVistaar"],
+      prefixChannels: ["BharatVistaar-"],
+    };
     const mvStateClause = buildChannelFilterClause("channel", unifiedTelemetryState, [], 0).clause;
 
     // Discover which MVs are available
@@ -627,7 +682,7 @@ const getDashboardStatsUnified = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1") {
+    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
       try {
         // Pure MV path for Bharat Vistaar
         const feedbackCte = hasFeedbackDailyMV
@@ -636,8 +691,8 @@ const getDashboardStatsUnified = async (req, res) => {
                COALESCE(SUM(likes), 0) AS total_likes,
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
-             WHERE feedback_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-               AND feedback_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`
+             WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -655,25 +710,26 @@ const getDashboardStatsUnified = async (req, res) => {
               SELECT
                 ( SELECT COALESCE(SUM(new_users), 0)
                   FROM mv_users_daily_firstseen_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
-                  WHERE bucket_date >= DATE($3 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-                    AND bucket_date <= DATE($4 AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
+                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
+                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
                 ) AS returning_users
             ),
             mv_sessions AS (
               SELECT COALESCE(COUNT(*), 0) AS total_sessions
               FROM mv_sessions_daily
-              WHERE session_date_ist >= DATE($3)
-                AND session_date_ist <= DATE($4)
+              WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
+                AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
-              WHERE question_date >= DATE($3) AND question_date <= DATE($4)
+              WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+                AND question_date <= ${epochMsToIstDate("$2::bigint")}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -695,8 +751,6 @@ const getDashboardStatsUnified = async (req, res) => {
           values: [
             startTimestamp,
             endTimestamp,
-            new Date(startTimestamp),
-            new Date(endTimestamp),
           ],
         };
 
@@ -721,81 +775,121 @@ const getDashboardStatsUnified = async (req, res) => {
         clause: questionsChannelClause,
         paramIndex: questionsChannelParamIndex,
       } = buildChannelFilterClause("q.channel", unifiedTelemetryState, queryParams, 2);
-      const {
-        clause: feedbackChannelClause,
-        paramIndex: feedbackChannelParamIndex,
-      } = buildChannelFilterClause("f.channel", unifiedTelemetryState, queryParams, questionsChannelParamIndex);
-      const {
-        clause: errorsChannelClause,
-      } = buildChannelFilterClause("e.channel", unifiedTelemetryState, queryParams, feedbackChannelParamIndex);
+      let nextParamIndex = questionsChannelParamIndex;
+
+      let questionStatsCte = `
+          SELECT COUNT(*) AS total_questions
+          FROM filtered_questions
+        `;
+      if (hasQuestionRateMV && !hasTimeComponent) {
+        const { clause: mvQuestionChannelClause, paramIndex } = buildChannelFilterClause(
+          "channel",
+          unifiedTelemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        nextParamIndex = paramIndex;
+        questionStatsCte = `
+          SELECT COALESCE(SUM(total_questions), 0) AS total_questions
+          FROM mv_question_answer_rates
+          WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
+            AND question_date <= ${epochMsToIstDate("$2::bigint")}
+            AND ${mvQuestionChannelClause}
+        `;
+      }
+
+      let feedbackStatsCte = `
+          SELECT
+            COUNT(*) AS total_feedback,
+            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
+            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
+          FROM feedback f
+          WHERE f.feedbacktext IS NOT NULL
+            AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
+                 OR COALESCE(f.feedback_source, 'chat') = 'voice')
+            AND f.ets >= $1 AND f.ets <= $2
+            AND 1=1
+        `;
+      if (hasFeedbackDailyMV && !hasTimeComponent) {
+        const { clause: mvFeedbackChannelClause, paramIndex } = buildChannelFilterClause(
+          "channel",
+          unifiedTelemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        nextParamIndex = paramIndex;
+        feedbackStatsCte = `
+          SELECT
+            COALESCE(SUM(total_feedback), 0) AS total_feedback,
+            COALESCE(SUM(likes), 0) AS total_likes,
+            COALESCE(SUM(dislikes), 0) AS total_dislikes
+          FROM mv_feedback_daily
+          WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
+            AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
+            AND ${mvFeedbackChannelClause}
+        `;
+      } else {
+        const { clause: feedbackChannelClause } = buildChannelFilterClause(
+          "f.channel",
+          unifiedTelemetryState,
+          queryParams,
+          nextParamIndex,
+        );
+        feedbackStatsCte = feedbackStatsCte.replace("AND 1=1", `AND ${feedbackChannelClause}`);
+      }
 
       const query = {
         text: `
           WITH filtered_questions AS (
-            SELECT q.fingerprint_id, q.sid, q.uid, q.ets
+            SELECT q.fingerprint_id, q.sid, q.ets
             FROM questions q
             WHERE q.answertext IS NOT NULL
               AND q.fingerprint_id IS NOT NULL
               AND q.ets >= $1 AND q.ets <= $2
               AND ${questionsChannelClause}
           ),
-          filtered_feedback AS (
-            SELECT f.fingerprint_id, f.sid, f.uid, f.ets
-            FROM feedback f
-            WHERE f.fingerprint_id IS NOT NULL
-              AND f.ets >= $1 AND f.ets <= $2
-              AND ${feedbackChannelClause}
+          fq_user_activity AS (
+            SELECT
+              fq.fingerprint_id,
+              MIN(fq.ets) AS min_ets,
+              MAX(fq.ets) AS max_ets
+            FROM filtered_questions fq
+            GROUP BY fq.fingerprint_id
           ),
-          filtered_errors AS (
-            SELECT e.fingerprint_id, e.sid, e.uid, e.ets
-            FROM errordetails e
-            WHERE e.fingerprint_id IS NOT NULL
-              AND e.ets >= $1 AND e.ets <= $2
-              AND ${errorsChannelClause}
+          user_rollup AS (
+            SELECT
+              fqa.fingerprint_id,
+              ${utcTimestampToIstDate("u.first_seen_at")} AS first_seen_date,
+              (
+                ${epochMsToIstDate("fqa.min_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+                OR ${epochMsToIstDate("fqa.max_ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
+              ) AS has_returning
+            FROM fq_user_activity fqa
+            INNER JOIN users u ON fqa.fingerprint_id = u.fingerprint_id
           ),
           user_stats AS (
             SELECT
-              COUNT(DISTINCT CASE
-                WHEN DATE(u.first_seen_at) >= DATE(TO_TIMESTAMP($1::bigint / 1000))
-                 AND DATE(u.first_seen_at) <= DATE(TO_TIMESTAMP($2::bigint / 1000))
-                THEN fq.fingerprint_id
-              END) AS new_users,
-              COUNT(DISTINCT CASE
-                WHEN DATE(TO_TIMESTAMP(fq.ets / 1000)) != DATE(u.first_seen_at)
-                THEN fq.fingerprint_id
-              END) AS returning_users
-            FROM filtered_questions fq
-            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
+              COUNT(*) FILTER (
+                WHERE first_seen_date >= ${epochMsToIstDate("$1::bigint")}
+                  AND first_seen_date <= ${epochMsToIstDate("$2::bigint")}
+              ) AS new_users,
+              COUNT(*) FILTER (WHERE has_returning) AS returning_users
+            FROM user_rollup
           ),
           session_stats AS (
-            WITH combined_sessions AS (
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_questions
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-              UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_feedback
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-              UNION ALL
-              SELECT sid, fingerprint_id AS uid, ets FROM filtered_errors
-              WHERE sid IS NOT NULL AND uid IS NOT NULL
-            )
             SELECT COUNT(*) AS total_sessions
-            FROM (SELECT sid, uid FROM combined_sessions GROUP BY sid, uid) session_groups
+            FROM (
+              SELECT fq.sid, fq.fingerprint_id
+              FROM filtered_questions fq
+              WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
+              GROUP BY fq.sid, fq.fingerprint_id
+            ) session_groups
           ),
           question_stats AS (
-            SELECT COUNT(*) AS total_questions
-            FROM filtered_questions
+            ${questionStatsCte}
           ),
           feedback_stats AS (
-            SELECT
-              COUNT(*) AS total_feedback,
-              COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-              COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-            FROM feedback f
-            WHERE f.feedbacktext IS NOT NULL
-              AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
-                   OR COALESCE(f.feedback_source, 'chat') = 'voice')
-              AND f.ets >= $1 AND f.ets <= $2
-              AND ${feedbackChannelClause}
+            ${feedbackStatsCte}
           )
           SELECT
             (us.new_users + us.returning_users) AS total_users,
@@ -811,10 +905,8 @@ const getDashboardStatsUnified = async (req, res) => {
           CROSS JOIN question_stats qs
           CROSS JOIN feedback_stats fs;
         `,
-        values: [
-          startTimestamp,
-          endTimestamp,
-        ],
+        values: queryParams,
+        query_timeout: 15000,
       };
 
       const result = await pool.query(query);

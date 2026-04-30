@@ -7,6 +7,10 @@ const {
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const {
+  epochMsToIstDate,
+  utcTimestampToIstTimestamp,
+} = require("../utils/istSql");
 
 // Simple in-memory cache for user stats
 const userStatsCache = new Map();
@@ -1492,54 +1496,18 @@ const getUserGraph = async (req, res) => {
 
     switch (granularity) {
       case "hourly":
-        dateGrouping =
-          "DATE_TRUNC('hour', first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+        dateGrouping = `DATE_TRUNC('hour', ${utcTimestampToIstTimestamp("first_seen_at")})`;
         break;
       case "weekly":
-        dateGrouping =
-          "DATE_TRUNC('week', first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+        dateGrouping = `DATE_TRUNC('week', ${utcTimestampToIstTimestamp("first_seen_at")})`;
         break;
       case "monthly":
-        dateGrouping =
-          "DATE_TRUNC('month', first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+        dateGrouping = `DATE_TRUNC('month', ${utcTimestampToIstTimestamp("first_seen_at")})`;
         break;
       case "daily":
       default:
-        dateGrouping =
-          "DATE_TRUNC('day', first_seen_at AT TIME ZONE 'Asia/Kolkata')";
+        dateGrouping = `DATE_TRUNC('day', ${utcTimestampToIstTimestamp("first_seen_at")})`;
     }
-
-    // switch (granularity) {
-    //   case "hourly":
-    //     dateGrouping =
-    //       "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
-    //     dateFormat =
-    //       "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD HH24:00')";
-    //     orderBy = "hour_bucket";
-    //     break;
-    //   case "weekly":
-    //     dateGrouping =
-    //       "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
-    //     dateFormat =
-    //       "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
-    //     orderBy = "week_bucket";
-    //     break;
-    //   case "monthly":
-    //     dateGrouping =
-    //       "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
-    //     dateFormat =
-    //       "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM')";
-    //     orderBy = "month_bucket";
-    //     break;
-    //   case "daily":
-    //   default:
-    //     dateGrouping =
-    //       "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata')";
-    //     dateFormat =
-    //       "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000) AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD')";
-    //     orderBy = "day_bucket";
-    //     break;
-    // }
 
     // Build date format string for the final SELECT (using da.activity_date)
     let finalDateFormat;
@@ -1566,12 +1534,12 @@ const getUserGraph = async (req, res) => {
         const mvParams = [];
         const conds = [];
         if (startTimestamp !== null) {
-          mvParams.push(new Date(startTimestamp));
-          conds.push(`bucket_date >= DATE($${mvParams.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+          mvParams.push(startTimestamp);
+          conds.push(`bucket_date >= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         if (endTimestamp !== null) {
-          mvParams.push(new Date(endTimestamp));
-          conds.push(`bucket_date <= DATE($${mvParams.length} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`);
+          mvParams.push(endTimestamp);
+          conds.push(`bucket_date <= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
         const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
         const mvSql = `
@@ -1597,7 +1565,7 @@ const getUserGraph = async (req, res) => {
           FROM merged
           ORDER BY bucket_date ASC
         `;
-        result = await pool.query(mvSql, [...mvParams, ...mvParams]);
+        result = await pool.query(mvSql, mvParams);
         source = 'mv';
       } catch (mvErr) {
         console.warn('[UserGraph] MV query failed, falling back:', mvErr.message);
@@ -1609,7 +1577,9 @@ const getUserGraph = async (req, res) => {
       const query = {
         text: `
           WITH user_buckets AS (
-            SELECT ${dateGrouping} AS bucket_date, u.fingerprint_id, u.first_seen_at
+            SELECT ${dateGrouping} AS bucket_date,
+                   u.fingerprint_id,
+                   ${utcTimestampToIstTimestamp("u.first_seen_at")} AS first_seen_ist
             FROM users u
             INNER JOIN questions q ON q.fingerprint_id = u.fingerprint_id
             WHERE u.fingerprint_id IS NOT NULL AND u.first_seen_at IS NOT NULL
@@ -1621,11 +1591,11 @@ const getUserGraph = async (req, res) => {
             TO_CHAR(bucket_date, 'YYYY-MM-DD') AS date,
             COUNT(DISTINCT fingerprint_id) AS uniqueUsersCount,
             COUNT(DISTINCT CASE
-              WHEN first_seen_at >= bucket_date AND first_seen_at < bucket_date + INTERVAL '1 day'
+              WHEN first_seen_ist >= bucket_date AND first_seen_ist < bucket_date + INTERVAL '1 day'
               THEN fingerprint_id
             END) AS newUsersCount,
             COUNT(DISTINCT CASE
-              WHEN first_seen_at < bucket_date
+              WHEN first_seen_ist < bucket_date
               THEN fingerprint_id
             END) AS returningUsersCount,
             EXTRACT(EPOCH FROM bucket_date) * 1000 AS timestamp,

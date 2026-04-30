@@ -5,6 +5,7 @@ const {
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const { epochMsToIstDate } = require("../utils/istSql");
 
 async function fetchTtsFromDB(
   page = 1,
@@ -160,8 +161,8 @@ async function getTtsStats(startDate = null, endDate = null, telemetryState = nu
            ROUND(AVG(avg_latency)) AS avg_latency,
            MAX(max_latency) AS max_latency
          FROM mv_tts_daily
-         WHERE stat_date >= DATE(TO_TIMESTAMP($1::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
-           AND stat_date <= DATE(TO_TIMESTAMP($2::bigint / 1000) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')`,
+         WHERE stat_date >= ${epochMsToIstDate("$1::bigint")}
+           AND stat_date <= ${epochMsToIstDate("$2::bigint")}`,
         [startTimestamp, endTimestamp]
       );
       const row = mvRes.rows[0];
