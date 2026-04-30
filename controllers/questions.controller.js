@@ -712,7 +712,6 @@ const getQuestionStats = async (req, res) => {
     let dateFilter = "";
     const queryParams = [];
     let paramIndex = 0;
-
     if (startTimestamp !== null) {
       paramIndex++;
       dateFilter += ` AND ets >= $${paramIndex}`;
@@ -834,6 +833,9 @@ const getQuestionsGraph = async (req, res) => {
     let dateFilter = "";
     const queryParams = [];
     let paramIndex = 0;
+    const hasTimeComponent =
+      (typeof startDate === "string" && startDate.includes("T")) ||
+      (typeof endDate === "string" && endDate.includes("T"));
 
     if (startTimestamp !== null) {
       paramIndex++;
@@ -899,10 +901,11 @@ const getQuestionsGraph = async (req, res) => {
         break;
     }
 
-    // MV fast-path for granularity=daily (no search): aggregate mv_question_answer_rates.
+    // MV fast-path for granularity=daily (no search, date-only range): aggregate mv_question_answer_rates.
+    // If caller provided explicit time component, MV daily buckets would overcount (whole-day aggregation).
     let result = null;
     let source = 'base';
-    if (granularity === 'daily' && !search && await mvExists('mv_question_answer_rates')) {
+    if (granularity === 'daily' && !search && !hasTimeComponent && await mvExists('mv_question_answer_rates')) {
       try {
         const mvParams = [];
         const conds = [];

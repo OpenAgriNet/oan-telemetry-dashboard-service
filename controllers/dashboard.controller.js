@@ -210,6 +210,9 @@ const getDashboardStats = async (req, res) => {
     const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
+    const hasTimeComponent =
+      (typeof startDate === "string" && startDate.includes("T")) ||
+      (typeof endDate === "string" && endDate.includes("T"));
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -241,7 +244,7 @@ const getDashboardStats = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1") {
+    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
       try {
         // Pure MV path. Feedback CTE picks MV when available, otherwise
         // falls back to a bounded base-table scan for the date range.
@@ -341,7 +344,7 @@ const getDashboardStats = async (req, res) => {
           SELECT COUNT(*) AS total_questions
           FROM filtered_questions
         `;
-      if (hasQuestionRateMV) {
+      if (hasQuestionRateMV && !hasTimeComponent) {
         const { clause: mvQuestionChannelClause, paramIndex } = buildChannelFilterClause(
           "channel",
           telemetryState,
@@ -370,7 +373,7 @@ const getDashboardStats = async (req, res) => {
             AND f.ets >= $1 AND f.ets <= $2
             AND 1=1
         `;
-      if (hasFeedbackDailyMV) {
+      if (hasFeedbackDailyMV && !hasTimeComponent) {
         const { clause: mvFeedbackChannelClause, paramIndex } = buildChannelFilterClause(
           "channel",
           telemetryState,
@@ -639,6 +642,9 @@ const getDashboardStatsUnified = async (req, res) => {
   try {
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const hasTimeComponent =
+      (typeof startDate === "string" && startDate.includes("T")) ||
+      (typeof endDate === "string" && endDate.includes("T"));
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
@@ -676,7 +682,7 @@ const getDashboardStatsUnified = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1") {
+    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
       try {
         // Pure MV path for Bharat Vistaar
         const feedbackCte = hasFeedbackDailyMV
@@ -775,7 +781,7 @@ const getDashboardStatsUnified = async (req, res) => {
           SELECT COUNT(*) AS total_questions
           FROM filtered_questions
         `;
-      if (hasQuestionRateMV) {
+      if (hasQuestionRateMV && !hasTimeComponent) {
         const { clause: mvQuestionChannelClause, paramIndex } = buildChannelFilterClause(
           "channel",
           unifiedTelemetryState,
@@ -804,7 +810,7 @@ const getDashboardStatsUnified = async (req, res) => {
             AND f.ets >= $1 AND f.ets <= $2
             AND 1=1
         `;
-      if (hasFeedbackDailyMV) {
+      if (hasFeedbackDailyMV && !hasTimeComponent) {
         const { clause: mvFeedbackChannelClause, paramIndex } = buildChannelFilterClause(
           "channel",
           unifiedTelemetryState,

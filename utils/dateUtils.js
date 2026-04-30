@@ -93,30 +93,22 @@ function parseAsIST(dateStr) {
         return parseInt(dateStr);
     }
 
-    // Remove the Z suffix if present - we want to interpret the datetime as IST, not UTC
-    // e.g., "2025-12-13T00:00:00.000Z" → we want midnight IST, not midnight UTC
     let normalizedDateStr = dateStr.trim();
+
+    // If timezone is explicitly provided (Z or +/-HH[:MM]), respect it as an
+    // absolute instant. This keeps ISO inputs unambiguous.
+    if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(normalizedDateStr)) {
+        const ts = Date.parse(normalizedDateStr);
+        return Number.isNaN(ts) ? null : ts;
+    }
     
     // Extract datetime components regardless of the timezone suffix
     // This regex handles: YYYY-MM-DD, YYYY-MM-DDTHH:mm:ss, YYYY-MM-DDTHH:mm:ss.sss, with optional Z or timezone
     const isoMatch = normalizedDateStr.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?)?/);
     
     if (!isoMatch) {
-        // Try parsing with Date constructor as fallback
-        const date = new Date(dateStr);
-        if (!isNaN(date.getTime())) {
-            // If parsed successfully, extract components and treat as IST
-            return createISTTimestamp(
-                date.getUTCFullYear(),
-                date.getUTCMonth(),
-                date.getUTCDate(),
-                date.getUTCHours(),
-                date.getUTCMinutes(),
-                date.getUTCSeconds(),
-                date.getUTCMilliseconds()
-            );
-        }
-        return null;
+        const ts = Date.parse(normalizedDateStr);
+        return Number.isNaN(ts) ? null : ts;
     }
 
     // Extract components from the matched groups
