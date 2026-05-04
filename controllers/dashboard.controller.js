@@ -524,7 +524,8 @@ const getAppDownloads = async (req, res) => {
           TO_CHAR(date, 'YYYY-MM-DD') AS date,
           platform,
           version,
-          installs
+          installs,
+          updated_at
         FROM public.app_download_daily_metrics
         WHERE ($1::bigint IS NULL OR date >= DATE(TO_TIMESTAMP($1 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
           AND ($2::bigint IS NULL OR date <= DATE(TO_TIMESTAMP($2 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
@@ -540,6 +541,7 @@ const getAppDownloads = async (req, res) => {
         platform: row.platform,
         version: row.version,
         installs: Number(row.installs) || 0,
+        updatedAt: row.updated_at,
       })),
       filters: {
         startDate,
