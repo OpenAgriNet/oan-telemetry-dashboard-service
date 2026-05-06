@@ -493,6 +493,71 @@ const getDashboardStats = async (req, res) => {
   }
 };
 
+const getAppDownloads = async (req, res) => {
+  try {
+    if (req.telemetryState?.id !== "bharat-vistaar") {
+      return res.status(403).json({
+        success: false,
+        error: "App downloads are only available for Bharat Vistaar",
+      });
+    }
+
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid date format" });
+    }
+
+    const result = await pool.query(
+      `
+        SELECT
+          TO_CHAR(date, 'YYYY-MM-DD') AS date,
+          platform,
+          version,
+          installs,
+          updated_at
+        FROM public.app_download_daily_metrics
+        WHERE ($1::bigint IS NULL OR date >= DATE(TO_TIMESTAMP($1 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
+          AND ($2::bigint IS NULL OR date <= DATE(TO_TIMESTAMP($2 / 1000.0) AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'))
+        ORDER BY date DESC, platform ASC, version ASC
+      `,
+      [startTimestamp, endTimestamp],
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows.map((row) => ({
+        date: row.date,
+        platform: row.platform,
+        version: row.version,
+        installs: Number(row.installs) || 0,
+        updatedAt: row.updated_at,
+      })),
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching app downloads:", error);
+    return res
+      .status(500)
+      .json({ success: false, error: "Error fetching app downloads" });
+  }
+};
+
 // Legacy stub kept for backwards compatibility with /dashboard/user-graph.
 const getUserGraph = async (req, res) => {
   try {
@@ -922,6 +987,7 @@ const getDashboardStatsUnified = async (req, res) => {
 module.exports = {
   getUserLoginAnalytics,
   getDashboardStats,
+  getAppDownloads,
   getDashboardStatsUnified,
   getUserGraph,
   getLangfuseQuestionsTree,
