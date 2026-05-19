@@ -8,6 +8,7 @@ const { getTotalSessionsCount } = require("./sessions.controller");
 const { getTotalUsersCount } = require("./user.controller");
 const { parseDateRange } = require("../utils/dateUtils");
 const { getTotalUsers } = require("../langfuse/users");
+const { getTotalSessions } = require("../langfuse/sessions");
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
@@ -240,9 +241,9 @@ const getDashboardStats = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        totalUsers: lfTotalUsers,
+        totalUsers: await getTotalUsers(startDate, endDate),
         totalNewUsers: parseInt(stats.new_users) || 0,
-        totalSessions: parseInt(stats.total_sessions) || 0,
+        totalSessions: await getTotalSessions(startDate, endDate),
         totalQuestions: parseInt(stats.total_questions) || 0,
         totalFeedback: parseInt(stats.total_feedback) || 0,
         totalLikes: parseInt(stats.total_likes) || 0,
