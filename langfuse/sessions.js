@@ -34,7 +34,6 @@ export async function getTotalSessions(from, to) {
       if (response.status !== 200) {
         throw new Error(`Failed to fetch data due to error: ${data.message}`);
       }
-      console.log(data);
       return data.data.length;
     })
     .catch((error) => console.log(error));
