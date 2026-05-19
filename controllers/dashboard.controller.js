@@ -1,22 +1,26 @@
-const pool = require('../services/db'); // adjust path as needed
-const { getTotalFeedbackCount, getTotalLikesDislikesCount } = require('./feedback.controller');
-const { getTotalQuestionsCount } = require('./questions.controller');
-const { getTotalSessionsCount } = require('./sessions.controller');
-const { getTotalUsersCount } = require('./user.controller');
-const { parseDateRange } = require('../utils/dateUtils');
+const pool = require("../services/db"); // adjust path as needed
+const {
+  getTotalFeedbackCount,
+  getTotalLikesDislikesCount,
+} = require("./feedback.controller");
+const { getTotalQuestionsCount } = require("./questions.controller");
+const { getTotalSessionsCount } = require("./sessions.controller");
+const { getTotalUsersCount } = require("./user.controller");
+const { parseDateRange } = require("../utils/dateUtils");
+const { getTotalUsers } = require("../langfuse/users");
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
  * Returns user login analytics for dashboard
  */
 const getUserLoginAnalytics = async (req, res) => {
-    try {
-        const granularity = req.query.granularity === 'hourly' ? 'hourly' : 'daily';
+  try {
+    const granularity = req.query.granularity === "hourly" ? "hourly" : "daily";
 
-        if (granularity === 'daily') {
-            // Last 40 days including today
-            const result = await pool.query(`
-                SELECT 
+    if (granularity === "daily") {
+      // Last 40 days including today
+      const result = await pool.query(`
+                SELECT
                     to_char(to_timestamp(ets / 1000)::date, 'YYYY-MM-DD') as date,
                     COUNT(DISTINCT uid) as unique_logins,
                     array_agg(DISTINCT uid) as uids
@@ -30,44 +34,44 @@ const getUserLoginAnalytics = async (req, res) => {
                 ORDER BY date DESC
             `);
 
-            // Fill missing days with 0 and empty array for uids
-            const today = new Date();
-            const days = [];
-            for (let i = 7; i >= 0; i--) {
-                const d = new Date(today);
-                d.setDate(today.getDate() - i);
-                days.push(d.toISOString().slice(0, 10));
-            }
-            const dataMap = {};
-            result.rows.forEach(row => {
-                dataMap[row.date] = {
-                    uniqueLogins: parseInt(row.unique_logins),
-                    uids: row.uids || []
-                };
-            });
-            const data = days.map(date => ({
-                date,
-                uniqueLogins: dataMap[date]?.uniqueLogins || 0,
-                uids: dataMap[date]?.uids || []
-            }));
+      // Fill missing days with 0 and empty array for uids
+      const today = new Date();
+      const days = [];
+      for (let i = 7; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        days.push(d.toISOString().slice(0, 10));
+      }
+      const dataMap = {};
+      result.rows.forEach((row) => {
+        dataMap[row.date] = {
+          uniqueLogins: parseInt(row.unique_logins),
+          uids: row.uids || [],
+        };
+      });
+      const data = days.map((date) => ({
+        date,
+        uniqueLogins: dataMap[date]?.uniqueLogins || 0,
+        uids: dataMap[date]?.uids || [],
+      }));
 
-            return res.json({ success: true, granularity, data });
-        } else {
-            // Last 12 hours including current hour
-            const result = await pool.query(`
+      return res.json({ success: true, granularity, data });
+    } else {
+      // Last 12 hours including current hour
+      const result = await pool.query(`
                 WITH combined AS (
                     SELECT uid, ets FROM questions WHERE uid IS NOT NULL
                     UNION ALL
                     SELECT uid, ets FROM errordetails WHERE uid IS NOT NULL
                 ),
                 logins AS (
-                    SELECT 
+                    SELECT
                         date_trunc('hour', to_timestamp(ets / 1000)) AS hour,
                         uid
                     FROM combined
                     WHERE to_timestamp(ets / 1000) >= date_trunc('hour', now()) - INTERVAL '11 hours'
                 )
-                SELECT 
+                SELECT
                     hour,
                     COUNT(DISTINCT uid) AS unique_logins
                 FROM logins
@@ -75,61 +79,67 @@ const getUserLoginAnalytics = async (req, res) => {
                 ORDER BY hour DESC
             `);
 
-            // Get current time and generate past 12 hourly time slots
-            const now = new Date();
-            const hours = [];
-            for (let i = 11; i >= 0; i--) {
-                const h = new Date(now);
-                h.setHours(now.getHours() - i, 0, 0, 0);
-                hours.push(h.toISOString().slice(0, 13) + ':00'); // Format: YYYY-MM-DD HH:00
-            }
+      // Get current time and generate past 12 hourly time slots
+      const now = new Date();
+      const hours = [];
+      for (let i = 11; i >= 0; i--) {
+        const h = new Date(now);
+        h.setHours(now.getHours() - i, 0, 0, 0);
+        hours.push(h.toISOString().slice(0, 13) + ":00"); // Format: YYYY-MM-DD HH:00
+      }
 
-            // Build a map of hour => unique login count
-            const dataMap = {};
-            result.rows.forEach(row => {
-                const hour = new Date(row.hour).toISOString().slice(0, 13) + ':00';
-                dataMap[hour] = parseInt(row.unique_logins, 10);
-            });
+      // Build a map of hour => unique login count
+      const dataMap = {};
+      result.rows.forEach((row) => {
+        const hour = new Date(row.hour).toISOString().slice(0, 13) + ":00";
+        dataMap[hour] = parseInt(row.unique_logins, 10);
+      });
 
-            // Map all 12 hours, filling missing hours with 0
-            const data = hours.map(hour => ({
-                hour,
-                uniqueLogins: dataMap[hour] || 0
-            }));
+      // Map all 12 hours, filling missing hours with 0
+      const data = hours.map((hour) => ({
+        hour,
+        uniqueLogins: dataMap[hour] || 0,
+      }));
 
-            return res.json({ success: true, granularity: 'hourly', data });
-        }
-
-    } catch (error) {
-        console.error('Error in getUserLoginAnalytics:', error);
-        res.status(500).json({ success: false, error: 'Internal server error' });
+      return res.json({ success: true, granularity: "hourly", data });
     }
+  } catch (error) {
+    console.error("Error in getUserLoginAnalytics:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
 };
 
 // Get overall dashboard statistics - OPTIMIZED to return only essential metrics
 const getDashboardStats = async (req, res) => {
   try {
-    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
     const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
 
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
 
-    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-      return res.status(400).json({ success: false, error: "Invalid date format" });
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid date format" });
     }
 
     const queryParams = [];
     let paramIndex = 0;
-    let questionDateFilter = '';
-    let feedbackDateFilter = '';
-    let errordetailsDateFilter = '';
-    let futureFilter = '';
+    let questionDateFilter = "";
+    let feedbackDateFilter = "";
+    let errordetailsDateFilter = "";
+    let futureFilter = "";
 
     if (startTimestamp !== null) {
       paramIndex++;
       questionDateFilter += ` AND ets >= $${paramIndex}`;
       feedbackDateFilter += ` AND ets >= $${paramIndex}`;
-      errordetailsDateFilter += ` AND ets >= $${paramIndex}`
+      errordetailsDateFilter += ` AND ets >= $${paramIndex}`;
       queryParams.push(startTimestamp);
     }
 
@@ -214,7 +224,7 @@ const getDashboardStats = async (req, res) => {
         CROSS JOIN question_stats qs
         CROSS JOIN feedback_stats fs
       `,
-      values: queryParams
+      values: queryParams,
     };
 
     //     const total_questions = await getTotalQuestionsCount(null, startDate, endDate);
@@ -225,49 +235,51 @@ const getDashboardStats = async (req, res) => {
 
     const result = await pool.query(query);
     const stats = result.rows[0];
+    const lfTotalUsers = await getTotalUsers(startDate, endDate);
 
     res.status(200).json({
       success: true,
       data: {
-        totalUsers: parseInt(stats.total_users) || 0,
+        totalUsers: lfTotalUsers,
         totalNewUsers: parseInt(stats.new_users) || 0,
         totalSessions: parseInt(stats.total_sessions) || 0,
         totalQuestions: parseInt(stats.total_questions) || 0,
         totalFeedback: parseInt(stats.total_feedback) || 0,
         totalLikes: parseInt(stats.total_likes) || 0,
-        totalDislikes: parseInt(stats.total_dislikes) || 0
+        totalDislikes: parseInt(stats.total_dislikes) || 0,
       },
       filters: {
         startDate,
         endDate,
         appliedStartTimestamp: startTimestamp,
-        appliedEndTimestamp: endTimestamp
-      }
+        appliedEndTimestamp: endTimestamp,
+      },
     });
-
   } catch (error) {
     console.error("Error fetching dashboard stats:", error);
-    res.status(500).json({ success: false, error: "Error fetching dashboard statistics" });
+    res
+      .status(500)
+      .json({ success: false, error: "Error fetching dashboard statistics" });
   }
 };
 
 const getUserGraph = async (req, res) => {
-    try {
-        res.status(200).json({
-            success: true,
-            data: 'test'
-        });
-    } catch (error) {
-        console.error("Error fetching user graph:", error);
-        res.status(500).json({
-            success: false,
-            error: "Error fetching user graph"
-        });
-    }
+  try {
+    res.status(200).json({
+      success: true,
+      data: "test",
+    });
+  } catch (error) {
+    console.error("Error fetching user graph:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error fetching user graph",
+    });
+  }
 };
 
 module.exports = {
-    getUserLoginAnalytics,
-    getDashboardStats,
-    getUserGraph
+  getUserLoginAnalytics,
+  getDashboardStats,
+  getUserGraph,
 };
