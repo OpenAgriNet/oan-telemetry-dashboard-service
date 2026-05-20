@@ -1,4 +1,4 @@
-import { LangfuseConfig as config } from "./config.js";
+const { LangfuseConfig: config } = require("./config.js");
 
 const authString = `${config.public_key}:${config.secret_key}`;
 const encodedAuth = Buffer.from(authString).toString("base64");
@@ -75,10 +75,12 @@ async function getTotalChatQuestions(from, to) {
     .catch((error) => console.log(error));
 }
 
-export async function getTotalQuestions(from, to) {
+async function getTotalQuestions(from, to) {
   const [totalVoiceQuestions, totalChatQuestions] = await Promise.all([
     getTotalVoiceQuestions(from, to),
     getTotalChatQuestions(from, to),
   ]);
   return totalChatQuestions + totalVoiceQuestions;
 }
+
+module.exports = { getTotalQuestions };

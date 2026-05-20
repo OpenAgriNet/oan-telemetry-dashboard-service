@@ -1,11 +1,11 @@
-import { LangfuseConfig as config } from "./config.js";
+const { LangfuseConfig: config } = require("./config.js");
 
 const authString = `${config.public_key}:${config.secret_key}`;
 const encodedAuth = Buffer.from(authString).toString("base64");
 const lfHeaders = new Headers();
 lfHeaders.append("Authorization", `Basic ${encodedAuth}`);
 
-export async function getTotalSessions(from, to) {
+async function getTotalSessions(from, to) {
   const query = JSON.stringify({
     view: "traces",
     metrics: [{ measure: "count", aggregation: "count" }],
@@ -38,3 +38,5 @@ export async function getTotalSessions(from, to) {
     })
     .catch((error) => console.log(error));
 }
+
+module.exports = { getTotalSessions };
