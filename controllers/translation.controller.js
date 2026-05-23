@@ -76,8 +76,9 @@ const getTranslationBuckets = async (req, res) => {
         english: english.pagination,
       },
       summary: {
-        pretranslatedCount: translated.items.length,
+        translatedCount: translated.items.length,
         englishCount: english.items.length,
+        pretranslatedCount: translated.items.length,
       },
       filters: {
         startDate,
