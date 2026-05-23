@@ -8,6 +8,7 @@ const sessionRoutes = require("./routes/sessionRoutes");
 const feedbackRoutes = require("./routes/feedbackRoutes");
 const errorRoutes = require("./routes/errorRoutes");
 const dashboardRoutes = require("./routes/dashboard.Routes");
+const translationRoutes = require("./routes/translationRoutes");
 const authController = require("./controllers/auth.controller");
 const leaderboardRoutes = require("./routes/leaderboard.Routes");
 const villageRoutes = require("./routes/villageRoutes");
@@ -45,6 +46,7 @@ app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
+app.use("/v1", authController, translationRoutes);
 app.use("/v1/api/villages", authController, villageRoutes);
 
 const PORT = process.env.PORT || 3000;

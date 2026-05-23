@@ -6,9 +6,9 @@ const {
     getQuestionsBySessionId,
     getQuestionStats,
     getQuestionsGraph,
-    getTotalQuestionsCount,
-    fetchQuestionsFromDB,
-    formatQuestionData
+    getTotalQuestionsCountHandler,
+    fetchQuestionsFromDBHandler,
+    formatQuestionDataHandler
 } = require('../controllers/questions.controller');
 
 const router = express.Router();
@@ -22,9 +22,6 @@ router.get('/questions/stats', getQuestionStats);
 // Get questions graph data for time-series visualization
 router.get('/questions/graph', getQuestionsGraph);
 
-// Get single question by ID
-router.get('/questions/:id', getQuestionById);
-
 // Get questions by user ID with pagination
 router.get('/users/:userId/questions', getQuestionsByUserId);
 
@@ -32,12 +29,15 @@ router.get('/users/:userId/questions', getQuestionsByUserId);
 router.get('/questions/session/:sessionId', getQuestionsBySessionId);
 
 // Get total questions count
-router.get('/questions/count', getTotalQuestionsCount);
+router.get('/questions/count', getTotalQuestionsCountHandler);
 
 // Fetch questions from DB
-router.get('/questions/fetch', fetchQuestionsFromDB);
+router.get('/questions/fetch', fetchQuestionsFromDBHandler);
 
 // Format question data
-router.get('/questions/format', formatQuestionData);
+router.get('/questions/format', formatQuestionDataHandler);
+
+// Get single question by ID
+router.get('/questions/:id', getQuestionById);
 
 module.exports = router;
