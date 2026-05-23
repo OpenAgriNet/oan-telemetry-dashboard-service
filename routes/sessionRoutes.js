@@ -5,9 +5,9 @@ const {
     getSessionsByUserId,
     getSessionStats,
     getSessionsGraph,
-    getTotalSessionsCount,
-    fetchSessionsFromDB,
-    formatSessionData
+    getTotalSessionsCountHandler,
+    fetchSessionsFromDBHandler,
+    formatSessionDataHandler
 } = require('../controllers/sessions.controller');
 
 const router = express.Router();
@@ -21,19 +21,19 @@ router.get('/sessions/stats', getSessionStats);
 // Get sessions graph data for time-series visualization
 router.get('/sessions/graph', getSessionsGraph);
 
-// Get single session details by session ID
-router.get('/sessions/:sessionId', getSessionById);
-
 // Get sessions by user ID with pagination
 router.get('/users/:userId/sessions', getSessionsByUserId);
 
 // Get total sessions count
-router.get('/sessions/count', getTotalSessionsCount);
+router.get('/sessions/count', getTotalSessionsCountHandler);
 
 // Fetch sessions from DB
-router.get('/sessions/fetch', fetchSessionsFromDB);
+router.get('/sessions/fetch', fetchSessionsFromDBHandler);
 
 // Format session data
-router.get('/sessions/format', formatSessionData);
+router.get('/sessions/format', formatSessionDataHandler);
+
+// Get single session details by session ID
+router.get('/sessions/:sessionId', getSessionById);
 
 module.exports = router;

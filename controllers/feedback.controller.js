@@ -218,6 +218,154 @@ function formatFeedbackData(feedbackItem) {
     };
 }
 
+const getTotalFeedbackCountHandler = async (req, res) => {
+    try {
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const rating = req.query.rating === 'like' || req.query.rating === 'dislike'
+            ? req.query.rating
+            : null;
+
+        if (search.length > 1000) {
+            return res.status(400).json({
+                success: false,
+                error: "Search term too long"
+            });
+        }
+
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
+            });
+        }
+
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({
+                success: false,
+                error: "Start date cannot be after end date"
+            });
+        }
+
+        const totalCount = await getTotalFeedbackCount(search, startDate, endDate, rating);
+
+        res.status(200).json({
+            success: true,
+            data: {
+                totalCount
+            },
+            filters: {
+                search,
+                rating,
+                startDate,
+                endDate,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching total feedback count:", error);
+        res.status(500).json({
+            success: false,
+            error: "Error fetching total feedback count"
+        });
+    }
+};
+
+const fetchAllFeedbackFromDBHandler = async (req, res) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+        const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+        const rating = req.query.rating === 'like' || req.query.rating === 'dislike'
+            ? req.query.rating
+            : null;
+        const sortBy = req.query.sortBy;
+        const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
+
+        if (search.length > 1000) {
+            return res.status(400).json({
+                success: false,
+                error: "Search term too long"
+            });
+        }
+
+        const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+        if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp"
+            });
+        }
+
+        if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+            return res.status(400).json({
+                success: false,
+                error: "Start date cannot be after end date"
+            });
+        }
+
+        const data = await fetchAllFeedbackFromDB(
+            page,
+            limit,
+            search,
+            startDate,
+            endDate,
+            rating,
+            sortBy,
+            sortOrder
+        );
+
+        res.status(200).json({
+            success: true,
+            data,
+            pagination: {
+                currentPage: page,
+                itemsPerPage: limit,
+                itemsReturned: data.length
+            },
+            filters: {
+                search,
+                rating,
+                startDate,
+                endDate,
+                sortBy: sortBy || null,
+                sortOrder,
+                appliedStartTimestamp: startTimestamp,
+                appliedEndTimestamp: endTimestamp
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching feedback from database:", error);
+        res.status(500).json({
+            success: false,
+            error: "Error fetching feedback from database"
+        });
+    }
+};
+
+const formatFeedbackDataHandler = async (req, res) => {
+    try {
+        res.status(200).json({
+            success: true,
+            message: "This endpoint is for internal data formatting only",
+            data: {
+                description: "Use GET /feedback to retrieve formatted feedback data"
+            }
+        });
+    } catch (error) {
+        console.error("Error in format feedback data handler:", error);
+        res.status(500).json({
+            success: false,
+            error: "Error in format feedback data handler"
+        });
+    }
+};
+
 // Controller function to get all feedback with pagination, search, and date filtering
 async function getAllFeedback(req, res) {
     try {
@@ -752,5 +900,8 @@ module.exports = {
     getTotalFeedbackCount,
     fetchAllFeedbackFromDB,
     formatFeedbackData,
-    getTotalLikesDislikesCount
+    getTotalLikesDislikesCount,
+    getTotalFeedbackCountHandler,
+    fetchAllFeedbackFromDBHandler,
+    formatFeedbackDataHandler
 };

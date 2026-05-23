@@ -161,6 +161,157 @@ function formatQuestionData(row) {
   };
 }
 
+const getTotalQuestionsCountHandler = async (req, res) => {
+  try {
+    const search = req.query.search ? String(req.query.search).trim() : "";
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+
+    if (search.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term too long",
+      });
+    }
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp",
+      });
+    }
+
+    if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+      return res.status(400).json({
+        success: false,
+        error: "Start date cannot be after end date",
+      });
+    }
+
+    const totalCount = await getTotalQuestionsCount(search, startDate, endDate);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalCount,
+      },
+      filters: {
+        search,
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching total questions count:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error fetching total questions count",
+    });
+  }
+};
+
+const fetchQuestionsFromDBHandler = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 10));
+    const search = req.query.search ? String(req.query.search).trim() : "";
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const sortBy = req.query.sortBy;
+    const sortOrder = req.query.sortOrder === "asc" ? "ASC" : "DESC";
+
+    if (search.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        error: "Search term too long",
+      });
+    }
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp",
+      });
+    }
+
+    if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+      return res.status(400).json({
+        success: false,
+        error: "Start date cannot be after end date",
+      });
+    }
+
+    const data = await fetchQuestionsFromDB(
+      page,
+      limit,
+      search,
+      startDate,
+      endDate,
+      sortBy,
+      sortOrder
+    );
+
+    res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        currentPage: page,
+        itemsPerPage: limit,
+        itemsReturned: data.length,
+      },
+      filters: {
+        search,
+        startDate,
+        endDate,
+        sortBy: sortBy || null,
+        sortOrder,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching questions from database:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error fetching questions from database",
+    });
+  }
+};
+
+const formatQuestionDataHandler = async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      message: "This endpoint is for internal data formatting only",
+      data: {
+        description: "Use GET /questions to retrieve formatted question data",
+      },
+    });
+  } catch (error) {
+    console.error("Error in format question data handler:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error in format question data handler",
+    });
+  }
+};
+
 const getQuestions = async (req, res) => {
   try {
     // Extract and sanitize pagination parameters from query string
@@ -880,4 +1031,7 @@ module.exports = {
   getTotalQuestionsCount,
   fetchQuestionsFromDB,
   formatQuestionData,
+  getTotalQuestionsCountHandler,
+  fetchQuestionsFromDBHandler,
+  formatQuestionDataHandler,
 };
