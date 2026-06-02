@@ -18,6 +18,7 @@ const asrRoutes = require("./routes/asrRoutes");
 const ttsRoutes = require("./routes/ttsRoutes");
 const callRoutes = require("./routes/callRoutes");
 const langfuseRoutes = require("./routes/langfuseRoutes");
+const uiEventsRoutes = require("./routes/uiEventsRoutes");
 const pool = require("./services/db");
 const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
 const app = express();
@@ -150,6 +151,7 @@ app.use("/v1", errorRoutes);
 app.use("/v1",  dashboardRoutes);
 app.use("/v1", callRoutes);
 app.use("/v1", langfuseRoutes);
+app.use("/v1", uiEventsRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 
