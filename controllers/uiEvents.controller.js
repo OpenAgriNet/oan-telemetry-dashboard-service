@@ -1,6 +1,5 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
-const { buildChannelFilterClause } = require("../utils/stateAccess");
 
 const VALID_CATEGORIES = new Set(["location", "notification", "notification_feedback"]);
 const VALID_SORT_BY = new Set(["event_time", "status_code"]);
@@ -20,46 +19,10 @@ function normalizeSortOrder(sortOrder) {
   return VALID_SORT_ORDER.has(normalized) ? normalized : "desc";
 }
 
-function buildBaseFilters({
-  query,
-  telemetryState,
-}) {
-  const params = [];
-  let idx = 0;
-  const conditions = ["event_name IS NOT NULL"];
-
-  const {
-    clause: stateChannelClause,
-    paramIndex: stateChannelParamIndex,
-  } = buildChannelFilterClause("channel", telemetryState, params, idx);
-  idx = stateChannelParamIndex;
-  conditions.push(stateChannelClause);
-
-  const { startTimestamp, endTimestamp } = parseDateRange(query.startDate, query.endDate);
-
-  if (startTimestamp !== null) {
-    idx += 1;
-    conditions.push(`COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) >= to_timestamp($${idx}::double precision / 1000.0)`);
-    params.push(startTimestamp);
-  }
-
-  if (endTimestamp !== null) {
-    idx += 1;
-    conditions.push(`COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($${idx}::double precision / 1000.0)`);
-    params.push(endTimestamp);
-  }
-
-  const category = normalizeCategory(query.category);
-  if (category) {
-    idx += 1;
-    conditions.push(`category = $${idx}`);
-    params.push(category);
-  }
-
+function getStateChannelParams(telemetryState) {
   return {
-    where: `WHERE ${conditions.join(" AND ")}`,
-    params,
-    paramIndex: idx,
+    exactChannels: telemetryState?.exactChannels || [],
+    prefixChannels: telemetryState?.prefixChannels || [],
   };
 }
 
@@ -70,24 +33,9 @@ async function getUiEvents(req, res) {
     const offset = (page - 1) * limit;
     const sortBy = normalizeSortBy(req.query.sortBy);
     const sortOrder = normalizeSortOrder(req.query.sortOrder);
-
-    const { where, params, paramIndex } = buildBaseFilters({
-      query: req.query,
-      telemetryState: req.telemetryState,
-    });
-
-    let idx = paramIndex;
-    idx += 1;
-    const limitParam = idx;
-    params.push(limit);
-    idx += 1;
-    const offsetParam = idx;
-    params.push(offset);
-
-    const orderBy =
-      sortBy === "status_code"
-        ? `ORDER BY status_code ${sortOrder}, event_time DESC NULLS LAST, created_at DESC`
-        : `ORDER BY event_time ${sortOrder} NULLS LAST, created_at ${sortOrder}`;
+    const category = normalizeCategory(req.query.category);
+    const { startTimestamp, endTimestamp } = parseDateRange(req.query.startDate, req.query.endDate);
+    const { exactChannels, prefixChannels } = getStateChannelParams(req.telemetryState);
 
     const sql = `
       SELECT
@@ -114,12 +62,51 @@ async function getUiEvents(req, res) {
         created_at,
         COUNT(*) OVER () AS total_count
       FROM ui_interaction_events
-      ${where}
-      ${orderBy}
-      LIMIT $${limitParam} OFFSET $${offsetParam}
+      WHERE event_name IS NOT NULL
+        AND (
+          (
+            COALESCE(array_length($1::text[], 1), 0) = 0
+            AND COALESCE(array_length($2::text[], 1), 0) = 0
+          )
+          OR channel = ANY($1::text[])
+          OR EXISTS (
+            SELECT 1
+            FROM unnest($2::text[]) AS prefixes(prefix)
+            WHERE channel ILIKE prefixes.prefix || '%'
+          )
+        )
+        AND (
+          $3::double precision IS NULL
+          OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) >= to_timestamp($3::double precision / 1000.0)
+        )
+        AND (
+          $4::double precision IS NULL
+          OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($4::double precision / 1000.0)
+        )
+        AND ($5::text IS NULL OR category = $5::text)
+      ORDER BY
+        CASE WHEN $6::text = 'event_time' AND $7::text = 'asc' THEN event_time END ASC NULLS LAST,
+        CASE WHEN $6::text = 'event_time' AND $7::text = 'desc' THEN event_time END DESC NULLS LAST,
+        CASE WHEN $6::text = 'status_code' AND $7::text = 'asc' THEN status_code END ASC NULLS LAST,
+        CASE WHEN $6::text = 'status_code' AND $7::text = 'desc' THEN status_code END DESC NULLS LAST,
+        CASE WHEN $6::text = 'status_code' THEN event_time END DESC NULLS LAST,
+        CASE WHEN $6::text = 'event_time' AND $7::text = 'asc' THEN created_at END ASC NULLS LAST,
+        CASE WHEN $6::text = 'event_time' AND $7::text = 'desc' THEN created_at END DESC NULLS LAST,
+        created_at DESC
+      LIMIT $8 OFFSET $9
     `;
 
-    const result = await pool.query(sql, params);
+    const result = await pool.query(sql, [
+      exactChannels,
+      prefixChannels,
+      startTimestamp,
+      endTimestamp,
+      category,
+      sortBy,
+      sortOrder,
+      limit,
+      offset,
+    ]);
     const total = result.rows.length ? parseInt(result.rows[0].total_count, 10) : 0;
 
     const data = result.rows.map(({ total_count, ...row }) => row);
@@ -146,14 +133,7 @@ async function getUiEvents(req, res) {
 
 async function getUiEventById(req, res) {
   try {
-    const params = [req.params.id];
-    let idx = 1;
-
-    const {
-      clause: stateChannelClause,
-      paramIndex,
-    } = buildChannelFilterClause("channel", req.telemetryState, params, idx);
-    idx = paramIndex;
+    const { exactChannels, prefixChannels } = getStateChannelParams(req.telemetryState);
 
     const result = await pool.query(
       `
@@ -182,10 +162,21 @@ async function getUiEventById(req, res) {
           created_at
         FROM ui_interaction_events
         WHERE id = $1
-          AND ${stateChannelClause}
+          AND (
+            (
+              COALESCE(array_length($2::text[], 1), 0) = 0
+              AND COALESCE(array_length($3::text[], 1), 0) = 0
+            )
+            OR channel = ANY($2::text[])
+            OR EXISTS (
+              SELECT 1
+              FROM unnest($3::text[]) AS prefixes(prefix)
+              WHERE channel ILIKE prefixes.prefix || '%'
+            )
+          )
         LIMIT 1
       `,
-      params,
+      [req.params.id, exactChannels, prefixChannels],
     );
 
     if (result.rows.length === 0) {
