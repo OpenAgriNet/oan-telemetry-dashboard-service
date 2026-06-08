@@ -108,6 +108,8 @@ async function getNotifications(req, res) {
             (
               $5::text = 'location'
               AND event_name IN (
+                'location_allowed',
+                'location_denied',
                 'location_browser_allowed',
                 'location_browser_never_allow'
               )
@@ -175,10 +177,10 @@ async function getNotificationSummary(req, res) {
     const result = await pool.query(
       `
         SELECT
-          COUNT(*) FILTER (
-            WHERE event_name = 'location_browser_allowed'
-          ) AS location_allowed,
-          COUNT(*) FILTER (WHERE event_name = 'location_browser_never_allow') AS location_denied,
+          COUNT(*) FILTER (WHERE event_name = 'location_allowed') AS location_prompt_allowed,
+          COUNT(*) FILTER (WHERE event_name = 'location_denied') AS location_prompt_denied,
+          COUNT(*) FILTER (WHERE event_name = 'location_browser_allowed') AS location_browser_allowed,
+          COUNT(*) FILTER (WHERE event_name = 'location_browser_never_allow') AS location_browser_denied,
           COUNT(*) FILTER (
             WHERE event_name = 'notification_api_response'
               AND COALESCE(status_code, 0) = 200
