@@ -108,8 +108,7 @@ async function getNotifications(req, res) {
             (
               $5::text = 'location'
               AND event_name IN (
-                'location_browser_allow_this_time',
-                'location_browser_allow_while_visiting_site',
+                'location_browser_allowed',
                 'location_browser_never_allow'
               )
             )
@@ -177,10 +176,7 @@ async function getNotificationSummary(req, res) {
       `
         SELECT
           COUNT(*) FILTER (
-            WHERE event_name IN (
-              'location_browser_allow_this_time',
-              'location_browser_allow_while_visiting_site'
-            )
+            WHERE event_name = 'location_browser_allowed'
           ) AS location_allowed,
           COUNT(*) FILTER (WHERE event_name = 'location_browser_never_allow') AS location_denied,
           COUNT(*) FILTER (
