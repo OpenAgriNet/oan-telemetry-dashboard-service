@@ -105,7 +105,14 @@ async function getNotifications(req, res) {
             OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($4::double precision / 1000.0)
           )
           AND (
-            ($5::text = 'location' AND category = 'location')
+            (
+              $5::text = 'location'
+              AND event_name IN (
+                'location_browser_allow_this_time',
+                'location_browser_allow_while_visiting_site',
+                'location_browser_never_allow'
+              )
+            )
             OR ($5::text = 'notification_api' AND event_name = 'notification_api_response')
             OR ($5::text = 'notification_actions' AND category = 'notification' AND event_name <> 'notification_api_response')
             OR ($5::text = 'notification_feedback' AND category = 'notification_feedback')
@@ -169,13 +176,18 @@ async function getNotificationSummary(req, res) {
     const result = await pool.query(
       `
         SELECT
-          COUNT(*) FILTER (WHERE event_name = 'location_allowed') AS location_allowed,
-          COUNT(*) FILTER (WHERE event_name = 'location_denied') AS location_denied,
+          COUNT(*) FILTER (
+            WHERE event_name IN (
+              'location_browser_allow_this_time',
+              'location_browser_allow_while_visiting_site'
+            )
+          ) AS location_allowed,
+          COUNT(*) FILTER (WHERE event_name = 'location_browser_never_allow') AS location_denied,
           COUNT(*) FILTER (
             WHERE event_name = 'notification_api_response'
               AND COALESCE(status_code, 0) = 200
           ) AS notification_api_success,
-          COUNT(*) FILTER (WHERE event_name = 'notification_panel_opened') AS notification_panel,
+          COUNT(*) FILTER (WHERE event_name = 'notification_bell') AS notification_bell,
           COUNT(*) FILTER (WHERE event_name = 'notification_feedback_yes') AS feedback_yes,
           COUNT(*) FILTER (WHERE event_name = 'notification_feedback_no') AS feedback_no
         FROM ui_interaction_events
