@@ -6,6 +6,7 @@ const VALID_EVENT_GROUPS = new Set([
   "notification_api",
   "notification_actions",
   "notification_feedback",
+  "sessions",
 ]);
 const VALID_SORT_BY = new Set(["event_time", "status_code"]);
 const VALID_SORT_ORDER = new Set(["asc", "desc"]);
@@ -56,6 +57,97 @@ async function getNotifications(req, res) {
       startTimestamp,
       endTimestamp,
     } = getCommonParams(req);
+
+    if (eventGroup === "sessions") {
+      const sessionTimeOrder = sortOrder === "asc" ? "ASC" : "DESC";
+      const sessionResult = await pool.query(
+        `
+          WITH filtered_events AS (
+            SELECT
+              sid,
+              fingerprint_id,
+              event_name,
+              response_count,
+              COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) AS effective_event_time
+            FROM ui_interaction_events
+            WHERE event_name IS NOT NULL
+              AND sid IS NOT NULL
+              AND (
+                (
+                  COALESCE(array_length($1::text[], 1), 0) = 0
+                  AND COALESCE(array_length($2::text[], 1), 0) = 0
+                )
+                OR channel = ANY($1::text[])
+                OR EXISTS (
+                  SELECT 1
+                  FROM unnest($2::text[]) AS prefixes(prefix)
+                  WHERE channel ILIKE prefixes.prefix || '%'
+                )
+              )
+              AND (
+                $3::double precision IS NULL
+                OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) >= to_timestamp($3::double precision / 1000.0)
+              )
+              AND (
+                $4::double precision IS NULL
+                OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($4::double precision / 1000.0)
+              )
+              AND category IN ('notification', 'notification_feedback')
+          ),
+          aggregated_sessions AS (
+            SELECT
+              sid,
+              MAX(fingerprint_id) FILTER (WHERE fingerprint_id IS NOT NULL) AS fingerprint_id,
+              MAX(effective_event_time) AS session_time,
+              COALESCE(SUM(response_count) FILTER (WHERE event_name = 'notification_api_response'), 0) AS total_notifications_returned,
+              COUNT(*) FILTER (WHERE event_name = 'notification_bell') AS bell_clicks,
+              COUNT(*) FILTER (WHERE event_name = 'notification_selected') AS notification_opens,
+              COUNT(*) FILTER (WHERE event_name = 'notification_feedback_yes') AS like_count,
+              COUNT(*) FILTER (WHERE event_name = 'notification_feedback_no') AS dislike_count,
+              COUNT(*) FILTER (WHERE event_name = 'notification_feedback_dislike_submitted') AS negative_feedback_submitted,
+              COUNT(*) OVER () AS total_count
+            FROM filtered_events
+            GROUP BY sid
+          )
+          SELECT
+            sid,
+            fingerprint_id,
+            session_time,
+            total_notifications_returned,
+            bell_clicks,
+            notification_opens,
+            like_count,
+            dislike_count,
+            negative_feedback_submitted,
+            total_count
+          FROM aggregated_sessions
+          ORDER BY session_time ${sessionTimeOrder} NULLS LAST, sid ${sessionTimeOrder}
+          LIMIT $5 OFFSET $6
+        `,
+        [
+          exactChannels,
+          prefixChannels,
+          startTimestamp,
+          endTimestamp,
+          limit,
+          offset,
+        ],
+      );
+
+      const total = sessionResult.rows.length ? parseInt(sessionResult.rows[0].total_count, 10) : 0;
+      const data = sessionResult.rows.map(({ total_count, ...row }) => row);
+
+      return res.json({
+        success: true,
+        data,
+        pagination: {
+          total,
+          currentPage: page,
+          itemsPerPage: limit,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+      });
+    }
 
     const result = await pool.query(
       `
@@ -181,13 +273,21 @@ async function getNotificationSummary(req, res) {
           COUNT(*) FILTER (WHERE event_name = 'location_denied') AS location_prompt_denied,
           COUNT(*) FILTER (WHERE event_name = 'location_browser_allowed') AS location_browser_allowed,
           COUNT(*) FILTER (WHERE event_name = 'location_browser_never_allow') AS location_browser_denied,
+          COUNT(*) FILTER (WHERE event_name = 'notification_api_response') AS notification_api_calls,
           COUNT(*) FILTER (
             WHERE event_name = 'notification_api_response'
               AND COALESCE(status_code, 0) = 200
           ) AS notification_api_success,
+          COALESCE(SUM(response_count) FILTER (WHERE event_name = 'notification_api_response'), 0) AS total_notifications_returned,
           COUNT(*) FILTER (WHERE event_name = 'notification_bell') AS notification_bell,
+          COUNT(*) FILTER (WHERE event_name = 'notification_selected') AS notification_opens,
+          COUNT(*) FILTER (WHERE event_name = 'notifications_mark_all_read') AS mark_all_read,
           COUNT(*) FILTER (WHERE event_name = 'notification_feedback_yes') AS feedback_yes,
-          COUNT(*) FILTER (WHERE event_name = 'notification_feedback_no') AS feedback_no
+          COUNT(*) FILTER (WHERE event_name = 'notification_feedback_no') AS feedback_no,
+          COUNT(*) FILTER (WHERE event_name = 'notification_feedback_dislike_submitted') AS negative_feedback_submitted,
+          COUNT(DISTINCT sid) FILTER (
+            WHERE category IN ('notification', 'notification_feedback') AND sid IS NOT NULL
+          ) AS total_sessions
         FROM ui_interaction_events
         WHERE event_name IS NOT NULL
           AND (
