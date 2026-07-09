@@ -3,6 +3,7 @@ const {
   formatUTCToISTDate,
   formatDateToIST,
   parseDateRange,
+  toTimestampMs,
 } = require("../utils/dateUtils");
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
@@ -452,13 +453,9 @@ async function getTotalLikesDislikesCount(
 }
 
 function formatFeedbackData(feedbackItem) {
-  let feedbackTime = null;
-  if (feedbackItem.ets) {
-    feedbackTime = formatDateToIST(feedbackItem.ets);
-  } else if (feedbackItem.created_at) {
-    const parsedDate = new Date(feedbackItem.created_at);
-    feedbackTime = formatDateToIST(parsedDate.getTime());
-  }
+  const timestampMs =
+    toTimestampMs(feedbackItem.ets) ?? toTimestampMs(feedbackItem.created_at);
+  const feedbackTime = timestampMs !== null ? formatDateToIST(timestampMs) : null;
 
   return {
     qid: feedbackItem.qid,

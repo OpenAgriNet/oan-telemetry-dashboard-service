@@ -19,8 +19,11 @@ const ttsRoutes = require("./routes/ttsRoutes");
 const callRoutes = require("./routes/callRoutes");
 const langfuseRoutes = require("./routes/langfuseRoutes");
 const notificationsRoutes = require("./routes/notificationsRoutes");
+const exportRoutes = require("./routes/exportRoutes");
+const { initExportFeature } = require("./services/exportInit");
 const pool = require("./services/db");
 const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
+const { ensureExportInfrastructure } = require("./middleware/ensureExportInfrastructure");
 const app = express();
 
 app.use(express.json());
@@ -133,6 +136,14 @@ cron.schedule("0 * * * *", async () => {
   }
 });
 
+// Public CSV download — no auth required (for Google Sheets / sharing).
+const { downloadExportPublic } = require("./controllers/exports.controller");
+app.get(
+  "/v1/exports/:id/download/public",
+  ensureExportInfrastructure,
+  downloadExportPublic,
+);
+
 // app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
 app.use("/v1", authController);
 // app.use("/", authController, (req, res) => {
@@ -152,13 +163,37 @@ app.use("/v1",  dashboardRoutes);
 app.use("/v1", callRoutes);
 app.use("/v1", langfuseRoutes);
 app.use("/v1", notificationsRoutes);
+app.use("/v1", exportRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
 
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Service is running on port ${PORT}`);
+async function startServer() {
+  try {
+    await initExportFeature();
+    console.log("[Export] export_details table ready");
+  } catch (error) {
+    console.error("[Export] Failed to initialize export feature:", error);
+  }
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Service is running on port ${PORT}`);
+
+    try {
+      const { recoverPendingExports } = require("./services/exportProcessor");
+      recoverPendingExports();
+    } catch (error) {
+      console.error("[Export] Failed to recover pending exports:", error);
+    }
+  });
+
+  return server;
+}
+
+let server;
+startServer().then((s) => {
+  server = s;
 });
 
 // Graceful shutdown: close HTTP server and DB pool.

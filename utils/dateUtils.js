@@ -174,12 +174,61 @@ function parseDateRange(startDate, endDate) {
 }
 
 /**
+ * Normalize assorted timestamp inputs to epoch milliseconds.
+ * @param {number|string|Date|null|undefined} timestamp
+ * @returns {number|null}
+ */
+function toTimestampMs(timestamp) {
+    if (timestamp === null || timestamp === undefined || timestamp === '') {
+        return null;
+    }
+
+    if (timestamp instanceof Date) {
+        const ms = timestamp.getTime();
+        return Number.isNaN(ms) ? null : ms;
+    }
+
+    if (typeof timestamp === 'number' && !Number.isNaN(timestamp)) {
+        if (timestamp > 0 && timestamp < 1e12) {
+            return timestamp * 1000;
+        }
+        return timestamp;
+    }
+
+    if (typeof timestamp === 'string') {
+        const trimmed = timestamp.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        if (/^\d+$/.test(trimmed)) {
+            let ms = parseInt(trimmed, 10);
+            if (ms > 0 && ms < 1e12) {
+                ms *= 1000;
+            }
+            return Number.isNaN(ms) ? null : ms;
+        }
+
+        const parsed = Date.parse(trimmed);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    const parsed = Date.parse(String(timestamp));
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
  * Format timestamp to IST timezone string (YYYY-MM-DD HH:mm:ss IST)
- * @param {number|string} timestamp - Unix timestamp in milliseconds or date string
+ * @param {number|string|Date} timestamp - Unix timestamp in milliseconds or date string
  * @returns {string|null} - Formatted date string in IST or null if invalid
  */
 function formatDateToIST(timestamp) {
-    const date = new Date(typeof timestamp === 'string' ? timestamp : parseInt(timestamp));
+    const ms = toTimestampMs(timestamp);
+    if (ms === null || Number.isNaN(ms)) {
+        return null;
+    }
+
+    const date = new Date(ms);
     if (isNaN(date.getTime())) {
         return null;
     }
@@ -210,6 +259,7 @@ module.exports = {
     parseDateRange,
     parseAsIST,
     createISTTimestamp,
+    toTimestampMs,
     formatDateToIST,
     getCurrentTimestamp
-}; 
+};

@@ -7,6 +7,7 @@ const {
   epochMsToIstTimestamp,
   utcTimestampToIstTimestamp,
 } = require("../utils/istSql");
+const { naIfEmpty } = require("../utils/displayFormat");
 
 async function fetchAllErrorsFromDB(
   page = 1,
@@ -256,7 +257,7 @@ function formatErrorData(errorItem) {
   return {
     id: errorItem.id,
     errorType: "Application Error", // Generic type since not specified in table
-    errorMessage: errorItem.error_message || "No error message available",
+    errorMessage: naIfEmpty(errorItem.error_message),
     errorStack: null, // Not available in current table
     userId: errorItem.user_id,
     sessionId: errorItem.session_id,
