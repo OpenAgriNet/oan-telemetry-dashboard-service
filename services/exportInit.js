@@ -1,5 +1,5 @@
-const fs = require("fs");
-const path = require("path");
+const fs = require("node:fs");
+const path = require("node:path");
 const pool = require("./db");
 
 const TEMP_EXPORT_DIR = path.join(__dirname, "..", "temp", "exports");

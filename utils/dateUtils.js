@@ -178,6 +178,36 @@ function parseDateRange(startDate, endDate) {
  * @param {number|string|Date|null|undefined} timestamp
  * @returns {number|null}
  */
+const SECONDS_TO_MS_THRESHOLD = 1e12;
+
+function normalizeNumericTimestamp(value) {
+    if (value > 0 && value < SECONDS_TO_MS_THRESHOLD) {
+        return value * 1000;
+    }
+    return value;
+}
+
+function parseNumericTimestampString(trimmed) {
+    let ms = Number.parseInt(trimmed, 10);
+    if (ms > 0 && ms < SECONDS_TO_MS_THRESHOLD) {
+        ms *= 1000;
+    }
+    return Number.isNaN(ms) ? null : ms;
+}
+
+function toTimestampMsFromString(trimmed) {
+    if (!trimmed) {
+        return null;
+    }
+
+    if (/^\d+$/.test(trimmed)) {
+        return parseNumericTimestampString(trimmed);
+    }
+
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
 function toTimestampMs(timestamp) {
     if (timestamp === null || timestamp === undefined || timestamp === '') {
         return null;
@@ -189,28 +219,11 @@ function toTimestampMs(timestamp) {
     }
 
     if (typeof timestamp === 'number' && !Number.isNaN(timestamp)) {
-        if (timestamp > 0 && timestamp < 1e12) {
-            return timestamp * 1000;
-        }
-        return timestamp;
+        return normalizeNumericTimestamp(timestamp);
     }
 
     if (typeof timestamp === 'string') {
-        const trimmed = timestamp.trim();
-        if (!trimmed) {
-            return null;
-        }
-
-        if (/^\d+$/.test(trimmed)) {
-            let ms = parseInt(trimmed, 10);
-            if (ms > 0 && ms < 1e12) {
-                ms *= 1000;
-            }
-            return Number.isNaN(ms) ? null : ms;
-        }
-
-        const parsed = Date.parse(trimmed);
-        return Number.isNaN(parsed) ? null : parsed;
+        return toTimestampMsFromString(timestamp.trim());
     }
 
     const parsed = Date.parse(String(timestamp));

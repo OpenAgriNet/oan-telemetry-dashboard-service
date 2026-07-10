@@ -1,5 +1,5 @@
 const pool = require("./db");
-const fs = require("fs");
+const fs = require("node:fs");
 const { parseDateRange } = require("../utils/dateUtils");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
 const { STATE_CONFIG } = require("../utils/stateAccess");
@@ -13,8 +13,8 @@ const {
   formatFeedbackData,
 } = require("../controllers/feedback.controller");
 
-const EXPORT_PAGE_SIZE = parseInt(process.env.EXPORT_PAGE_SIZE || "5000", 10);
-const MAX_EXPORT_ROWS = parseInt(process.env.EXPORT_MAX_ROWS || "1000000", 10);
+const EXPORT_PAGE_SIZE = Number.parseInt(process.env.EXPORT_PAGE_SIZE || "5000", 10);
+const MAX_EXPORT_ROWS = Number.parseInt(process.env.EXPORT_MAX_ROWS || "1000000", 10);
 
 function normalizeExportDate(value) {
   if (!value) {

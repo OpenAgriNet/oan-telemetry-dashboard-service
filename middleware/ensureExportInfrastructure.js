@@ -2,7 +2,7 @@ const {
   ensureExportTable,
   getExportTempDir,
 } = require("../services/exportInit");
-const fs = require("fs");
+const fs = require("node:fs");
 
 /**
  * Ensures export_details table and temp folder exist before any export API runs.

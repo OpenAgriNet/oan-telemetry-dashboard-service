@@ -1,11 +1,11 @@
-const path = require("path");
-const fs = require("fs");
+const path = require("node:path");
+const fs = require("node:fs");
 const pool = require("./db");
 const { writeExportXlsxToFile } = require("./exportDataFetcher");
 const { ensureExportTable, getExportTempDir } = require("./exportInit");
 const { buildExportFileName } = require("../utils/displayFormat");
 
-const MAX_CONCURRENT_EXPORTS = parseInt(process.env.EXPORT_MAX_CONCURRENT || "5", 10);
+const MAX_CONCURRENT_EXPORTS = Number.parseInt(process.env.EXPORT_MAX_CONCURRENT || "5", 10);
 let activeExportCount = 0;
 const exportQueue = [];
 
@@ -80,7 +80,6 @@ async function runExportJob(exportId) {
     const filePath = path.join(tempDir, fileName);
 
     const totalRows = await writeExportXlsxToFile(exportRecord, filePath);
-    fs.chmodSync(filePath, 0o644);
 
     await updateExportStatus(exportId, {
       export_status: "COMPLETED",

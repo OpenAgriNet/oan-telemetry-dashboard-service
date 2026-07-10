@@ -5,7 +5,7 @@ function escapeCsvValue(value) {
 
   const stringValue = String(value);
   if (/[",\n\r]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
+    return `"${stringValue.replaceAll('"', '""')}"`;
   }
 
   return stringValue;

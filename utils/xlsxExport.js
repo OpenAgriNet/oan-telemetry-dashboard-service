@@ -163,6 +163,34 @@ function applyDataRowStyle(row, columns) {
   row.height = estimateRowHeight(row, columns);
 }
 
+function buildRowValues(rowData, activeColumns) {
+  const values = {};
+  activeColumns.forEach((col) => {
+    const value = rowData[col.key];
+    values[col.key] = value === null || value === undefined ? "" : value;
+  });
+  return values;
+}
+
+function appendRowsToWorksheet(worksheet, rows, activeColumns, currentTotal, maxRows) {
+  let totalRows = currentTotal;
+  let truncated = false;
+
+  for (const rowData of rows) {
+    if (totalRows >= maxRows) {
+      truncated = true;
+      break;
+    }
+
+    const excelRow = worksheet.addRow(buildRowValues(rowData, activeColumns));
+    applyDataRowStyle(excelRow, activeColumns);
+    excelRow.commit();
+    totalRows += 1;
+  }
+
+  return { totalRows, truncated };
+}
+
 async function writeFormattedXlsx({
   filePath,
   columns,
@@ -204,33 +232,21 @@ async function writeFormattedXlsx({
       break;
     }
 
-    for (const rowData of rows) {
-      if (totalRows >= maxRows) {
-        truncated = true;
-        break;
-      }
-
-      const values = {};
-      activeColumns.forEach((col) => {
-        const value = rowData[col.key];
-        values[col.key] = value === null || value === undefined ? "" : value;
-      });
-
-      const excelRow = worksheet.addRow(values);
-      applyDataRowStyle(excelRow, activeColumns);
-      excelRow.commit();
-      totalRows += 1;
-    }
+    const pageResult = appendRowsToWorksheet(
+      worksheet,
+      rows,
+      activeColumns,
+      totalRows,
+      maxRows,
+    );
+    totalRows = pageResult.totalRows;
+    truncated = pageResult.truncated;
 
     if (typeof onPageWritten === "function") {
       onPageWritten(page, rows.length, totalRows);
     }
 
-    if (truncated) {
-      break;
-    }
-
-    if (rows.length < pageSize) {
+    if (truncated || rows.length < pageSize) {
       break;
     }
 

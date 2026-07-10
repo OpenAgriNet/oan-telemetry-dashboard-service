@@ -1,6 +1,6 @@
-const fs = require("fs");
-const path = require("path");
-const { randomUUID } = require("crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const pool = require("../services/db");
 const { triggerExportProcessing } = require("../services/exportProcessor");
 const {
@@ -81,7 +81,7 @@ function sendExportCsvFile(res, exportRecord) {
     return res.status(404).json({ success: false, message: "Export file not found" });
   }
 
-  const safeFileName = String(exportRecord.file_name || "export.xlsx").replace(/"/g, "");
+  const safeFileName = String(exportRecord.file_name || "export.xlsx").replaceAll('"', "");
   const isXlsx = safeFileName.toLowerCase().endsWith(".xlsx");
   const contentType = isXlsx
     ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
