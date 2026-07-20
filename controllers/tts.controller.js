@@ -6,6 +6,7 @@ const {
 const { mvExists } = require("../utils/mvHealth");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
 const { epochMsToIstDate } = require("../utils/istSql");
+const { naIfEmpty } = require("../utils/displayFormat");
 
 async function fetchTtsFromDB(
   page = 1,
@@ -235,8 +236,8 @@ function formatTtsRecord(row) {
     success: row.success,
     latencyMs: row.latencyms,
     statusCode: row.statuscode,
-    errorCode: row.errorcode,
-    errorMessage: row.errormessage,
+    errorCode: naIfEmpty(row.errorcode),
+    errorMessage: naIfEmpty(row.errormessage),
     apiType: row.apitype,
     apiService: row.apiservice,
     channel: row.channel,
@@ -315,4 +316,6 @@ const getTts = async (req, res) => {
 
 module.exports = {
   getTts,
+  fetchTtsFromDB,
+  formatTtsRecord,
 };
