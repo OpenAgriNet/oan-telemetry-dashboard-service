@@ -21,6 +21,7 @@ const langfuseRoutes = require("./routes/langfuseRoutes");
 const notificationsRoutes = require("./routes/notificationsRoutes");
 const exportRoutes = require("./routes/exportRoutes");
 const { initExportFeature } = require("./services/exportInit");
+const becknExtRoutes = require("./routes/becknExtRoutes");
 const pool = require("./services/db");
 const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
 const { ensureExportInfrastructure } = require("./middleware/ensureExportInfrastructure");
@@ -164,6 +165,7 @@ app.use("/v1", callRoutes);
 app.use("/v1", langfuseRoutes);
 app.use("/v1", notificationsRoutes);
 app.use("/v1", exportRoutes);
+app.use("/v1", becknExtRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 

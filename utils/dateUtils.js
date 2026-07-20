@@ -148,11 +148,25 @@ function createISTTimestamp(year, month, day, hours, minutes, seconds, milliseco
 }
 
 /**
+ * True when the input is a calendar date only (YYYY-MM-DD), with no time part.
+ * Used so endDate="2026-07-09" means the full day through 23:59:59.999 IST.
+ */
+function isDateOnlyString(dateStr) {
+    if (!dateStr || typeof dateStr !== "string") {
+        return false;
+    }
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim());
+}
+
+/**
  * Parse and validate date range parameters.
  * Interprets date strings as IST time (Indian Standard Time, UTC+5:30).
  * 
  * When user sends "2025-12-13T00:00:00.000Z", we interpret it as:
  * "User wants midnight IST on Dec 13, 2025" → converts to UTC timestamp
+ *
+ * Date-only endDate (YYYY-MM-DD) is inclusive end-of-day IST (23:59:59.999),
+ * so rows created later that calendar day are included.
  * 
  * @param {string|null} startDate - Start date as ISO string or Unix timestamp
  * @param {string|null} endDate - End date as ISO string or Unix timestamp
@@ -167,7 +181,21 @@ function parseDateRange(startDate, endDate) {
     }
 
     if (endDate) {
-        endTimestamp = parseAsIST(endDate);
+        // Date-only end → include entire IST calendar day
+        if (isDateOnlyString(endDate)) {
+            const m = endDate.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            endTimestamp = createISTTimestamp(
+                parseInt(m[1], 10),
+                parseInt(m[2], 10) - 1,
+                parseInt(m[3], 10),
+                23,
+                59,
+                59,
+                999
+            );
+        } else {
+            endTimestamp = parseAsIST(endDate);
+        }
     }
 
     return { startTimestamp, endTimestamp };
@@ -274,5 +302,6 @@ module.exports = {
     createISTTimestamp,
     toTimestampMs,
     formatDateToIST,
-    getCurrentTimestamp
-};
+    getCurrentTimestamp,
+    isDateOnlyString,
+}; 
