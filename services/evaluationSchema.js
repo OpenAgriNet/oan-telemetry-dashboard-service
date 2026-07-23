@@ -70,6 +70,47 @@ function ensureEvaluationSchema() {
 
       ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS score_source VARCHAR NOT NULL DEFAULT 'dashboard';
       ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS requested_by VARCHAR;
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS error TEXT;
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS judge_endpoint_id UUID;
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS sampling_mode VARCHAR NOT NULL DEFAULT 'percent';
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS sampling_value NUMERIC NOT NULL DEFAULT 10;
+      ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS target_languages JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+      CREATE TABLE IF NOT EXISTS evaluation_judge_endpoints (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(120) NOT NULL UNIQUE,
+        provider_type VARCHAR(32) NOT NULL CHECK (provider_type IN ('openai', 'vllm', 'cerebras', 'openai_compatible')),
+        base_url TEXT NOT NULL,
+        default_model VARCHAR(255) NOT NULL,
+        api_key_cipher TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_by VARCHAR(255),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS evaluation_schedules (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(120) NOT NULL,
+        judge_endpoint_id UUID NOT NULL REFERENCES evaluation_judge_endpoints(id),
+        population_limit INTEGER NOT NULL CHECK (population_limit BETWEEN 10 AND 100000),
+        sampling_mode VARCHAR(16) NOT NULL CHECK (sampling_mode IN ('percent', 'count')),
+        sampling_value NUMERIC NOT NULL CHECK (sampling_value > 0),
+        target_languages JSONB NOT NULL DEFAULT '["mr"]'::jsonb,
+        daily_hour_ist INTEGER NOT NULL CHECK (daily_hour_ist BETWEEN 0 AND 23),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_by VARCHAR(255),
+        last_started_on DATE,
+        last_run_id VARCHAR,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      ALTER TABLE evaluation_schedules ADD COLUMN IF NOT EXISTS target_languages JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE evaluation_schedules ALTER COLUMN target_languages SET DEFAULT '["mr"]'::jsonb;
+      UPDATE evaluation_schedules SET target_languages='["mr"]'::jsonb WHERE target_languages='[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS evaluation_comments (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -89,6 +130,8 @@ function ensureEvaluationSchema() {
         ON evaluation_run_traces(run_id, status);
       CREATE INDEX IF NOT EXISTS evaluation_comments_item_idx
         ON evaluation_comments(item_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS evaluation_schedules_due_idx
+        ON evaluation_schedules(enabled, daily_hour_ist, last_started_on);
       CREATE INDEX IF NOT EXISTS feedback_qid_ets_idx
         ON feedback(qid, ets) WHERE qid IS NOT NULL;
     `).catch((error) => {

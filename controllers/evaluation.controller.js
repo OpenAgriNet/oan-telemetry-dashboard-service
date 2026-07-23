@@ -1,11 +1,32 @@
 const pool = require("../services/db");
 const { ensureEvaluationSchema } = require("../services/evaluationSchema");
+const evaluationWorker = require("../services/evaluationWorkerClient");
+const { launchEvaluationRun } = require("../services/evaluationRunLauncher");
 const {
   createLangfuseClient, normalizeTraceScores, findRunScoredManifestEntries,
 } = require("../services/langfuseEvaluationSync");
 
 const stateFrom = (req) => req.get("x-telemetry-state") || "bharat-vistaar";
 const intParam = (value, fallback, max = 100) => Math.min(Math.max(Number.parseInt(value, 10) || fallback, 1), max);
+
+async function refreshRunProgress(runId) {
+  const progress = await pool.query(`
+    SELECT COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE status = 'synced')::int AS successful,
+           COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
+    FROM evaluation_run_traces WHERE run_id = $1
+  `, [runId]);
+  const { total, successful, failed } = progress.rows[0];
+  const finished = total > 0 && successful + failed >= total;
+  const status = finished ? (failed > 0 ? "partial" : "complete") : "running";
+  await pool.query(`
+    UPDATE evaluation_runs SET status=$2, successful_count=$3, failed_count=$4,
+      score_source='langfuse', last_synced_at=NOW(),
+      completed_at=CASE WHEN $5 THEN NOW() ELSE completed_at END, updated_at=NOW()
+    WHERE run_id=$1
+  `, [runId, status, successful, failed, finished]);
+  return { run_id: runId, status, total, successful, failed };
+}
 
 async function persistEvaluationItem(runId, traceId, b) {
   const metrics = b.evaluation?.metrics || {};
@@ -53,12 +74,14 @@ async function upsertRun(req, res) {
       b.population_count || 0, b.random_target || 0, b.feedback_selected_count || 0,
       b.random_selected_count || 0, b.unmatched_feedback_count || 0, b.successful_count || 0,
       b.failed_count || 0, b.judge_model, b.schema_version, b.rubric_version, b.completed_at || null,
+      b.requested_by || null, b.error || null, JSON.stringify(b.target_languages || []),
     ];
     const result = await pool.query(`
       INSERT INTO evaluation_runs (
         run_id, state, window_start, window_end, status, population_count, random_target,
         feedback_selected_count, random_selected_count, unmatched_feedback_count,
-        successful_count, failed_count, judge_model, schema_version, rubric_version, completed_at
+        successful_count, failed_count, judge_model, schema_version, rubric_version, completed_at,
+        requested_by, error, target_languages
       ) VALUES (${values.map((_, i) => `$${i + 1}`).join(", ")})
       ON CONFLICT (run_id) DO UPDATE SET
         status = EXCLUDED.status, population_count = EXCLUDED.population_count,
@@ -66,7 +89,11 @@ async function upsertRun(req, res) {
         random_selected_count = EXCLUDED.random_selected_count,
         unmatched_feedback_count = EXCLUDED.unmatched_feedback_count,
         successful_count = EXCLUDED.successful_count, failed_count = EXCLUDED.failed_count,
-        completed_at = EXCLUDED.completed_at, updated_at = NOW()
+        state = EXCLUDED.state, window_start = EXCLUDED.window_start, window_end = EXCLUDED.window_end,
+        judge_model = EXCLUDED.judge_model, schema_version = EXCLUDED.schema_version,
+        rubric_version = EXCLUDED.rubric_version, requested_by = COALESCE(EXCLUDED.requested_by, evaluation_runs.requested_by),
+        target_languages = EXCLUDED.target_languages,
+        error = EXCLUDED.error, completed_at = EXCLUDED.completed_at, updated_at = NOW()
       RETURNING *
     `, values);
     res.json({ success: true, data: result.rows[0] });
@@ -80,10 +107,59 @@ async function upsertItem(req, res) {
   try {
     await ensureEvaluationSchema();
     const result = await persistEvaluationItem(req.params.runId, req.params.traceId, req.body || {});
-    res.json({ success: true, data: result.rows[0] });
+    await pool.query(`UPDATE evaluation_run_traces SET status='synced', error=NULL, scored_at=COALESCE(scored_at, NOW()), synced_at=NOW(), updated_at=NOW() WHERE run_id=$1 AND trace_id=$2`, [req.params.runId, req.params.traceId]);
+    const progress = await refreshRunProgress(req.params.runId);
+    res.json({ success: true, data: { ...result.rows[0], progress } });
   } catch (error) {
     console.error("evaluation item upsert failed", error);
     res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+async function updateTraceStatus(req, res) {
+  try {
+    await ensureEvaluationSchema();
+    const status = req.body?.status;
+    if (!['pending', 'scored', 'failed'].includes(status)) {
+      return res.status(400).json({ success: false, message: "Unsupported trace status" });
+    }
+    const result = await pool.query(`
+      UPDATE evaluation_run_traces SET status=$3, error=$4, updated_at=NOW()
+      WHERE run_id=$1 AND trace_id=$2 RETURNING run_id, trace_id, status, error
+    `, [req.params.runId, req.params.traceId, status, req.body?.error || null]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: "Run trace not found" });
+    const progress = await refreshRunProgress(req.params.runId);
+    res.json({ success: true, data: { ...result.rows[0], progress } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+async function listJudgeModels(req, res) {
+  try {
+    res.json({ success: true, data: await evaluationWorker.listModels() });
+  } catch (error) {
+    const status = error.response?.status || 503;
+    res.status(status).json({ success: false, message: error.response?.data?.detail || error.message });
+  }
+}
+
+async function startRun(req, res) {
+  try {
+    const requestedBy = String(req.user?.preferred_username || req.user?.email || req.user?.sub || "admin").slice(0, 255);
+    const data = await launchEvaluationRun({
+      state: stateFrom(req),
+      requestedBy,
+      endpointId: req.body?.judge_endpoint_id,
+      populationLimit: req.body?.population_limit,
+      samplingMode: req.body?.sampling_mode,
+      samplingValue: req.body?.sampling_value,
+      targetLanguages: req.body?.target_languages,
+    });
+    res.status(202).json({ success: true, data });
+  } catch (error) {
+    const status = error.response?.status || 503;
+    res.status(status).json({ success: false, message: error.response?.data?.detail || error.message });
   }
 }
 
@@ -332,4 +408,4 @@ async function addComment(req, res) {
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 }
 
-module.exports = { upsertRun, upsertItem, upsertManifest, getManifest, syncRunFromLangfuse, getFeedbackCandidates, listRuns, getSummary, listItems, getItem, addComment };
+module.exports = { upsertRun, upsertItem, updateTraceStatus, upsertManifest, getManifest, syncRunFromLangfuse, getFeedbackCandidates, listJudgeModels, startRun, listRuns, getSummary, listItems, getItem, addComment };
