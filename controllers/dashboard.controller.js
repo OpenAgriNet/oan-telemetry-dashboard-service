@@ -243,8 +243,6 @@ const getDashboardStats = async (req, res) => {
       mvExists('mv_feedback_daily'),
     ]);
 
-    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
-
     const canUseMvPath =
       hasSessionMV && hasQuestionRateMV && hasNewUsersMV && hasReturningUsersMV;
 
@@ -252,8 +250,21 @@ const getDashboardStats = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
+    if (
+      canUseMvPath &&
+      startTimestamp !== null &&
+      endTimestamp !== null &&
+      !hasTimeComponent
+    ) {
       try {
+        const mvParams = [startTimestamp, endTimestamp];
+        const { clause: mvChannelClause } = buildChannelFilterClause(
+          "channel",
+          telemetryState,
+          mvParams,
+          2,
+        );
+
         // Pure MV path. Feedback CTE picks MV when available, otherwise
         // falls back to a bounded base-table scan for the date range.
         const feedbackCte = hasFeedbackDailyMV
@@ -263,7 +274,8 @@ const getDashboardStats = async (req, res) => {
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
              WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
-               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
+               AND ${mvChannelClause}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -272,7 +284,8 @@ const getDashboardStats = async (req, res) => {
              WHERE feedbacktext IS NOT NULL
                AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
                     OR COALESCE(feedback_source, 'chat') = 'voice')
-               AND ets >= $1 AND ets <= $2`;
+               AND ets >= $1 AND ets <= $2
+               AND ${mvChannelClause}`;
 
         const mvQuery = {
           text: `
@@ -282,11 +295,13 @@ const getDashboardStats = async (req, res) => {
                   FROM mv_users_daily_firstseen_ist
                   WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
                     AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+                    AND ${mvChannelClause}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
                   WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
                     AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+                    AND ${mvChannelClause}
                 ) AS returning_users
             ),
             mv_sessions AS (
@@ -294,12 +309,14 @@ const getDashboardStats = async (req, res) => {
               FROM mv_sessions_daily
               WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
                 AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
+                AND ${mvChannelClause}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
               WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
                 AND question_date <= ${epochMsToIstDate("$2::bigint")}
+                AND ${mvChannelClause}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -318,10 +335,7 @@ const getDashboardStats = async (req, res) => {
             CROSS JOIN mv_questions mq
             CROSS JOIN feedback_stats fs;
           `,
-          values: [
-            startTimestamp,
-            endTimestamp,
-          ],
+          values: mvParams,
         };
 
         const result = await pool.query(mvQuery);
@@ -719,8 +733,6 @@ const getDashboardStatsUnified = async (req, res) => {
       exactChannels: ["BharatVistaar"],
       prefixChannels: ["BharatVistaar-"],
     };
-    const mvStateClause = buildChannelFilterClause("channel", unifiedTelemetryState, [], 0).clause;
-
     // Discover which MVs are available
     const [
       hasSessionMV,
@@ -743,8 +755,21 @@ const getDashboardStatsUnified = async (req, res) => {
     let querySource = 'base';
     const sources = {};
 
-    if (canUseMvPath && mvStateClause === "1=1" && !hasTimeComponent) {
+    if (
+      canUseMvPath &&
+      startTimestamp !== null &&
+      endTimestamp !== null &&
+      !hasTimeComponent
+    ) {
       try {
+        const mvParams = [startTimestamp, endTimestamp];
+        const { clause: mvChannelClause } = buildChannelFilterClause(
+          "channel",
+          unifiedTelemetryState,
+          mvParams,
+          2,
+        );
+
         // Pure MV path for Bharat Vistaar
         const feedbackCte = hasFeedbackDailyMV
           ? `SELECT
@@ -753,7 +778,8 @@ const getDashboardStatsUnified = async (req, res) => {
                COALESCE(SUM(dislikes), 0) AS total_dislikes
              FROM mv_feedback_daily
              WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
-               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}`
+               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
+               AND ${mvChannelClause}`
           : `SELECT
                COUNT(*) AS total_feedback,
                COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
@@ -763,7 +789,7 @@ const getDashboardStatsUnified = async (req, res) => {
                AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
                     OR COALESCE(feedback_source, 'chat') = 'voice')
                AND ets >= $1 AND ets <= $2
-               AND channel = 'bharat-vistaar'`;
+               AND ${mvChannelClause}`;
 
         const mvQuery = {
           text: `
@@ -773,11 +799,13 @@ const getDashboardStatsUnified = async (req, res) => {
                   FROM mv_users_daily_firstseen_ist
                   WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
                     AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+                    AND ${mvChannelClause}
                 ) AS new_users,
                 ( SELECT COALESCE(SUM(returning_users), 0)
                   FROM mv_users_daily_returning_ist
                   WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
                     AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+                    AND ${mvChannelClause}
                 ) AS returning_users
             ),
             mv_sessions AS (
@@ -785,12 +813,14 @@ const getDashboardStatsUnified = async (req, res) => {
               FROM mv_sessions_daily
               WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
                 AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
+                AND ${mvChannelClause}
             ),
             mv_questions AS (
               SELECT COALESCE(SUM(total_questions), 0) AS total_questions
               FROM mv_question_answer_rates
               WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
                 AND question_date <= ${epochMsToIstDate("$2::bigint")}
+                AND ${mvChannelClause}
             ),
             feedback_stats AS (
               ${feedbackCte}
@@ -809,10 +839,7 @@ const getDashboardStatsUnified = async (req, res) => {
             CROSS JOIN mv_questions mq
             CROSS JOIN feedback_stats fs;
           `,
-          values: [
-            startTimestamp,
-            endTimestamp,
-          ],
+          values: mvParams,
         };
 
         const result = await pool.query(mvQuery);

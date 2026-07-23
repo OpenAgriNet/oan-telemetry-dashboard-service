@@ -1475,8 +1475,6 @@ const getUserGraph = async (req, res) => {
     } = buildChannelFilterClause("q.channel", telemetryState, queryParams, paramIndex);
     paramIndex = channelParamIndex;
 
-    const mvStateClause = buildChannelFilterClause("channel", telemetryState, [], 0).clause;
-
     // Add search filter if provided
     // if (search && search.trim() !== "") {
     //   paramIndex++;
@@ -1529,7 +1527,7 @@ const getUserGraph = async (req, res) => {
     // mv_users_daily_returning_ist (IST-bucketed, pre-aggregated).
     let result = null;
     let source = 'base';
-    if (granularity === 'daily' && mvStateClause === "1=1" && await mvExists('mv_users_daily_firstseen_ist') && await mvExists('mv_users_daily_returning_ist')) {
+    if (granularity === 'daily' && await mvExists('mv_users_daily_firstseen_ist') && await mvExists('mv_users_daily_returning_ist')) {
       try {
         const mvParams = [];
         const conds = [];
@@ -1541,13 +1539,26 @@ const getUserGraph = async (req, res) => {
           mvParams.push(endTimestamp);
           conds.push(`bucket_date <= ${epochMsToIstDate(`$${mvParams.length}::bigint`)}`);
         }
+        const { clause: mvChannelClause } = buildChannelFilterClause(
+          "channel",
+          telemetryState,
+          mvParams,
+          mvParams.length,
+        );
+        conds.push(mvChannelClause);
         const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
         const mvSql = `
           WITH n AS (
-            SELECT bucket_date, new_users FROM mv_users_daily_firstseen_ist ${where}
+            SELECT bucket_date, SUM(new_users) AS new_users
+            FROM mv_users_daily_firstseen_ist
+            ${where}
+            GROUP BY bucket_date
           ),
           r AS (
-            SELECT bucket_date, returning_users FROM mv_users_daily_returning_ist ${where}
+            SELECT bucket_date, SUM(returning_users) AS returning_users
+            FROM mv_users_daily_returning_ist
+            ${where}
+            GROUP BY bucket_date
           ),
           merged AS (
             SELECT COALESCE(n.bucket_date, r.bucket_date) AS bucket_date,
