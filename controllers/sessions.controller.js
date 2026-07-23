@@ -4,6 +4,44 @@ const { mvExists } = require('../utils/mvHealth');
 const { buildChannelFilterClause } = require('../utils/stateAccess');
 const { epochMsDateTruncIst } = require('../utils/istSql');
 
+function buildSessionMvFilter({
+    startTimestamp,
+    endTimestamp,
+    telemetryState,
+    search = '',
+}) {
+    const params = [];
+    const conditions = [
+        ['last_ets >=', startTimestamp],
+        ['last_ets <=', endTimestamp],
+    ]
+        .filter(([, value]) => value !== null)
+        .map(([comparison, value]) => {
+            params.push(value);
+            return `${comparison} $${params.length}`;
+        });
+
+    const normalizedSearch = search ? search.trim() : '';
+    if (normalizedSearch) {
+        params.push(`%${normalizedSearch}%`);
+        conditions.push(`(sid ILIKE $${params.length} OR uid ILIKE $${params.length})`);
+    }
+
+    const { clause: channelClause } = buildChannelFilterClause(
+        'channel',
+        telemetryState,
+        params,
+        params.length,
+    );
+    conditions.push(channelClause);
+
+    return {
+        params,
+        paramIndex: params.length,
+        where: `WHERE ${conditions.join(' AND ')}`,
+    };
+}
+
 async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate = null, endDate = null, sortBy = null, sortOrder = 'DESC', pagination = true, telemetryState = null) {
     const offset = (page - 1) * limit;
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
@@ -13,34 +51,15 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
     // so no UNION is needed.
     if (await mvExists('mv_sessions_daily')) {
         try {
-            const params = [];
-            let idx = 0;
-            const conditions = [];
-
-            if (startTimestamp !== null) {
-                idx++;
-                conditions.push(`last_ets >= $${idx}`);
-                params.push(startTimestamp);
-            }
-            if (endTimestamp !== null) {
-                idx++;
-                conditions.push(`last_ets <= $${idx}`);
-                params.push(endTimestamp);
-            }
-            if (search && search.trim() !== '') {
-                idx++;
-                conditions.push(`(sid ILIKE $${idx} OR uid ILIKE $${idx})`);
-                params.push(`%${search.trim()}%`);
-            }
-
-            const {
-                clause: mvChannelClause,
-                paramIndex: mvChannelParamIndex,
-            } = buildChannelFilterClause('channel', telemetryState, params, idx);
-            idx = mvChannelParamIndex;
-            conditions.push(mvChannelClause);
-
-            const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+            const mvFilter = buildSessionMvFilter({
+                startTimestamp,
+                endTimestamp,
+                telemetryState,
+                search,
+            });
+            const params = mvFilter.params;
+            const where = mvFilter.where;
+            let idx = mvFilter.paramIndex;
             const sortArray = ["question_count", "username", "session_id", "session_time"];
             let orderBy;
             if (sortArray.includes(sortBy)) {
@@ -166,31 +185,12 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
     // MV-first: just count rows in mv_sessions_daily that match the filter.
     if (await mvExists('mv_sessions_daily')) {
         try {
-            const params = [];
-            const conditions = [];
-            let idx = 0;
-            if (startTimestamp !== null) {
-                idx++;
-                conditions.push(`last_ets >= $${idx}`);
-                params.push(startTimestamp);
-            }
-            if (endTimestamp !== null) {
-                idx++;
-                conditions.push(`last_ets <= $${idx}`);
-                params.push(endTimestamp);
-            }
-            if (search && search.trim() !== '') {
-                idx++;
-                conditions.push(`(sid ILIKE $${idx} OR uid ILIKE $${idx})`);
-                params.push(`%${search.trim()}%`);
-            }
-            const {
-                clause: mvChannelClause,
-                paramIndex: mvChannelParamIndex,
-            } = buildChannelFilterClause('channel', telemetryState, params, idx);
-            idx = mvChannelParamIndex;
-            conditions.push(mvChannelClause);
-            const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+            const { params, where } = buildSessionMvFilter({
+                startTimestamp,
+                endTimestamp,
+                telemetryState,
+                search,
+            });
             const result = await pool.query(
                 `SELECT COUNT(*)::bigint AS total FROM mv_sessions_daily ${where}`,
                 params
@@ -778,27 +778,11 @@ const getSessionStats = async (req, res) => {
         let source = 'base';
         if (await mvExists('mv_sessions_daily')) {
             try {
-                const params = [];
-                const conds = [];
-                let idx = 0;
-                if (startTimestamp !== null) {
-                    idx++;
-                    conds.push(`last_ets >= $${idx}`);
-                    params.push(startTimestamp);
-                }
-                if (endTimestamp !== null) {
-                    idx++;
-                    conds.push(`last_ets <= $${idx}`);
-                    params.push(endTimestamp);
-                }
-                const { clause: mvChannelClause } = buildChannelFilterClause(
-                    'channel',
+                const { params, where } = buildSessionMvFilter({
+                    startTimestamp,
+                    endTimestamp,
                     telemetryState,
-                    params,
-                    idx,
-                );
-                conds.push(mvChannelClause);
-                const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+                });
                 const mvRes = await pool.query(
                     `SELECT COUNT(*)::bigint AS total_sessions FROM mv_sessions_daily ${where}`,
                     params
@@ -965,24 +949,11 @@ const getSessionsGraph = async (req, res) => {
         let source = 'base';
         if (granularity === 'daily' && !search && await mvExists('mv_sessions_daily')) {
             try {
-                const mvParams = [];
-                const conds = [];
-                if (startTimestamp !== null) {
-                    mvParams.push(startTimestamp);
-                    conds.push(`last_ets >= $${mvParams.length}`);
-                }
-                if (endTimestamp !== null) {
-                    mvParams.push(endTimestamp);
-                    conds.push(`last_ets <= $${mvParams.length}`);
-                }
-                const { clause: mvChannelClause } = buildChannelFilterClause(
-                    'channel',
+                const { params: mvParams, where } = buildSessionMvFilter({
+                    startTimestamp,
+                    endTimestamp,
                     telemetryState,
-                    mvParams,
-                    mvParams.length,
-                );
-                conds.push(mvChannelClause);
-                const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+                });
                 const mvSql = `
                     SELECT
                         TO_CHAR(session_date_ist, 'YYYY-MM-DD') AS date,

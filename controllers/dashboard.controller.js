@@ -205,9 +205,18 @@ const getUserLoginAnalytics = async (req, res) => {
 // GET /dashboard/stats — MV-first dashboard aggregates.
 // All four sub-totals (new, returning, sessions, questions) are now served
 // from materialized views. Feedback uses mv_feedback_daily when available.
-const getDashboardStats = async (req, res) => {
+const handleDashboardStats = async (
+  req,
+  res,
+  {
+    telemetryState,
+    warningContext,
+    errorContext,
+    errorMessage,
+    appliedState,
+  },
+) => {
   try {
-    const telemetryState = req.telemetryState;
     const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
     const endDate   = req.query.endDate   ? String(req.query.endDate).trim()   : null;
 
@@ -348,7 +357,7 @@ const getDashboardStats = async (req, res) => {
           sources.feedback = hasFeedbackDailyMV ? 'mv' : 'base';
         }
       } catch (mvErr) {
-        console.warn('[DashboardStats] MV query failed, falling back to base query:', mvErr.message);
+        console.warn(`[${warningContext}] MV query failed, falling back to base query:`, mvErr.message);
       }
     }
 
@@ -493,6 +502,7 @@ const getDashboardStats = async (req, res) => {
       meta: {
         source: querySource,
         sources,
+        ...(appliedState ? { appliedState } : {}),
       },
       filters: {
         startDate,
@@ -502,10 +512,30 @@ const getDashboardStats = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Error fetching dashboard stats:", error);
-    res.status(500).json({ success: false, error: "Error fetching dashboard statistics" });
+    console.error(errorContext, error);
+    res.status(500).json({ success: false, error: errorMessage });
   }
 };
+
+const getDashboardStats = (req, res) =>
+  handleDashboardStats(req, res, {
+    telemetryState: req.telemetryState,
+    warningContext: "DashboardStats",
+    errorContext: "Error fetching dashboard stats:",
+    errorMessage: "Error fetching dashboard statistics",
+  });
+
+const getDashboardStatsUnified = (req, res) =>
+  handleDashboardStats(req, res, {
+    telemetryState: {
+      exactChannels: ["BharatVistaar"],
+      prefixChannels: ["BharatVistaar-"],
+    },
+    warningContext: "DashboardStatsUnified",
+    errorContext: "Error fetching unified dashboard stats:",
+    errorMessage: "Error fetching unified dashboard statistics",
+    appliedState: "bharat-vistaar",
+  });
 
 const getAppDownloads = async (req, res) => {
   try {
@@ -700,314 +730,6 @@ const getLangfuseQuestionsTree = async (req, res) => {
   } catch (error) {
     console.error("Error fetching langfuse questions tree:", error);
     return res.status(500).json({ success: false, error: "Error fetching langfuse questions tree" });
-  }
-};
-
-// Get overall dashboard statistics for UNIFIED METRICS (always Bharat Vistaar)
-// Get overall dashboard statistics for UNIFIED METRICS (always Bharat Vistaar)
-const getDashboardStatsUnified = async (req, res) => {
-  try {
-    const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
-    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
-
-    // True only when the time portion is genuinely intra-day (not a midnight
-    // or end-of-day boundary). Day-boundary timestamps like T00:00:00... or
-    // T23:59:59... work correctly with day-granularity materialized views and
-    // should NOT block the MV fast path.
-    const isIntraDayTime = (dateStr) => {
-      if (!dateStr || !dateStr.includes("T")) return false;
-      const timePart = (dateStr.split("T")[1] || "").substring(0, 8);
-      return timePart !== "00:00:00" && timePart !== "23:59:59";
-    };
-    const hasTimeComponent = isIntraDayTime(startDate) || isIntraDayTime(endDate);
-
-    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
-
-    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
-      return res.status(400).json({ success: false, error: "Invalid date format" });
-    }
-
-    // Force Bharat Vistaar channel filters for unified metrics.
-    // buildChannelFilterClause expects exactChannels/prefixChannels.
-    const unifiedTelemetryState = {
-      exactChannels: ["BharatVistaar"],
-      prefixChannels: ["BharatVistaar-"],
-    };
-    // Discover which MVs are available
-    const [
-      hasSessionMV,
-      hasQuestionRateMV,
-      hasNewUsersMV,
-      hasReturningUsersMV,
-      hasFeedbackDailyMV,
-    ] = await Promise.all([
-      mvExists('mv_sessions_daily'),
-      mvExists('mv_question_answer_rates'),
-      mvExists('mv_users_daily_firstseen_ist'),
-      mvExists('mv_users_daily_returning_ist'),
-      mvExists('mv_feedback_daily'),
-    ]);
-
-    const canUseMvPath =
-      hasSessionMV && hasQuestionRateMV && hasNewUsersMV && hasReturningUsersMV;
-
-    let stats;
-    let querySource = 'base';
-    const sources = {};
-
-    if (
-      canUseMvPath &&
-      startTimestamp !== null &&
-      endTimestamp !== null &&
-      !hasTimeComponent
-    ) {
-      try {
-        const mvParams = [startTimestamp, endTimestamp];
-        const { clause: mvChannelClause } = buildChannelFilterClause(
-          "channel",
-          unifiedTelemetryState,
-          mvParams,
-          2,
-        );
-
-        // Pure MV path for Bharat Vistaar
-        const feedbackCte = hasFeedbackDailyMV
-          ? `SELECT
-               COALESCE(SUM(total_feedback), 0) AS total_feedback,
-               COALESCE(SUM(likes), 0) AS total_likes,
-               COALESCE(SUM(dislikes), 0) AS total_dislikes
-             FROM mv_feedback_daily
-             WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
-               AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
-               AND ${mvChannelClause}`
-          : `SELECT
-               COUNT(*) AS total_feedback,
-               COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-               COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-             FROM feedback
-             WHERE feedbacktext IS NOT NULL
-               AND ((questiontext IS NOT NULL AND fingerprint_id IS NOT NULL)
-                    OR COALESCE(feedback_source, 'chat') = 'voice')
-               AND ets >= $1 AND ets <= $2
-               AND ${mvChannelClause}`;
-
-        const mvQuery = {
-          text: `
-            WITH user_stats AS (
-              SELECT
-                ( SELECT COALESCE(SUM(new_users), 0)
-                  FROM mv_users_daily_firstseen_ist
-                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
-                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
-                    AND ${mvChannelClause}
-                ) AS new_users,
-                ( SELECT COALESCE(SUM(returning_users), 0)
-                  FROM mv_users_daily_returning_ist
-                  WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
-                    AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
-                    AND ${mvChannelClause}
-                ) AS returning_users
-            ),
-            mv_sessions AS (
-              SELECT COALESCE(COUNT(*), 0) AS total_sessions
-              FROM mv_sessions_daily
-              WHERE session_date_ist >= ${epochMsToIstDate("$1::bigint")}
-                AND session_date_ist <= ${epochMsToIstDate("$2::bigint")}
-                AND ${mvChannelClause}
-            ),
-            mv_questions AS (
-              SELECT COALESCE(SUM(total_questions), 0) AS total_questions
-              FROM mv_question_answer_rates
-              WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
-                AND question_date <= ${epochMsToIstDate("$2::bigint")}
-                AND ${mvChannelClause}
-            ),
-            feedback_stats AS (
-              ${feedbackCte}
-            )
-            SELECT
-              (us.new_users + us.returning_users) AS total_users,
-              us.new_users,
-              us.returning_users,
-              ms.total_sessions,
-              mq.total_questions,
-              fs.total_feedback,
-              fs.total_likes,
-              fs.total_dislikes
-            FROM user_stats us
-            CROSS JOIN mv_sessions ms
-            CROSS JOIN mv_questions mq
-            CROSS JOIN feedback_stats fs;
-          `,
-          values: mvParams,
-        };
-
-        const result = await pool.query(mvQuery);
-        if (result.rows.length > 0) {
-          stats = result.rows[0];
-          querySource = 'mv';
-          sources.users = 'mv';
-          sources.sessions = 'mv';
-          sources.questions = 'mv';
-          sources.feedback = hasFeedbackDailyMV ? 'mv' : 'base';
-        }
-      } catch (mvErr) {
-        console.warn('[DashboardStatsUnified] MV query failed, falling back to base query:', mvErr.message);
-      }
-    }
-
-    // Fallback: legacy base query for Bharat Vistaar
-    if (!stats) {
-      const queryParams = [startTimestamp, endTimestamp];
-      const {
-        clause: questionsChannelClause,
-        paramIndex: questionsChannelParamIndex,
-      } = buildChannelFilterClause("q.channel", unifiedTelemetryState, queryParams, 2);
-      let nextParamIndex = questionsChannelParamIndex;
-
-      let questionStatsCte = `
-          SELECT COUNT(*) AS total_questions
-          FROM filtered_questions
-        `;
-      if (hasQuestionRateMV && !hasTimeComponent) {
-        const { clause: mvQuestionChannelClause, paramIndex } = buildChannelFilterClause(
-          "channel",
-          unifiedTelemetryState,
-          queryParams,
-          nextParamIndex,
-        );
-        nextParamIndex = paramIndex;
-        questionStatsCte = `
-          SELECT COALESCE(SUM(total_questions), 0) AS total_questions
-          FROM mv_question_answer_rates
-          WHERE question_date >= ${epochMsToIstDate("$1::bigint")}
-            AND question_date <= ${epochMsToIstDate("$2::bigint")}
-            AND ${mvQuestionChannelClause}
-        `;
-      }
-
-      let feedbackStatsCte = `
-          SELECT
-            COUNT(*) AS total_feedback,
-            COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
-            COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
-          FROM feedback f
-          WHERE f.feedbacktext IS NOT NULL
-            AND ((f.questiontext IS NOT NULL AND f.fingerprint_id IS NOT NULL)
-                 OR COALESCE(f.feedback_source, 'chat') = 'voice')
-            AND f.ets >= $1 AND f.ets <= $2
-            AND 1=1
-        `;
-      if (hasFeedbackDailyMV && !hasTimeComponent) {
-        const { clause: mvFeedbackChannelClause, paramIndex } = buildChannelFilterClause(
-          "channel",
-          unifiedTelemetryState,
-          queryParams,
-          nextParamIndex,
-        );
-        nextParamIndex = paramIndex;
-        feedbackStatsCte = `
-          SELECT
-            COALESCE(SUM(total_feedback), 0) AS total_feedback,
-            COALESCE(SUM(likes), 0) AS total_likes,
-            COALESCE(SUM(dislikes), 0) AS total_dislikes
-          FROM mv_feedback_daily
-          WHERE feedback_date >= ${epochMsToIstDate("$1::bigint")}
-            AND feedback_date <= ${epochMsToIstDate("$2::bigint")}
-            AND ${mvFeedbackChannelClause}
-        `;
-      } else {
-        const { clause: feedbackChannelClause } = buildChannelFilterClause(
-          "f.channel",
-          unifiedTelemetryState,
-          queryParams,
-          nextParamIndex,
-        );
-        feedbackStatsCte = feedbackStatsCte.replace("AND 1=1", `AND ${feedbackChannelClause}`);
-      }
-
-      const query = {
-        text: `
-          WITH filtered_questions AS (
-            SELECT q.fingerprint_id, q.sid, q.ets
-            FROM questions q
-            WHERE q.answertext IS NOT NULL
-              AND q.fingerprint_id IS NOT NULL
-              AND q.ets >= $1 AND q.ets <= $2
-              AND ${questionsChannelClause}
-          ),
-          user_stats AS (
-            SELECT
-              COUNT(DISTINCT fq.fingerprint_id) FILTER (
-                WHERE ${utcTimestampToIstDate("u.first_seen_at")} >= ${epochMsToIstDate("$1::bigint")}
-                  AND ${utcTimestampToIstDate("u.first_seen_at")} <= ${epochMsToIstDate("$2::bigint")}
-              ) AS new_users,
-              COUNT(DISTINCT fq.fingerprint_id) FILTER (
-                WHERE ${epochMsToIstDate("fq.ets")} != ${utcTimestampToIstDate("u.first_seen_at")}
-              ) AS returning_users
-            FROM filtered_questions fq
-            INNER JOIN users u ON fq.fingerprint_id = u.fingerprint_id
-          ),
-          session_stats AS (
-            SELECT COUNT(DISTINCT (fq.sid, fq.fingerprint_id)) AS total_sessions
-            FROM filtered_questions fq
-            WHERE fq.sid IS NOT NULL AND fq.fingerprint_id IS NOT NULL
-          ),
-          question_stats AS (
-            ${questionStatsCte}
-          ),
-          feedback_stats AS (
-            ${feedbackStatsCte}
-          )
-          SELECT
-            (us.new_users + us.returning_users) AS total_users,
-            us.new_users,
-            us.returning_users,
-            ss.total_sessions,
-            qs.total_questions,
-            fs.total_feedback,
-            fs.total_likes,
-            fs.total_dislikes
-          FROM user_stats us
-          CROSS JOIN session_stats ss
-          CROSS JOIN question_stats qs
-          CROSS JOIN feedback_stats fs;
-        `,
-        values: queryParams,
-        query_timeout: 45000,
-      };
-
-      const result = await pool.query(query);
-      stats = result.rows[0];
-    }
-
-    res.status(200).json({
-      success: true,
-      data: {
-        totalUsers: parseInt(stats.total_users) || 0,
-        totalNewUsers: parseInt(stats.new_users) || 0,
-        totalReturningUsers: parseInt(stats.returning_users) || 0,
-        totalSessions: parseInt(stats.total_sessions) || 0,
-        totalQuestions: parseInt(stats.total_questions) || 0,
-        totalFeedback: parseInt(stats.total_feedback) || 0,
-        totalLikes: parseInt(stats.total_likes) || 0,
-        totalDislikes: parseInt(stats.total_dislikes) || 0,
-      },
-      meta: {
-        source: querySource,
-        sources,
-        appliedState: 'bharat-vistaar',
-      },
-      filters: {
-        startDate,
-        endDate,
-        appliedStartTimestamp: startTimestamp,
-        appliedEndTimestamp: endTimestamp,
-      },
-    });
-  } catch (error) {
-    console.error("Error fetching unified dashboard stats:", error);
-    res.status(500).json({ success: false, error: "Error fetching unified dashboard statistics" });
   }
 };
 
