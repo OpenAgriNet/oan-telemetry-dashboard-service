@@ -134,9 +134,16 @@ async function getTotalAndNewDevicesCount(
     hasReturningMV &&
     startTimestamp !== null &&
     endTimestamp !== null &&
-    channelClause === "1=1"
+    !(search && search.trim())
   ) {
     try {
+      const mvParams = [startTimestamp, endTimestamp];
+      const { clause: mvChannelClause } = buildChannelFilterClause(
+        "channel",
+        telemetryState,
+        mvParams,
+        2,
+      );
       const result = await pool.query(
         `
           WITH nu AS (
@@ -144,12 +151,14 @@ async function getTotalAndNewDevicesCount(
             FROM mv_users_daily_firstseen_ist
             WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
               AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+              AND ${mvChannelClause}
           ),
           ru AS (
             SELECT COALESCE(SUM(returning_users), 0) AS returning_users
             FROM mv_users_daily_returning_ist
             WHERE bucket_date >= ${epochMsToIstDate("$1::bigint")}
               AND bucket_date <= ${epochMsToIstDate("$2::bigint")}
+              AND ${mvChannelClause}
           )
           SELECT
             nu.new_users AS new_users,
@@ -158,7 +167,7 @@ async function getTotalAndNewDevicesCount(
             'mv' AS source
           FROM nu CROSS JOIN ru;
         `,
-        [startTimestamp, endTimestamp]
+        mvParams
       );
       const row = result.rows[0];
       return {
@@ -305,7 +314,7 @@ const getDeviceGraph = async (req, res) => {
       paramIndex: channelParamIndex,
     } = buildChannelFilterClause("q.channel", telemetryState, baseParams, 0);
 
-    if (granularity === 'daily' && channelClause === '1=1') {
+    if (granularity === 'daily' && !(search && search.trim())) {
       const [hasNewMV, hasReturningMV] = await Promise.all([
         mvExists('mv_users_daily_firstseen_ist'),
         mvExists('mv_users_daily_returning_ist'),
@@ -322,18 +331,27 @@ const getDeviceGraph = async (req, res) => {
             params.push(endTimestamp);
             conditions.push(`bucket_date <= ${epochMsToIstDate(`$${params.length}::bigint`)}`);
           }
+          const { clause: mvChannelClause } = buildChannelFilterClause(
+            "channel",
+            telemetryState,
+            params,
+            params.length,
+          );
+          conditions.push(mvChannelClause);
           const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
           const sql = `
             WITH n AS (
-              SELECT bucket_date, new_users
+              SELECT bucket_date, SUM(new_users) AS new_users
               FROM mv_users_daily_firstseen_ist
               ${where}
+              GROUP BY bucket_date
             ),
             r AS (
-              SELECT bucket_date, returning_users
+              SELECT bucket_date, SUM(returning_users) AS returning_users
               FROM mv_users_daily_returning_ist
               ${where}
+              GROUP BY bucket_date
             ),
             merged AS (
               SELECT
