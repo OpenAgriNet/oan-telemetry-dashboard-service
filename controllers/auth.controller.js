@@ -13,7 +13,7 @@ function getJoseModule() {
 
 const issuerFromEnvironment =
   process.env.KEYCLOAK_ISSUER_URL ||
-  "https://auth-vistaar.da.gov.in/auth/realms/Vistaar-dashboard";
+  "https://prodauthvistaar.mahapocra.gov.in/auth/realms/Vistaar";
 const keycloakIssuer = issuerFromEnvironment.endsWith("/") ? issuerFromEnvironment.slice(0, -1) : issuerFromEnvironment;
 
 let remoteJwksPromise = null;
