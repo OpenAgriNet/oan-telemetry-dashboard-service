@@ -34,31 +34,26 @@ app.use(
   })
 );
 
-const checkHealthStatus = async () => {
+const checkHealthStatus = async ({ notify = false } = {}) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Starting health check...`);
 
   try {
     const oneHourAgo = Date.now() - 3600000;
 
-    const [questionsRes, feedbackRes, errorRes] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM questions WHERE ets > $1', [oneHourAgo]),
-      pool.query('SELECT COUNT(*) FROM feedback WHERE ets > $1', [oneHourAgo]),
-      pool.query('SELECT COUNT(*) FROM errordetails WHERE ets > $1', [oneHourAgo])
-    ]);
+    const questionsRes = await pool.query(
+      'SELECT COUNT(*) FROM questions WHERE ets > $1',
+      [oneHourAgo]
+    );
 
     const counts = {
-      questions: parseInt(questionsRes.rows[0].count),
-      feedback: parseInt(feedbackRes.rows[0].count),
-      errors: parseInt(errorRes.rows[0].count)
+      questions: parseInt(questionsRes.rows[0].count)
     };
 
     console.log(`[${timestamp}] Retrieved counts:`, JSON.stringify(counts));
 
     const thresholds = {
-      questionsMin: parseInt(process.env.THRESHOLD_QUESTIONS_MIN || 1), // Default to 1 to trigger on 0
-      feedbackMin: parseInt(process.env.THRESHOLD_FEEDBACK_MIN || 1),   // Default to 1 to trigger on 0
-      errorsMax: parseInt(process.env.THRESHOLD_ERRORS_MAX || 10)
+      questionsMin: parseInt(process.env.THRESHOLD_QUESTIONS_MIN || 1)
     };
 
     console.log(`[${timestamp}] Thresholds config:`, JSON.stringify(thresholds));
@@ -72,20 +67,7 @@ const checkHealthStatus = async () => {
       alertMessage += msg;
       console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
     }
-    if (counts.feedback < thresholds.feedbackMin) {
-      alertTriggered = true;
-      const msg = `> 🟡 *[P2] Low Feedback*: \`${counts.feedback}\` (Expected Min: \`${thresholds.feedbackMin}\`)\n`;
-      alertMessage += msg;
-      console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
-    }
-    if (counts.errors > thresholds.errorsMax) {
-      alertTriggered = true;
-      const msg = `> 🔴 *[P1] High Errors*: \`${counts.errors}\` (Max Allowed: \`${thresholds.errorsMax}\`)\n`;
-      alertMessage += msg;
-      console.warn(`[${timestamp}] Violation: ${msg.trim()}`);
-    }
-
-    if (alertTriggered) {
+    if (alertTriggered && notify) {
       console.log(`[${timestamp}] Alert triggered! Sending notification...`);
       if (process.env.SLACK_WEBHOOK_URL) {
         try {
@@ -99,8 +81,10 @@ const checkHealthStatus = async () => {
       } else {
         console.log(`[${timestamp}] No SLACK_WEBHOOK_URL configured. Skipping notification.`);
       }
-    } else {
+    } else if (!alertTriggered) {
       console.log(`[${timestamp}] Health check passed. No alerts.`);
+    } else {
+      console.log(`[${timestamp}] Question threshold breached; notification suppressed for non-scheduled health check.`);
     }
 
     return {
@@ -129,7 +113,7 @@ app.get("/health", async (req, res) => {
 cron.schedule('0 * * * *', async () => {
   console.log('Running scheduled health check...');
   try {
-    await checkHealthStatus();
+    await checkHealthStatus({ notify: true });
   } catch (error) {
     console.error('Scheduled health check failed:', error);
   }
