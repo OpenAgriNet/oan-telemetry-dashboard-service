@@ -5,7 +5,7 @@ const {
 } = require("../services/langfuseEvaluationSync");
 
 const stateFrom = (req) => req.get("x-telemetry-state") || "bharat-vistaar";
-const intParam = (value, fallback, max = 100) => Math.min(Math.max(parseInt(value, 10) || fallback, 1), max);
+const intParam = (value, fallback, max = 100) => Math.min(Math.max(Number.parseInt(value, 10) || fallback, 1), max);
 
 async function persistEvaluationItem(runId, traceId, b) {
   const metrics = b.evaluation?.metrics || {};
@@ -98,8 +98,9 @@ async function upsertManifest(req, res) {
     const run = await pool.query("SELECT run_id FROM evaluation_runs WHERE run_id = $1", [req.params.runId]);
     if (!run.rowCount) return res.status(404).json({ success: false, message: "Run not found" });
     const existing = await pool.query("SELECT trace_id FROM evaluation_run_traces WHERE run_id = $1 ORDER BY trace_id", [req.params.runId]);
-    const existingIds = existing.rows.map((row) => row.trace_id).sort();
-    const requestedIds = [...new Set(traces.map((item) => item.trace_id))].sort();
+    const compareTraceIds = (left, right) => String(left).localeCompare(String(right));
+    const existingIds = existing.rows.map((row) => row.trace_id).sort(compareTraceIds);
+    const requestedIds = [...new Set(traces.map((item) => item.trace_id))].sort(compareTraceIds);
     if (existingIds.length && JSON.stringify(existingIds) !== JSON.stringify(requestedIds)) {
       return res.status(409).json({ success: false, message: "Run manifests are immutable once registered" });
     }
@@ -165,7 +166,12 @@ async function syncRunFromLangfuse(req, res) {
     };
     await Promise.all(Array.from({ length: Math.min(4, scoredRows.length) }, syncNext));
     const pending = manifest.rowCount - synced - failures.length;
-    const status = pending === 0 && failures.length === 0 ? "complete" : (synced || failures.length ? "partial" : "running");
+    let status = "running";
+    if (pending === 0 && failures.length === 0) {
+      status = "complete";
+    } else if (synced || failures.length) {
+      status = "partial";
+    }
     await pool.query(`UPDATE evaluation_runs SET status=$2, successful_count=$3, failed_count=$4, score_source='langfuse', last_synced_at=NOW(), completed_at=CASE WHEN status IN ('complete','partial') THEN NOW() ELSE completed_at END, updated_at=NOW() WHERE run_id=$1`, [req.params.runId, status, synced, failures.length]);
     res.status(failures.length && !synced ? 502 : 200).json({ success: synced > 0 || !failures.length, data: { run_id: req.params.runId, status, synced, failed: failures.length, pending, failures } });
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
@@ -232,7 +238,8 @@ async function getSummary(req, res) {
         for (const [metricName, metric] of Object.entries(dimension?.scores || {})) {
           if (typeof metric?.score === "number") {
             const key = `${dimensionName}.${metricName}`;
-            (metricValues[key] ||= []).push(metric.score);
+            if (!metricValues[key]) metricValues[key] = [];
+            metricValues[key].push(metric.score);
           }
         }
       }
