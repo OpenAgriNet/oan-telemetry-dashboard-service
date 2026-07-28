@@ -18,6 +18,7 @@ const pool = require("./services/db");
 const evaluationRoutes = require("./routes/evaluationRoutes");
 const internalEvaluationRoutes = require("./routes/internalEvaluationRoutes");
 const evaluationWorkerAuth = require("./middleware/evaluationWorkerAuth");
+const { startEvaluationScheduler } = require("./services/evaluationScheduler");
 const app = express();
 
 app.use(express.json({ limit: "2mb" }));
@@ -27,7 +28,7 @@ app.set("trust proxy", true);
 app.use(
   cors({
     //origin: ['https://your-frontend-domain.com', 'http://localhost:3000'], // Allowed origins
-    methods: ["GET", "POST", "PUT"], // Allowed HTTP methods
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Allowed HTTP methods
     //allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
     //credentials: true // Allow credentials (e.g., cookies, HTTP auth)
   })
@@ -155,6 +156,7 @@ const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Service is running on port ${PORT}`);
 });
+startEvaluationScheduler();
 
 // Graceful shutdown: close HTTP server and DB pool.
 // Call this on SIGTERM / SIGINT so Docker or orchestrator can stop cleanly.

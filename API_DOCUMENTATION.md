@@ -171,6 +171,21 @@ Evaluation read endpoints use the same bearer-token/Keycloak authentication as t
 - `GET /v1/evaluations/runs/{runId}/items/{itemId}` — return the question, answer, evidence, 18 scores, and evaluator comments.
 - `POST /v1/evaluations/runs/{runId}/sync` — refresh the normalized dashboard cache from run-scoped Langfuse scores.
 
+The following endpoints require a valid Keycloak token whose realm roles include `super-admin`:
+
+- `GET /v1/evaluations/judge-models` — list the judge models configured by the evaluation worker.
+- `GET|POST /v1/evaluations/judge-endpoints` — list or create encrypted OpenAI, Cerebras, vLLM, or other OpenAI-compatible judge connections.
+- `PATCH|DELETE /v1/evaluations/judge-endpoints/{endpointId}` — edit, enable, or disable a connection.
+- `POST /v1/evaluations/judge-endpoints/{endpointId}/test` — call the provider's `/models` endpoint without running an evaluation.
+- `GET|POST /v1/evaluations/schedules` — list or create daily IST schedules.
+- `PATCH|DELETE /v1/evaluations/schedules/{scheduleId}` — change, pause, or remove a schedule.
+- `POST /v1/evaluations/runs` — create and start an asynchronous evaluation run. Body: `{ "judge_endpoint_id": "uuid", "population_limit": 1000, "sampling_mode": "percent", "sampling_value": 10 }`. Use `sampling_mode: "count"` for a fixed number of traces.
+- `POST /v1/evaluations/runs/{runId}/sync` — manually recover dashboard data from scores already present in Langfuse.
+
+`POST /v1/evaluations/runs` returns `202 Accepted` with the generated run ID. The run is persisted before the worker is called, so it is immediately queryable through the run list and summary endpoints.
+
+Provider API keys are encrypted with AES-256-GCM using `EVALUATION_CREDENTIALS_KEY`; API responses expose only `has_api_key`. Optionally restrict configurable destinations with `EVALUATION_JUDGE_ALLOWED_HOSTS`.
+
 ## Evaluation-worker endpoints
 
 These endpoints require `x-evaluation-service-key`.
@@ -180,6 +195,8 @@ These endpoints require `x-evaluation-service-key`.
 - `GET /v1/internal/evaluations/runs/{runId}/manifest` — return run metadata and selected traces for `LLM_eval`.
 - `POST /v1/internal/evaluations/runs/{runId}/sync` — synchronize Langfuse scores after a scorer run.
 - `GET /v1/internal/evaluations/feedback-candidates` — obtain feedback-bearing questions for the selection window.
+- `PUT /v1/internal/evaluations/runs/{runId}/items/{traceId}` — publish one normalized evaluated conversation immediately after its Langfuse scores are written.
+- `PATCH /v1/internal/evaluations/runs/{runId}/traces/{traceId}` — record a per-trace scoring failure and refresh run progress.
 
 Manifest request example:
 
