@@ -157,4 +157,42 @@ This document provides an overview of the available API endpoints.
 *   **Responses:**
     *   `200 OK`: Returns a JSON object with `success: true`, overall user statistics, daily activity, and applied filters.
     *   `400 Bad Request`: If date format is invalid.
-    *   `500 Internal Server Error`: If there is an error fetching user statistics. 
+    *   `500 Internal Server Error`: If there is an error fetching user statistics.
+
+# Continuous Evaluation API
+
+Evaluation read endpoints use the same bearer-token/Keycloak authentication as the rest of the dashboard API. Langfuse credentials are server-side only.
+
+## Dashboard endpoints
+
+- `GET /v1/evaluations/runs` — list recent evaluation runs.
+- `GET /v1/evaluations/runs/{runId}/summary` — return four dimension averages, the overall score, pass/failure counts, and all 18 metric averages.
+- `GET /v1/evaluations/runs/{runId}/items` — page and filter evaluated conversations.
+- `GET /v1/evaluations/runs/{runId}/items/{itemId}` — return the question, answer, evidence, 18 scores, and evaluator comments.
+- `POST /v1/evaluations/runs/{runId}/sync` — refresh the normalized dashboard cache from run-scoped Langfuse scores.
+
+## Evaluation-worker endpoints
+
+These endpoints require `x-evaluation-service-key`.
+
+- `PUT /v1/internal/evaluations/runs/{runId}` — create or update run metadata.
+- `PUT /v1/internal/evaluations/runs/{runId}/manifest` — register the immutable selected trace manifest.
+- `GET /v1/internal/evaluations/runs/{runId}/manifest` — return run metadata and selected traces for `LLM_eval`.
+- `POST /v1/internal/evaluations/runs/{runId}/sync` — synchronize Langfuse scores after a scorer run.
+- `GET /v1/internal/evaluations/feedback-candidates` — obtain feedback-bearing questions for the selection window.
+
+Manifest request example:
+
+```json
+{
+  "traces": [
+    {
+      "trace_id": "langfuse-trace-id",
+      "selection_source": "feedback",
+      "feedback_types": ["dislike"],
+      "feedback_count": 1,
+      "feedback_comment_present": true
+    }
+  ]
+}
+```

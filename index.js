@@ -15,16 +15,19 @@ const leaderboardRoutes = require("./routes/leaderboard.Routes");
 const villageRoutes = require("./routes/villageRoutes");
 const leaderboardAuthController = require("./controllers/leaderboardAuth.controller");
 const pool = require("./services/db");
+const evaluationRoutes = require("./routes/evaluationRoutes");
+const internalEvaluationRoutes = require("./routes/internalEvaluationRoutes");
+const evaluationWorkerAuth = require("./middleware/evaluationWorkerAuth");
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 app.set("trust proxy", true);
 
 // app.use(cors());
 app.use(
   cors({
     //origin: ['https://your-frontend-domain.com', 'http://localhost:3000'], // Allowed origins
-    methods: ["GET", "POST"], // Allowed HTTP methods
+    methods: ["GET", "POST", "PUT"], // Allowed HTTP methods
     //allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
     //credentials: true // Allow credentials (e.g., cookies, HTTP auth)
   })
@@ -132,6 +135,7 @@ cron.schedule('0 * * * *', async () => {
 });
 
 app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
+app.use("/v1/internal/evaluations", evaluationWorkerAuth, internalEvaluationRoutes);
 // app.use("/", authController, (req, res) => {
 //   res.send("hi welcome");
 // });
@@ -142,6 +146,7 @@ app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
+app.use("/v1", authController, evaluationRoutes);
 app.use("/v1/api/villages", authController, villageRoutes);
 app.use(morgan("combined"));
 
