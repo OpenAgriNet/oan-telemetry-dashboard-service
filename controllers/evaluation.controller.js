@@ -215,6 +215,26 @@ async function listRuns(req, res) {
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 }
 
+function calculateMetricAverages(evaluations) {
+  const metricValues = {};
+  for (const row of evaluations) {
+    for (const [dimensionName, dimension] of Object.entries(row.evaluation?.dimensions || {})) {
+      for (const [metricName, metric] of Object.entries(dimension?.scores || {})) {
+        if (typeof metric?.score !== "number") continue;
+        const key = `${dimensionName}.${metricName}`;
+        if (!metricValues[key]) metricValues[key] = [];
+        metricValues[key].push(metric.score);
+      }
+    }
+  }
+  return Object.fromEntries(
+    Object.entries(metricValues).map(([key, values]) => [
+      key,
+      values.reduce((sum, value) => sum + value, 0) / values.length,
+    ])
+  );
+}
+
 async function getSummary(req, res) {
   try {
     await ensureEvaluationSchema();
@@ -232,21 +252,7 @@ async function getSummary(req, res) {
       FROM evaluation_items WHERE run_id = $1
     `, [req.params.runId]);
     const evaluations = await pool.query("SELECT evaluation FROM evaluation_items WHERE run_id = $1", [req.params.runId]);
-    const metricValues = {};
-    for (const row of evaluations.rows) {
-      for (const [dimensionName, dimension] of Object.entries(row.evaluation?.dimensions || {})) {
-        for (const [metricName, metric] of Object.entries(dimension?.scores || {})) {
-          if (typeof metric?.score === "number") {
-            const key = `${dimensionName}.${metricName}`;
-            if (!metricValues[key]) metricValues[key] = [];
-            metricValues[key].push(metric.score);
-          }
-        }
-      }
-    }
-    const metric_averages = Object.fromEntries(
-      Object.entries(metricValues).map(([key, values]) => [key, values.reduce((sum, value) => sum + value, 0) / values.length])
-    );
+    const metric_averages = calculateMetricAverages(evaluations.rows);
     res.json({ success: true, data: { run: run.rows[0], ...stats.rows[0], metric_averages } });
   } catch (error) { res.status(500).json({ success: false, message: error.message }); }
 }
