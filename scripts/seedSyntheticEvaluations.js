@@ -103,68 +103,88 @@ function makeEvaluation(index, forceCritical, runIndex) {
   };
 }
 
+function makeRunContext(runIndex, runCount) {
+  const baseSize = Math.floor(requestedCount / runCount);
+  const extraItem = runIndex < requestedCount % runCount ? 1 : 0;
+  const itemCount = baseSize + extraItem;
+  const windowEnd = new Date(Date.now() - runIndex * 24 * 60 * 60 * 1000);
+  const windowStart = new Date(windowEnd.getTime() - 24 * 60 * 60 * 1000);
+  const dateKey = windowEnd.toISOString().slice(0, 10).replaceAll("-", "");
+  const feedbackCount = Math.round(itemCount * 0.28);
+  return {
+    runIndex,
+    itemCount,
+    windowEnd,
+    windowStart,
+    runId: `synthetic-local-${dateKey}-${runIndex + 1}`,
+    feedbackCount,
+    randomCount: itemCount - feedbackCount,
+  };
+}
+
+async function insertRun(client, run) {
+  await client.query(`
+    INSERT INTO evaluation_runs (
+      run_id, state, window_start, window_end, status, population_count, random_target,
+      feedback_selected_count, random_selected_count, unmatched_feedback_count,
+      successful_count, failed_count, judge_model, schema_version, rubric_version, completed_at
+    ) VALUES ($1, 'bharat-vistaar', $2, $3, 'complete', $4, $5, $6, $7, $8, $9, 0,
+              'gemma-4', 'evaluation-item-v1', 'mh-production-v1', $3)
+  `, [
+    run.runId, run.windowStart, run.windowEnd, run.itemCount * 10, run.itemCount,
+    run.feedbackCount, run.randomCount, run.runIndex % 3, run.itemCount,
+  ]);
+}
+
+async function insertItem(client, run, itemIndex, globalIndex) {
+  const selectionSource = itemIndex < run.feedbackCount ? "feedback" : "random";
+  const evaluation = makeEvaluation(globalIndex, globalIndex % 7 === 0, run.runIndex);
+  const [category, question, answer] = conversations[globalIndex % conversations.length];
+  const feedbackTypes = selectionSource === "feedback" ? [pick(["like", "dislike"])] : [];
+  const dimensionAverages = Object.fromEntries(
+    Object.entries(evaluation.dimensions).map(([key, value]) => [key, value.average])
+  );
+
+  await client.query(`
+    INSERT INTO evaluation_items (
+      run_id, trace_id, qid, masked_session_ref, question, answer, category,
+      agristack_required, target_lang, serving_model, application_release,
+      selection_source, feedback_types, feedback_count, feedback_comment_present,
+      evaluation, dimension_averages, overall_average, overall_pass,
+      critical_failures, evaluated_at
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16::jsonb,$17::jsonb,$18,$19,$20::jsonb,$21)
+  `, [
+    run.runId, `synthetic-trace-${globalIndex + 1}`, `synthetic-qid-${globalIndex + 1}`,
+    `local-session-${String(globalIndex % 80).padStart(3, "0")}`, question, answer, category,
+    globalIndex % 4 === 0 ? "Yes" : "No", /[\u0900-\u097F]/.test(question) ? "mr" : "en",
+    "gemma-4", "synthetic-local", selectionSource, JSON.stringify(feedbackTypes),
+    selectionSource === "feedback" ? 1 + (globalIndex % 3) : 0,
+    selectionSource === "feedback" && globalIndex % 2 === 0, JSON.stringify(evaluation),
+    JSON.stringify(dimensionAverages), evaluation.metrics.overall_average,
+    evaluation.metrics.overall_pass, JSON.stringify(evaluation.metrics.critical_failures),
+    new Date(run.windowStart.getTime() + (itemIndex / Math.max(run.itemCount, 1)) * (run.windowEnd - run.windowStart)),
+  ]);
+}
+
+async function seedRun(client, run, firstGlobalIndex) {
+  await insertRun(client, run);
+  for (let itemIndex = 0; itemIndex < run.itemCount; itemIndex += 1) {
+    await insertItem(client, run, itemIndex, firstGlobalIndex + itemIndex);
+  }
+  return firstGlobalIndex + run.itemCount;
+}
+
 async function main() {
   await ensureEvaluationSchema();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("DELETE FROM evaluation_runs WHERE run_id LIKE 'synthetic-local-%'");
-
     const runCount = Math.min(5, requestedCount);
-    const baseSize = Math.floor(requestedCount / runCount);
-    let remainder = requestedCount % runCount;
     let globalIndex = 0;
-
     for (let runIndex = 0; runIndex < runCount; runIndex += 1) {
-      const itemCount = baseSize + (remainder-- > 0 ? 1 : 0);
-      const windowEnd = new Date(Date.now() - runIndex * 24 * 60 * 60 * 1000);
-      const windowStart = new Date(windowEnd.getTime() - 24 * 60 * 60 * 1000);
-      const dateKey = windowEnd.toISOString().slice(0, 10).replaceAll("-", "");
-      const runId = `synthetic-local-${dateKey}-${runIndex + 1}`;
-      const feedbackCount = Math.round(itemCount * 0.28);
-      const randomCount = itemCount - feedbackCount;
-
-      await client.query(`
-        INSERT INTO evaluation_runs (
-          run_id, state, window_start, window_end, status, population_count, random_target,
-          feedback_selected_count, random_selected_count, unmatched_feedback_count,
-          successful_count, failed_count, judge_model, schema_version, rubric_version, completed_at
-        ) VALUES ($1, 'bharat-vistaar', $2, $3, 'complete', $4, $5, $6, $7, $8, $9, 0,
-                  'gemma-4', 'evaluation-item-v1', 'mh-production-v1', $3)
-      `, [runId, windowStart, windowEnd, itemCount * 10, itemCount, feedbackCount, randomCount, runIndex % 3, itemCount]);
-
-      for (let itemIndex = 0; itemIndex < itemCount; itemIndex += 1, globalIndex += 1) {
-        const selectionSource = itemIndex < feedbackCount ? "feedback" : "random";
-        const forceCritical = globalIndex % 7 === 0;
-        const evaluation = makeEvaluation(globalIndex, forceCritical, runIndex);
-        const [category, question, answer] = conversations[globalIndex % conversations.length];
-        const feedbackTypes = selectionSource === "feedback" ? [pick(["like", "dislike"])] : [];
-        const dimensionAverages = Object.fromEntries(
-          Object.entries(evaluation.dimensions).map(([key, value]) => [key, value.average])
-        );
-
-        await client.query(`
-          INSERT INTO evaluation_items (
-            run_id, trace_id, qid, masked_session_ref, question, answer, category,
-            agristack_required, target_lang, serving_model, application_release,
-            selection_source, feedback_types, feedback_count, feedback_comment_present,
-            evaluation, dimension_averages, overall_average, overall_pass,
-            critical_failures, evaluated_at
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16::jsonb,$17::jsonb,$18,$19,$20::jsonb,$21)
-        `, [
-          runId, `synthetic-trace-${globalIndex + 1}`, `synthetic-qid-${globalIndex + 1}`,
-          `local-session-${String(globalIndex % 80).padStart(3, "0")}`, question, answer, category,
-          globalIndex % 4 === 0 ? "Yes" : "No", /[\u0900-\u097F]/.test(question) ? "mr" : "en",
-          "gemma-4", "synthetic-local",
-          selectionSource, JSON.stringify(feedbackTypes), selectionSource === "feedback" ? 1 + (globalIndex % 3) : 0,
-          selectionSource === "feedback" && globalIndex % 2 === 0, JSON.stringify(evaluation),
-          JSON.stringify(dimensionAverages), evaluation.metrics.overall_average,
-          evaluation.metrics.overall_pass, JSON.stringify(evaluation.metrics.critical_failures),
-          new Date(windowStart.getTime() + (itemIndex / Math.max(itemCount, 1)) * (windowEnd - windowStart)),
-        ]);
-      }
+      globalIndex = await seedRun(client, makeRunContext(runIndex, runCount), globalIndex);
     }
-
     await client.query("COMMIT");
     console.log(`Seeded ${requestedCount} synthetic evaluations across ${runCount} local runs.`);
   } catch (error) {

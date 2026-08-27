@@ -11,10 +11,10 @@ function getJoseModule() {
   return joseModulePromise;
 }
 
-const keycloakIssuer = (
+const issuerFromEnvironment =
   process.env.KEYCLOAK_ISSUER_URL ||
-  "https://auth-vistaar-dev.mahapocra.gov.in/realms/Vistaar-dashboard"
-).replace(/\/+$/, "");
+  "https://prodauthvistaar.mahapocra.gov.in/auth/realms/Vistaar";
+const keycloakIssuer = issuerFromEnvironment.endsWith("/") ? issuerFromEnvironment.slice(0, -1) : issuerFromEnvironment;
 
 let remoteJwksPromise = null;
 async function getRemoteJwks() {
