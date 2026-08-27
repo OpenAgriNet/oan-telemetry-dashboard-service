@@ -18,18 +18,6 @@ This document provides an overview of the available API endpoints.
     *   `400 Bad Request`: If search term is too long, date format is invalid, or start date is after end date.
     *   `500 Internal Server Error`: If there is an error fetching feedback data.
 
-### 2. Get Feedback by ID
-*   **Endpoint:** `GET /feedback/:id`
-*   **Description:** Retrieves a specific feedback entry by its ID.
-*   **Path Parameters:**
-    *   `id` (required, string): The UUID of the feedback entry.
-*   **Query Parameters:** None
-*   **Responses:**
-    *   `200 OK`: Returns a JSON object containing the feedback details.
-    *   `400 Bad Request`: If the provided ID is not a valid UUID.
-    *   `404 Not Found`: If no feedback is found for the given ID.
-    *   `500 Internal Server Error`: If there is an error fetching feedback data.
-
 ## Sessions API (`controllers/sessions.controller.js`)
 
 ### 1. Get All Sessions
@@ -46,21 +34,7 @@ This document provides an overview of the available API endpoints.
     *   `400 Bad Request`: If search term is too long, date format is invalid, or start date is after end date.
     *   `500 Internal Server Error`: If there is an error fetching sessions data.
 
-### 2. Get Session by ID
-*   **Endpoint:** `GET /sessions/:sessionId`
-*   **Description:** Retrieves details for a specific session by its ID, including questions, feedback, and errors associated with that session. Supports date filtering for the session items.
-*   **Path Parameters:**
-    *   `sessionId` (required, string): The ID of the session.
-*   **Query Parameters:**
-    *   `startDate` (optional, string): The start date for filtering session items (ISO date string YYYY-MM-DD or Unix timestamp in milliseconds).
-    *   `endDate` (optional, string): The end date for filtering session items (ISO date string YYYY-MM-DD or Unix timestamp in milliseconds).
-*   **Responses:**
-    *   `200 OK`: Returns a JSON object with `success: true`, detailed session data, and applied filters.
-    *   `400 Bad Request`: If `sessionId` is invalid, date format is invalid.
-    *   `404 Not Found`: If no session is found for the given ID and date range.
-    *   `500 Internal Server Error`: If there is an error fetching session data.
-
-### 3. Get Sessions by User ID
+### 2. Get Sessions by User ID
 *   **Endpoint:** `GET /sessions/user/:userId`
 *   **Description:** Retrieves a paginated list of sessions for a specific user ID. Supports date filtering.
 *   **Path Parameters:**
@@ -91,19 +65,7 @@ This document provides an overview of the available API endpoints.
     *   `400 Bad Request`: If search term is too long, date format is invalid, or start date is after end date.
     *   `500 Internal Server Error`: If there is an error fetching questions.
 
-### 2. Get Question by ID
-*   **Endpoint:** `GET /questions/:id`
-*   **Description:** Retrieves a specific question by its ID.
-*   **Path Parameters:**
-    *   `id` (required, string): The UUID of the question.
-*   **Query Parameters:** None
-*   **Responses:**
-    *   `200 OK`: Returns a JSON object with `success: true` and the question details.
-    *   `400 Bad Request`: If the provided ID is not a valid UUID.
-    *   `404 Not Found`: If no question is found for the given ID.
-    *   `500 Internal Server Error`: If there is an error fetching question data.
-
-### 3. Get Questions by User ID
+### 2. Get Questions by User ID
 *   **Endpoint:** `GET /questions/user/:userId`
 *   **Description:** Retrieves a paginated list of questions for a specific user ID. Supports date filtering.
 *   **Path Parameters:**
