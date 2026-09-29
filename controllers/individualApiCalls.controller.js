@@ -2,7 +2,7 @@ const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 
 const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 24;
+const DEFAULT_LIMIT = 10;
 
 function parsePositiveInteger(value, fallback, maximum) {
   const parsed = Number.parseInt(value, 10);

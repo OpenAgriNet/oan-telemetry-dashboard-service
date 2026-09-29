@@ -147,6 +147,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
         ...definition,
         metrics: null,
         apis: [],
+        serviceCategories: [],
         providerEndpoints: [],
         providerMethods: [],
       });
@@ -160,6 +161,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
 
     const service = ensureService(providerName, getRequestServiceDefinition(row));
     service.metrics = toMetrics(row, "service_requests");
+    service.serviceCategories.push(row.service_category);
     service.providerEndpoints.push(...asArray(row.provider_endpoints));
     service.providerMethods.push(...asArray(row.provider_methods));
   }
@@ -203,6 +205,10 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       key: `${row.method || ""}-${row.endpoint_path}`,
       name: definition?.name || row.endpoint_path,
       description: definition?.description || "Observed direct provider API",
+      sourceService: row.source_service,
+      scopeCategories: (definition?.serviceKey === "service-locations" || !definition)
+        ? parentCategories.filter(Boolean)
+        : [],
       method: row.method || null,
       endpoint: row.endpoint_path,
       kind: "direct",
@@ -222,6 +228,8 @@ function buildServiceSnapshot(serviceRows, apiRows) {
               key: `provider-operation-${service.providerEndpoints[0] || "unknown"}`,
               name: "Provider operation",
               description: "No direct downstream provider API was linked to this request",
+              sourceService: Object.entries(PROVIDERS).find(([, name]) => name === provider.name)?.[0] || null,
+              scopeCategories: [...new Set(service.serviceCategories.filter(Boolean))],
               method: service.providerMethods[0] || null,
               endpoint: service.providerEndpoints[0] || null,
               kind: "fallback",
@@ -229,7 +237,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
             });
           }
 
-          const { providerEndpoints, providerMethods, ...serviceData } = service;
+          const { providerEndpoints, providerMethods, serviceCategories, ...serviceData } = service;
           return {
             ...serviceData,
             apiRequests: serviceData.apis.reduce((total, api) => total + api.metrics.requests, 0),
