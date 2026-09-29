@@ -1,7 +1,6 @@
 const express = require('express');
 const { 
     getSessions, 
-    getSessionById, 
     getSessionsByUserId,
     getSessionStats,
     getSessionsGraph,
@@ -20,9 +19,6 @@ router.get('/sessions/stats', getSessionStats);
 
 // Get sessions graph data for time-series visualization
 router.get('/sessions/graph', getSessionsGraph);
-
-// Get single session details by session ID
-router.get('/sessions/:sessionId', getSessionById);
 
 // Get sessions by user ID with pagination
 router.get('/users/:userId/sessions', getSessionsByUserId);

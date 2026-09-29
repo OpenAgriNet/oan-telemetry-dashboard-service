@@ -1,7 +1,6 @@
 const express = require('express');
 const { 
     getQuestions, 
-    getQuestionById, 
     getQuestionsByUserId,
     getQuestionsBySessionId,
     getQuestionStats,
@@ -21,9 +20,6 @@ router.get('/questions/stats', getQuestionStats);
 
 // Get questions graph data for time-series visualization
 router.get('/questions/graph', getQuestionsGraph);
-
-// Get single question by ID
-router.get('/questions/:id', getQuestionById);
 
 // Get questions by user ID with pagination
 router.get('/users/:userId/questions', getQuestionsByUserId);

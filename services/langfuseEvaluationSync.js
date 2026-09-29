@@ -36,12 +36,9 @@ const booleanScoreValue = (score) => {
   return String(value).toLowerCase() === "true";
 };
 
-function normalizeTraceScores(runId, trace, manifest) {
-  const scores = new Map((trace.scores || []).map((score) => [score.id, score]));
-  const byName = (name) => scores.get(scoreId(runId, trace.id, name));
+function normalizeDimensions(byName) {
   const dimensions = {};
   const missing = [];
-
   for (const [dimensionName, metricNames] of Object.entries(DIMENSIONS)) {
     const metricScores = {};
     for (const metricName of metricNames) {
@@ -60,6 +57,14 @@ function normalizeTraceScores(runId, trace, manifest) {
       average: averageScore ? Number(scoreValue(averageScore)) : null,
     };
   }
+
+  return { dimensions, missing };
+}
+
+function normalizeTraceScores(runId, trace, manifest) {
+  const scores = new Map((trace.scores || []).map((score) => [score.id, score]));
+  const byName = (name) => scores.get(scoreId(runId, trace.id, name));
+  const { dimensions, missing } = normalizeDimensions(byName);
 
   const overall = byName(`${RUBRIC_PREFIX}.overall`);
   const pass = byName(`${RUBRIC_PREFIX}.pass`);
