@@ -95,8 +95,8 @@ async function getServiceSnapshot(req, res) {
           direct_event.service AS source_service,
           NULLIF(TRIM(direct_event.method), '') AS method,
           split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1) AS endpoint_path,
-          COALESCE(parent_request.service_category, '(unclassified)') AS parent_service_category,
-          parent_request.provider_endpoint AS parent_provider_endpoint,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT COALESCE(parent_request.service_category, '(unclassified)')), NULL) AS parent_service_categories,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT parent_request.provider_endpoint), NULL) AS parent_provider_endpoints,
           COUNT(*) AS api_requests,
           COUNT(*) FILTER (WHERE direct_event.outcome = 'success') AS successful_requests,
           COUNT(*) FILTER (WHERE direct_event.outcome = 'failure') AS failed_requests,
@@ -132,8 +132,12 @@ async function getServiceSnapshot(req, res) {
           direct_event.service,
           NULLIF(TRIM(direct_event.method), ''),
           split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1),
-          COALESCE(parent_request.service_category, '(unclassified)'),
-          parent_request.provider_endpoint
+          CASE
+            WHEN split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1)
+              = '/webservices/fetch_nearest_five_common_data_by_location_and_category'
+              THEN COALESCE(parent_request.service_category, '(unclassified)')
+            ELSE '(endpoint-mapped)'
+          END
       `,
       values: [...dateFilter.values, sourceServices],
     };
