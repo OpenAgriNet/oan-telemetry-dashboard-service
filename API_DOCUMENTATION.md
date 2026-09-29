@@ -127,6 +127,10 @@ Evaluation read endpoints use the same bearer-token/Keycloak authentication as t
 
 ## Dashboard endpoints
 
+- `GET /v1/service-snapshot` — returns the provider → service → API health snapshot from sanitized external telemetry. Supports the existing `startDate` and `endDate` IST date-range parameters. Service rows represent final provider-request outcomes; API rows represent direct provider API attempts. Internal Redis/PostgreSQL dependency spans are excluded.
+- `GET /v1/individual-api-calls` — lists one sanitized external HTTP/API call per row. Supports `startDate`, `endDate`, `outcome` (`success` or `failure`), `layer`, `service`, `search`, `page`, and `limit`.
+- `GET /v1/individual-api-calls/:id` — returns the metadata and already-sanitized request, response, and error payload for one captured API call.
+
 - `GET /v1/evaluations/runs` — list recent evaluation runs.
 - `GET /v1/evaluations/runs/{runId}/summary` — return four dimension averages, the overall score, pass/failure counts, and all 18 metric averages.
 - `GET /v1/evaluations/runs/{runId}/items` — page and filter evaluated conversations.
