@@ -106,6 +106,33 @@ function getApiDefinition(sourceService, endpointPath) {
   return DIRECT_APIS[sourceService]?.[endpointPath] || null;
 }
 
+function asArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  return value ? [value] : [];
+}
+
+function getRequestServiceDefinition(row) {
+  const categoryDefinition = SERVICE_CATEGORIES[row.source_service]?.[row.service_category];
+  if (categoryDefinition) return categoryDefinition;
+
+  // Some provider operations (notably /status) do not include a business
+  // category in their request payload. Their linked downstream API is still
+  // enough to identify the business service.
+  const linkedDefinition = asArray(row.linked_api_endpoints)
+    .map((endpoint) => getApiDefinition(row.source_service, endpoint))
+    .find(Boolean);
+  if (linkedDefinition) {
+    return getServiceDefinitionByKey(row.source_service, linkedDefinition.serviceKey);
+  }
+
+  const providerEndpoint = asArray(row.provider_endpoints)[0];
+  if (row.service_category === "(unclassified)" && providerEndpoint) {
+    return fallbackService(`Unclassified: ${providerEndpoint}`);
+  }
+
+  return fallbackService(row.service_category);
+}
+
 function buildServiceSnapshot(serviceRows, apiRows) {
   const providers = new Map();
 
@@ -116,7 +143,13 @@ function buildServiceSnapshot(serviceRows, apiRows) {
 
     const services = providers.get(providerName).services;
     if (!services.has(definition.key)) {
-      services.set(definition.key, { ...definition, metrics: null, apis: [] });
+      services.set(definition.key, {
+        ...definition,
+        metrics: null,
+        apis: [],
+        providerEndpoints: [],
+        providerMethods: [],
+      });
     }
     return services.get(definition.key);
   };
@@ -125,8 +158,10 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     const providerName = PROVIDERS[row.source_service];
     if (!providerName) continue;
 
-    const service = ensureService(providerName, getServiceDefinition(row.source_service, row.service_category));
+    const service = ensureService(providerName, getRequestServiceDefinition(row));
     service.metrics = toMetrics(row, "service_requests");
+    service.providerEndpoints.push(...asArray(row.provider_endpoints));
+    service.providerMethods.push(...asArray(row.provider_methods));
   }
 
   for (const row of apiRows) {
@@ -134,14 +169,21 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     if (!providerName) continue;
 
     const definition = getApiDefinition(row.source_service, row.endpoint_path);
-    const categoryDefinition = SERVICE_CATEGORIES[row.source_service]?.[row.service_category];
+    const categoryDefinition = SERVICE_CATEGORIES[row.source_service]?.[
+      row.parent_service_category || row.service_category
+    ];
     // Most endpoints have one unambiguous parent service. Only the shared
     // common-location endpoint needs its correlated provider-request category.
     const serviceDefinition = definition?.serviceKey === "service-locations" && categoryDefinition
       ? categoryDefinition
       : definition
         ? getServiceDefinitionByKey(row.source_service, definition.serviceKey)
-        : categoryDefinition || fallbackService("Unmapped service");
+        : categoryDefinition
+          || (
+            row.parent_service_category === "(unclassified)" && row.parent_provider_endpoint
+              ? fallbackService(`Unclassified: ${row.parent_provider_endpoint}`)
+              : fallbackService("Unmapped service")
+          );
     const service = ensureService(
       providerName,
       serviceDefinition
@@ -151,7 +193,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       key: `${row.method || ""}-${row.endpoint_path}`,
       name: definition?.name || row.endpoint_path,
       description: definition?.description || "Observed direct provider API",
-      method: row.method || "POST",
+      method: row.method || null,
       endpoint: row.endpoint_path,
       kind: "direct",
       metrics: toMetrics(row, "api_requests"),
@@ -167,19 +209,20 @@ function buildServiceSnapshot(serviceRows, apiRows) {
 
           if (!service.apis.length) {
             service.apis.push({
-              key: "provider-operation",
-              name: "MH Vistaar provider operation",
-              description: "Direct downstream API span was not captured for this service request",
-              method: "POST",
-              endpoint: "/mh-vistaar/search",
+              key: `provider-operation-${service.providerEndpoints[0] || "unknown"}`,
+              name: "Provider operation",
+              description: "No direct downstream provider API was linked to this request",
+              method: service.providerMethods[0] || null,
+              endpoint: service.providerEndpoints[0] || null,
               kind: "fallback",
               metrics: service.metrics,
             });
           }
 
+          const { providerEndpoints, providerMethods, ...serviceData } = service;
           return {
-            ...service,
-            apiRequests: service.apis.reduce((total, api) => total + api.metrics.requests, 0),
+            ...serviceData,
+            apiRequests: serviceData.apis.reduce((total, api) => total + api.metrics.requests, 0),
           };
         })
         .filter(Boolean)
