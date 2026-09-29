@@ -151,7 +151,7 @@ test("shows a captured unmapped API under its known parent service", () => {
     }],
     [{
       source_service: "mh-provider-backend",
-      parent_service_category: "price-discovery",
+      parent_service_categories: ["price-discovery"],
       method: "GET",
       endpoint_path: "/webservices/new-market-endpoint",
       api_requests: "1",
@@ -182,8 +182,8 @@ test("shows a captured unmapped API under the real unclassified provider route",
     }],
     [{
       source_service: "mh-pocradbt-provider-backend",
-      parent_service_category: "(unclassified)",
-      parent_provider_endpoint: "/mh-vistaar/status",
+      parent_service_categories: ["(unclassified)"],
+      parent_provider_endpoints: ["/mh-vistaar/status"],
       method: null,
       endpoint_path: "/api/new-status-endpoint",
       api_requests: "1",
@@ -198,6 +198,35 @@ test("shows a captured unmapped API under the real unclassified provider route",
   assert.equal(service.name, "Unclassified: /mh-vistaar/status");
   assert.equal(service.apis[0].endpoint, "/api/new-status-endpoint");
   assert.equal(service.apis[0].method, null);
+});
+
+test("does not duplicate a fixed-mapped API when its parent categories differ", () => {
+  const providers = buildServiceSnapshot(
+    [{
+      source_service: "mh-provider-backend",
+      service_category: "agristack_farmer_info",
+      service_requests: "10",
+      successful_requests: "10",
+      failed_requests: "0",
+      p90_latency_ms: "20",
+      max_latency_ms: "20",
+    }],
+    [{
+      source_service: "mh-provider-backend",
+      parent_service_categories: ["agristack_farmer_info", "farmer-details-info"],
+      method: "POST",
+      endpoint_path: "/webservices/fetch_farmer_info_by_farmer_id",
+      api_requests: "10",
+      successful_requests: "10",
+      failed_requests: "0",
+      p90_latency_ms: "10",
+      max_latency_ms: "10",
+    }]
+  );
+
+  const service = providers[0].services[0];
+  assert.equal(service.apis.length, 1);
+  assert.equal(service.apis[0].name, "Fetch farmer information");
 });
 
 test("uses the correlated parent category for a shared direct API", () => {

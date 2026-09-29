@@ -169,9 +169,19 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     if (!providerName) continue;
 
     const definition = getApiDefinition(row.source_service, row.endpoint_path);
-    const categoryDefinition = SERVICE_CATEGORIES[row.source_service]?.[
-      row.parent_service_category || row.service_category
-    ];
+    const parentCategories = asArray(
+      row.parent_service_categories || row.parent_service_category || row.service_category
+    );
+    const parentDefinitions = parentCategories
+      .map((category) => SERVICE_CATEGORIES[row.source_service]?.[category])
+      .filter(Boolean);
+    const distinctParentDefinitions = [...new Map(
+      parentDefinitions.map((parentDefinition) => [parentDefinition.key, parentDefinition])
+    ).values()];
+    const categoryDefinition = distinctParentDefinitions.length === 1 ? distinctParentDefinitions[0] : null;
+    const parentProviderEndpoint = asArray(
+      row.parent_provider_endpoints || row.parent_provider_endpoint
+    )[0];
     // Most endpoints have one unambiguous parent service. Only the shared
     // common-location endpoint needs its correlated provider-request category.
     const serviceDefinition = definition?.serviceKey === "service-locations" && categoryDefinition
@@ -180,8 +190,8 @@ function buildServiceSnapshot(serviceRows, apiRows) {
         ? getServiceDefinitionByKey(row.source_service, definition.serviceKey)
         : categoryDefinition
           || (
-            row.parent_service_category === "(unclassified)" && row.parent_provider_endpoint
-              ? fallbackService(`Unclassified: ${row.parent_provider_endpoint}`)
+            parentCategories.includes("(unclassified)") && parentProviderEndpoint
+              ? fallbackService(`Unclassified: ${parentProviderEndpoint}`)
               : fallbackService("Unmapped service")
           );
     const service = ensureService(
