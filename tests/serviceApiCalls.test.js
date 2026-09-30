@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildScope, scopedQueryParts, PAGE_SIZE } = require("../controllers/serviceApiCalls.controller");
 
-test("scopes a direct API call to its backend, method, endpoint, and parent category", () => {
+test("scopes a shared direct API call to its backend, method, endpoint, and its own payload category", () => {
   const scope = buildScope({ query: {
     sourceService: "mh-provider-backend",
     endpoint: "/webservices/fetch_nearest_five_common_data_by_location_and_category",
@@ -17,10 +17,10 @@ test("scopes a direct API call to its backend, method, endpoint, and parent cate
   });
 
   assert.equal(PAGE_SIZE, 10);
-  assert.match(parts.from, /LEFT JOIN LATERAL/);
+  assert.doesNotMatch(parts.from, /LEFT JOIN LATERAL/);
   assert.match(parts.where, /direct_event\.service = \$1/);
   assert.match(parts.where, /direct_event\.event_name = \$2/);
-  assert.match(parts.where, /parent_request\.service_category/);
+  assert.match(parts.where, /direct_event\.request_payload #>> '\{category\}'/);
   assert.equal(parts.values[0], "mh-provider-backend");
   assert.equal(parts.values[4][0], "chc");
   assert.equal(parts.values.at(-1), "failure");

@@ -7,6 +7,7 @@ const SERVICE_CATEGORIES = {
   "mh-provider-backend": {
     "price-discovery": { key: "mandi", name: "Mandi", description: "APMC market-price information" },
     "schemes-agri": { key: "scheme-information", name: "Scheme information", description: "Agricultural scheme information" },
+    "dbt-application-status": { key: "dbt-application-status", name: "DBT application status", description: "DBT application-status information" },
     "agristack_farmer_info": { key: "farmer-agristack", name: "Farmer / Agristack", description: "Farmer and land information" },
     "Weather-Forecast": { key: "weather-forecast", name: "Weather – Forecast", description: "IMD weather forecast for a location and date range" },
     "Weather-Historical": { key: "weather-historical", name: "Weather – Historical", description: "Historical and daily weather for a location and date range" },
@@ -38,16 +39,24 @@ const SERVICE_CATEGORIES = {
 
 const DIRECT_APIS = {
   "mh-provider-backend": {
+    "/webservices/get_apmc_market_price": { serviceKey: "mandi", name: "Get APMC market price", description: "Mandi market-price lookup" },
     "/webservices/get_daily_weather": { serviceKey: "weather-historical", name: "Get daily weather", description: "Daily historical weather lookup" },
+    "/webservices/get_hourly_weather": { serviceKey: "weather-historical", name: "Get hourly weather", description: "Hourly historical weather lookup" },
     "/webservices/get_weather_forecast_for_location_date_range": { serviceKey: "weather-forecast", name: "Get weather forecast", description: "Weather forecast lookup" },
     "/webservices/fetch_apmc_market_price": { serviceKey: "mandi", name: "Fetch APMC market price", description: "Mandi market-price lookup" },
     "/webservices/fetch_farmer_info_by_farmer_id": { serviceKey: "farmer-agristack", name: "Fetch farmer information", description: "Farmer and land information lookup" },
+    "/webservices/fetch_dbt_activity_info": { serviceKey: "scheme-information", name: "Fetch DBT activity information", description: "DBT activity lookup" },
     "/webservices/fetch_dbt_scheme_code_info": { serviceKey: "scheme-information", name: "Fetch DBT scheme information", description: "Agricultural scheme lookup" },
+    "/webservices/fetch_dbt_application_status": { serviceKey: "dbt-application-status", name: "Fetch DBT application status", description: "DBT application-status lookup" },
     "/webservices/get_nearest_chc_centers": { serviceKey: "chc", name: "Get nearby CHC centres", description: "Nearby Custom Hiring Centre lookup" },
     "/webservices/get_chc_center_info": { serviceKey: "chc", name: "Get CHC centre information", description: "Custom Hiring Centre details" },
+    "/webservices/get_nearest_warehouses": { serviceKey: "warehouse", name: "Get nearby warehouses", description: "Nearby warehouse lookup" },
     "/webservices/nearest_warehouses": { serviceKey: "warehouse", name: "Get nearby warehouses", description: "Nearby warehouse lookup" },
     "/webservices/warehouse_center_info": { serviceKey: "warehouse", name: "Get warehouse information", description: "Warehouse details" },
+    "/webservices/get_districts": { serviceKey: "location-information", name: "Get districts", description: "Administrative district lookup" },
+    "/webservices/get_talukas": { serviceKey: "location-information", name: "Get talukas", description: "Administrative taluka lookup" },
     "/webservices/fetch_administrative_information_for_location": { serviceKey: "location-information", name: "Fetch administrative information", description: "Administrative location lookup" },
+    "/webservices/fetch_common_data_by_category": { serviceKey: "service-locations", name: "Fetch common data by category", description: "Category-specific common-data lookup" },
     "/webservices/fetch_nearest_five_common_data_by_location_and_category": { serviceKey: "service-locations", name: "Fetch nearby service locations", description: "Nearby common service locations" },
     "/webservices/fetch_officer_information_for_village_code": { serviceKey: "officer-information", name: "Fetch officer information", description: "Village officer lookup" },
   },
@@ -171,28 +180,29 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     if (!providerName) continue;
 
     const definition = getApiDefinition(row.source_service, row.endpoint_path);
-    const parentCategories = asArray(
-      row.parent_service_categories || row.parent_service_category || row.service_category
+    const serviceCategories = asArray(
+      row.service_categories || row.service_category || row.parent_service_categories || row.parent_service_category
     );
-    const parentDefinitions = parentCategories
+    const categoryDefinitions = serviceCategories
       .map((category) => SERVICE_CATEGORIES[row.source_service]?.[category])
       .filter(Boolean);
-    const distinctParentDefinitions = [...new Map(
-      parentDefinitions.map((parentDefinition) => [parentDefinition.key, parentDefinition])
+    const distinctCategoryDefinitions = [...new Map(
+      categoryDefinitions.map((categoryDefinition) => [categoryDefinition.key, categoryDefinition])
     ).values()];
-    const categoryDefinition = distinctParentDefinitions.length === 1 ? distinctParentDefinitions[0] : null;
+    const categoryDefinition = distinctCategoryDefinitions.length === 1 ? distinctCategoryDefinitions[0] : null;
     const parentProviderEndpoint = asArray(
       row.parent_provider_endpoints || row.parent_provider_endpoint
     )[0];
-    // Most endpoints have one unambiguous parent service. Only the shared
-    // common-location endpoint needs its correlated provider-request category.
+    // Shared common-data APIs describe their business service in their own
+    // outbound payload. That is more specific than a trace, which may contain
+    // several provider operations.
     const serviceDefinition = definition?.serviceKey === "service-locations" && categoryDefinition
       ? categoryDefinition
       : definition
         ? getServiceDefinitionByKey(row.source_service, definition.serviceKey)
         : categoryDefinition
           || (
-            parentCategories.includes("(unclassified)") && parentProviderEndpoint
+            serviceCategories.includes("(unclassified)") && parentProviderEndpoint
               ? fallbackService(`Unclassified: ${parentProviderEndpoint}`)
               : fallbackService("Unmapped service")
           );
@@ -207,7 +217,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       description: definition?.description || "Observed direct provider API",
       sourceService: row.source_service,
       scopeCategories: (definition?.serviceKey === "service-locations" || !definition)
-        ? parentCategories.filter(Boolean)
+        ? serviceCategories.filter(Boolean)
         : [],
       method: row.method || null,
       endpoint: row.endpoint_path,

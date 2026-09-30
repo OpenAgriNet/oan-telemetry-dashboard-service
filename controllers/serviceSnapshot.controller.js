@@ -14,6 +14,34 @@ const categoryExpression = (tableAlias = "") => `
   )
 `;
 
+// These endpoints serve several business services. Their outbound payload
+// identifies the actual service (for example, { "category": "kvk" }), so a
+// trace-level parent request must not be used to infer it.
+const SHARED_CATEGORY_ENDPOINTS = [
+  "/webservices/fetch_common_data_by_category",
+  "/webservices/fetch_nearest_five_common_data_by_location_and_category",
+];
+
+function normalisedEndpointExpression(tableAlias = "") {
+  return `split_part(regexp_replace(COALESCE(${tableAlias}endpoint, ''), '^https?://[^/]+', ''), '?', 1)`;
+}
+
+function directApiCategoryExpression(tableAlias = "") {
+  return `COALESCE(
+    NULLIF(${tableAlias}request_payload #>> '{category}', ''),
+    ${categoryExpression(tableAlias)}
+  )`;
+}
+
+function apiServiceCategoryExpression(tableAlias = "") {
+  const endpoint = normalisedEndpointExpression(tableAlias);
+  const sharedEndpoints = SHARED_CATEGORY_ENDPOINTS.map((path) => `'${path}'`).join(", ");
+  return `CASE
+    WHEN ${endpoint} IN (${sharedEndpoints}) THEN ${directApiCategoryExpression(tableAlias)}
+    ELSE '(endpoint-mapped)'
+  END`;
+}
+
 function buildDateFilter(startTimestamp, endTimestamp) {
   const values = [];
   const clauses = [];
@@ -94,9 +122,8 @@ async function getServiceSnapshot(req, res) {
         SELECT
           direct_event.service AS source_service,
           NULLIF(TRIM(direct_event.method), '') AS method,
-          split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1) AS endpoint_path,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT COALESCE(parent_request.service_category, '(unclassified)')), NULL) AS parent_service_categories,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT parent_request.provider_endpoint), NULL) AS parent_provider_endpoints,
+          ${normalisedEndpointExpression("direct_event.")} AS endpoint_path,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT ${apiServiceCategoryExpression("direct_event.")}), NULL) AS service_categories,
           COUNT(*) AS api_requests,
           COUNT(*) FILTER (WHERE direct_event.outcome = 'success') AS successful_requests,
           COUNT(*) FILTER (WHERE direct_event.outcome = 'failure') AS failed_requests,
@@ -104,25 +131,6 @@ async function getServiceSnapshot(req, res) {
             FILTER (WHERE direct_event.duration_ms IS NOT NULL) AS p90_latency_ms,
           MAX(direct_event.duration_ms) AS max_latency_ms
         FROM external_api_events direct_event
-        LEFT JOIN LATERAL (
-          SELECT
-            ${categoryExpression("parent_event.")} AS service_category,
-            split_part(regexp_replace(COALESCE(parent_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1) AS provider_endpoint
-          FROM external_api_events parent_event
-          WHERE parent_event.trace_scope = 'beckn_external_api'
-            AND parent_event.service = direct_event.service
-            AND parent_event.event_name = 'provider_request'
-            AND (
-              (direct_event.trace_id IS NOT NULL AND parent_event.trace_id = direct_event.trace_id)
-              OR (
-                direct_event.trace_id IS NULL
-                AND direct_event.transaction_id IS NOT NULL
-                AND parent_event.transaction_id = direct_event.transaction_id
-              )
-            )
-          ORDER BY parent_event.event_time DESC
-          LIMIT 1
-        ) parent_request ON TRUE
         WHERE direct_event.trace_scope = 'beckn_external_api'
           AND direct_event.service = ANY($${dateFilter.values.length + 1})
           AND direct_event.event_name = 'provider_webservice_call'
@@ -131,13 +139,8 @@ async function getServiceSnapshot(req, res) {
         GROUP BY
           direct_event.service,
           NULLIF(TRIM(direct_event.method), ''),
-          split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1),
-          CASE
-            WHEN split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1)
-              = '/webservices/fetch_nearest_five_common_data_by_location_and_category'
-              THEN COALESCE(parent_request.service_category, '(unclassified)')
-            ELSE '(endpoint-mapped)'
-          END
+          ${normalisedEndpointExpression("direct_event.")},
+          ${apiServiceCategoryExpression("direct_event.")}
       `,
       values: [...dateFilter.values, sourceServices],
     };

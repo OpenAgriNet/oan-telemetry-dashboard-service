@@ -19,6 +19,13 @@ const categoryExpression = (tableAlias = "") => `
   )
 `;
 
+function directApiCategoryExpression(tableAlias = "") {
+  return `COALESCE(
+    NULLIF(${tableAlias}request_payload #>> '{category}', ''),
+    ${categoryExpression(tableAlias)}
+  )`;
+}
+
 function parsePage(value) {
   const page = Number.parseInt(value, 10);
   return Number.isSafeInteger(page) && page > 0 ? page : 1;
@@ -92,26 +99,8 @@ function scopedQueryParts({ scope, range, outcome }) {
       values.push(scope.categories);
       where.push(`${categoryExpression("direct_event.")} = ANY($${values.length}::text[])`);
     } else {
-      from += `
-        LEFT JOIN LATERAL (
-          SELECT ${categoryExpression("parent_event.")} AS service_category
-          FROM external_api_events parent_event
-          WHERE parent_event.trace_scope = 'beckn_external_api'
-            AND parent_event.service = direct_event.service
-            AND parent_event.event_name = 'provider_request'
-            AND (
-              (direct_event.trace_id IS NOT NULL AND parent_event.trace_id = direct_event.trace_id)
-              OR (
-                direct_event.trace_id IS NULL
-                AND direct_event.transaction_id IS NOT NULL
-                AND parent_event.transaction_id = direct_event.transaction_id
-              )
-            )
-          ORDER BY parent_event.event_time DESC
-          LIMIT 1
-        ) parent_request ON TRUE`;
       values.push(scope.categories);
-      where.push(`COALESCE(parent_request.service_category, '(unclassified)') = ANY($${values.length}::text[])`);
+      where.push(`${directApiCategoryExpression("direct_event.")} = ANY($${values.length}::text[])`);
     }
   }
 

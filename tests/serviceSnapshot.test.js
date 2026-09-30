@@ -229,7 +229,7 @@ test("does not duplicate a fixed-mapped API when its parent categories differ", 
   assert.equal(service.apis[0].name, "Fetch farmer information");
 });
 
-test("uses the correlated parent category for a shared direct API", () => {
+test("uses a shared direct API's own category for service attribution", () => {
   const providers = buildServiceSnapshot(
     [{
       source_service: "mh-provider-backend",
@@ -242,7 +242,7 @@ test("uses the correlated parent category for a shared direct API", () => {
     }],
     [{
       source_service: "mh-provider-backend",
-      service_category: "chc",
+      service_categories: ["chc"],
       method: "POST",
       endpoint_path: "/webservices/fetch_nearest_five_common_data_by_location_and_category",
       api_requests: "2",
@@ -256,6 +256,36 @@ test("uses the correlated parent category for a shared direct API", () => {
   const service = providers[0].services[0];
   assert.equal(service.name, "CHC");
   assert.equal(service.apis[0].name, "Fetch nearby service locations");
+});
+
+test("maps every provider Swagger route to a dashboard service", () => {
+  const expectedMappings = {
+    "/webservices/get_apmc_market_price": "mandi",
+    "/webservices/fetch_apmc_market_price": "mandi",
+    "/webservices/get_districts": "location-information",
+    "/webservices/get_talukas": "location-information",
+    "/webservices/fetch_administrative_information_for_location": "location-information",
+    "/webservices/get_nearest_chc_centers": "chc",
+    "/webservices/get_chc_center_info": "chc",
+    "/webservices/fetch_common_data_by_category": "service-locations",
+    "/webservices/fetch_nearest_five_common_data_by_location_and_category": "service-locations",
+    "/webservices/fetch_dbt_activity_info": "scheme-information",
+    "/webservices/fetch_dbt_scheme_code_info": "scheme-information",
+    "/webservices/fetch_dbt_application_status": "dbt-application-status",
+    "/webservices/fetch_farmer_info_by_farmer_id": "farmer-agristack",
+    "/webservices/fetch_officer_information_for_village_code": "officer-information",
+    "/webservices/get_nearest_warehouses": "warehouse",
+    "/webservices/nearest_warehouses": "warehouse",
+    "/webservices/warehouse_center_info": "warehouse",
+    "/webservices/get_hourly_weather": "weather-historical",
+    "/webservices/get_daily_weather": "weather-historical",
+    "/webservices/get_weather_forecast_for_location_date_range": "weather-forecast",
+  };
+
+  const { getApiDefinition } = require("../services/serviceSnapshot");
+  for (const [endpoint, serviceKey] of Object.entries(expectedMappings)) {
+    assert.equal(getApiDefinition("mh-provider-backend", endpoint)?.serviceKey, serviceKey, endpoint);
+  }
 });
 
 test("uses an endpoint's fixed service mapping before the correlated category", () => {
