@@ -7,9 +7,7 @@ const { getTotalQuestionsCount } = require("./questions.controller");
 const { getTotalSessionsCount } = require("./sessions.controller");
 const { getTotalUsersCount } = require("./user.controller");
 const { parseDateRange } = require("../utils/dateUtils");
-const { getTotalUsers } = require("../langfuse/users");
-const { getTotalSessions } = require("../langfuse/sessions");
-const { getTotalQuestions } = require("../langfuse/questions");
+const { getTelemetryTotals } = require("../services/telemetryApi");
 
 /**
  * GET /dashboard/user-logins?granularity=daily|hourly
@@ -235,17 +233,21 @@ const getDashboardStats = async (req, res) => {
     //   const total_feedback = await getTotalFeedbackCount(null, startDate, endDate);
     //   const feedbacks = await getTotalLikesDislikesCount(null, startDate, endDate);
 
-    const result = await pool.query(query);
+    // Users, sessions and questions come from the telemetry API (chat and
+    // voice turns); new users and feedback from the tables above.
+    const [result, telemetry] = await Promise.all([
+      pool.query(query),
+      getTelemetryTotals(startTimestamp, endTimestamp),
+    ]);
     const stats = result.rows[0];
-    const lfTotalUsers = await getTotalUsers(startDate, endDate);
 
     res.status(200).json({
       success: true,
       data: {
-        totalUsers: await getTotalUsers(startDate, endDate),
+        totalUsers: telemetry.users,
         totalNewUsers: parseInt(stats.new_users) || 0,
-        totalSessions: await getTotalSessions(startDate, endDate),
-        totalQuestions: await getTotalQuestions(startDate, endDate),
+        totalSessions: telemetry.sessions,
+        totalQuestions: telemetry.questions,
         totalFeedback: parseInt(stats.total_feedback) || 0,
         totalLikes: parseInt(stats.total_likes) || 0,
         totalDislikes: parseInt(stats.total_dislikes) || 0,
