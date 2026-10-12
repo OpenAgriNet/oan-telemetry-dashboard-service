@@ -1,6 +1,8 @@
+const requireTelemetryDetail = require("../middleware/requireTelemetryDetail");
 const express = require('express');
 const { 
-    getQuestions, 
+    getQuestions,
+    getQuestionById,
     getQuestionsByUserId,
     getQuestionsBySessionId,
     getQuestionStats,
@@ -25,7 +27,7 @@ router.get('/questions/graph', getQuestionsGraph);
 router.get('/users/:userId/questions', getQuestionsByUserId);
 
 // Get questions by session ID
-router.get('/questions/session/:sessionId', getQuestionsBySessionId);
+router.get('/questions/session/:sessionId', requireTelemetryDetail, getQuestionsBySessionId);
 
 // Get total questions count
 router.get('/questions/count', getTotalQuestionsCount);
@@ -35,5 +37,7 @@ router.get('/questions/fetch', fetchQuestionsFromDB);
 
 // Format question data
 router.get('/questions/format', formatQuestionData);
+
+router.get('/questions/:id', requireTelemetryDetail, getQuestionById);
 
 module.exports = router;

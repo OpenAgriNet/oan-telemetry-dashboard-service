@@ -345,7 +345,7 @@ async function fetchErrorsBySessionIdFromDB(
     queryParams.push(new Date(endTimestamp));
   }
 
-  query += ` ORDER BY created_at DESC`;
+  query += ` ORDER BY created_at DESC, id DESC`;
 
   // Add pagination
   paramIndex++;

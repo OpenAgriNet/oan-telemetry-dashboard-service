@@ -1,6 +1,8 @@
+const requireTelemetryDetail = require("../middleware/requireTelemetryDetail");
 const express = require('express');
 const { 
-    getSessions, 
+    getSessions,
+    getSessionById,
     getSessionsByUserId,
     getSessionStats,
     getSessionsGraph,
@@ -31,5 +33,8 @@ router.get('/sessions/fetch', fetchSessionsFromDB);
 
 // Format session data
 router.get('/sessions/format', formatSessionData);
+
+// Keep the parameter route after named routes such as /sessions/stats.
+router.get('/sessions/:sessionId', requireTelemetryDetail, getSessionById);
 
 module.exports = router;

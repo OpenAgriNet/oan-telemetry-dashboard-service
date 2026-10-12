@@ -523,10 +523,7 @@ const getQuestionsBySessionId = async (req, res) => {
                     sid AS session_id
                 FROM questions
                 WHERE sid = $1 
-                    AND questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL
                     ${dateFilter}
-                    AND ets <= ${Date.now()}
                 ORDER BY ets DESC
             `,
       values: queryParams,
@@ -540,8 +537,6 @@ const getQuestionsBySessionId = async (req, res) => {
                 SELECT COUNT(*) as total
                 FROM questions
                 WHERE sid = $1 
-                    AND questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL
                     ${countDateFilter}
             `,
       values: countParams,
