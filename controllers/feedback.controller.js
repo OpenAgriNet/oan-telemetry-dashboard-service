@@ -122,7 +122,7 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
             SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
             SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE ${sessionId ? 'TRUE' : 'feedbacktext IS NOT NULL AND questiontext IS NOT NULL'}
     `;
 
     const queryParams = [];
@@ -192,7 +192,7 @@ function formatFeedbackData(feedbackItem) {
         user: feedbackItem.user_id,
         question: feedbackItem.questiontext,
         sessionId: feedbackItem.session_id,
-        answer: feedbackItem.answertext.substring(0, 100) + "...",
+        answer: feedbackItem.answertext ? feedbackItem.answertext.substring(0, 100) + "..." : "",
         rating: feedbackItem.feedbacktype,
         feedback: feedbackItem.feedbacktext,
         id: feedbackItem.id,
@@ -400,10 +400,8 @@ const getFeedbackBySessionId = async (req, res) => {
                     ets
                 FROM feedback
                 WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
                     ${dateFilter}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
             values: queryParams,
@@ -415,8 +413,6 @@ const getFeedbackBySessionId = async (req, res) => {
                 SELECT COUNT(*) as total
                 FROM feedback
                 WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
                     ${countDateFilter}
             `,
             values: countParams,
@@ -428,7 +424,7 @@ const getFeedbackBySessionId = async (req, res) => {
         ]);
 
         const totalCount = parseInt(countResult.rows[0].total);
-        const formattedData = feedbackResult.rows.map(formatFeedbackData);
+        const formattedData = feedbackResult.rows.map(item => ({ ...formatFeedbackData(item), answer: item.answertext || "" }));
 
         // Get accurate total likes and dislikes counts for the entire filtered session dataset
         const { totalLikes, totalDislikes } = await getTotalLikesDislikesCount('', startDate, endDate, sessionId.trim());

@@ -1,3 +1,4 @@
+const requireTelemetryDetail = require("../middleware/requireTelemetryDetail");
 const express = require('express');
 const router = express.Router();
 const feedbackController = require('../controllers/feedback.controller');
@@ -12,7 +13,8 @@ router.get('/feedback/stats', feedbackController.getFeedbackStats);
 router.get('/feedback/graph', feedbackController.getFeedbackGraph);
 
 // Route for getting feedback by session ID
-router.get('/feedback/session/:sessionId', feedbackController.getFeedbackBySessionId);
+router.get('/feedback/session/:sessionId', requireTelemetryDetail, feedbackController.getFeedbackBySessionId);
+router.get('/feedback/id/:id', requireTelemetryDetail, feedbackController.getFeedbackByid);
 
 // Route for getting total feedback count
 router.get('/feedback/count', feedbackController.getTotalFeedbackCount);
