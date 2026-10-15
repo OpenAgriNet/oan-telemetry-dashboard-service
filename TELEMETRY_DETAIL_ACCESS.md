@@ -22,10 +22,10 @@ All paths use the `/v1` prefix and require the existing Keycloak authentication 
 - `GET /feedback/session/:sessionId`
 - `GET /errors/session/:sessionId`
 
-The dashboard guards the matching detail routes before mounting detail components and hides clickable detail links from users without the role. Session details include unanswered questions and rating-only feedback, and load every page of feedback and errors. API failures are surfaced rather than silently producing a partial timeline.
+The dashboard guards the matching detail routes before mounting detail components and hides clickable detail links from users without the role. Question details, session timelines, and their question counts include only completed question/answer records (`answertext IS NOT NULL AND answertext <> ''`). This excludes the initial question-only telemetry event without merging legitimate repeated questions. Session details preserve rating-only feedback and errors, and load every page of feedback and errors. API failures are surfaced rather than silently producing a partial timeline.
 
 ## Verification
 
 Run `npm test` in both repositories, and `npm run build` in the dashboard. Tests cover super-admin denial, explicit-role access, service route wiring, rendering all four views with service-shaped data, and multi-page session loading. Live Keycloak and database verification is still required after deployment.
 
-Implementation validation: 8 dashboard tests and 21 service tests passed; the dashboard production build passed. The dashboard TypeScript check reports the same three existing errors as an untouched `origin/mh-main` snapshot (ServiceSection, Evaluation and HealthMonitor). The repository ESLint configuration is incompatible with the installed ESLint version; the new role helper, detail API helper, detail link and recovered pages passed a focused lint check using a temporary compatible configuration.
+Implementation validation: 10 dashboard tests and 32 service tests passed; the dashboard production build passed. The dashboard TypeScript check reports the same three existing errors as an untouched `origin/mh-main` snapshot (ServiceSection, Evaluation and HealthMonitor). The repository ESLint configuration is incompatible with the installed ESLint version; the new role helper, detail API helper, detail link and recovered pages passed a focused lint check using a temporary compatible configuration.
