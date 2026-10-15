@@ -26,7 +26,7 @@ async function fetchQuestionsFromDB(
             channel,
             sid AS session_id
         FROM questions
-        WHERE uid IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''
     `;
 
   const queryParams = [];
@@ -94,7 +94,7 @@ async function getTotalQuestionsCount(
   let query = `
         SELECT COUNT(*) as total
         FROM questions
-        WHERE uid IS NOT NULL AND answertext IS NOT NULL
+        WHERE uid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''
     `;
 
   const queryParams = [];
@@ -278,7 +278,7 @@ const getQuestionById = async (req, res) => {
                     groupdetails,
                     questionsource
                 FROM questions
-                WHERE id = $1
+                WHERE id = $1 AND answertext IS NOT NULL AND answertext <> ''
             `,
       values: [id],
     };
@@ -381,7 +381,7 @@ const getQuestionsByUserId = async (req, res) => {
                 FROM questions
                 WHERE uid = $1 
                     AND questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL
+                    AND answertext IS NOT NULL AND answertext <> ''
                     ${dateFilter}
                     AND ets <= ${Date.now()}
                 ORDER BY ets DESC
@@ -397,7 +397,7 @@ const getQuestionsByUserId = async (req, res) => {
                 FROM questions
                 WHERE uid = $1 
                     AND questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL
+                    AND answertext IS NOT NULL AND answertext <> ''
                     ${countDateFilter}
             `,
       values: countParams,
@@ -522,7 +522,7 @@ const getQuestionsBySessionId = async (req, res) => {
                     channel,
                     sid AS session_id
                 FROM questions
-                WHERE sid = $1 
+                WHERE sid = $1 AND answertext IS NOT NULL AND answertext <> ''
                     ${dateFilter}
                 ORDER BY ets DESC
             `,
@@ -536,7 +536,7 @@ const getQuestionsBySessionId = async (req, res) => {
       text: `
                 SELECT COUNT(*) as total
                 FROM questions
-                WHERE sid = $1 
+                WHERE sid = $1 AND answertext IS NOT NULL AND answertext <> ''
                     ${countDateFilter}
             `,
       values: countParams,
@@ -632,7 +632,7 @@ const getQuestionStats = async (req, res) => {
       text: `
                 SELECT COUNT(*) as total_questions
                 FROM questions
-                WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                WHERE uid IS NOT NULL AND answertext IS NOT NULL AND answertext <> '' ${dateFilter}
             `,
       values: queryParams,
     };
@@ -778,7 +778,7 @@ const getQuestionsGraph = async (req, res) => {
         }
                 FROM questions
                 WHERE questiontext IS NOT NULL 
-                    AND answertext IS NOT NULL 
+                    AND answertext IS NOT NULL AND answertext <> ''
                     AND ets IS NOT NULL
                     ${dateFilter}
                 GROUP BY ${dateGrouping}
