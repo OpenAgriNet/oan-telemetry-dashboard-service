@@ -1,5 +1,6 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
+const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
 
 const PAGE_SIZE = 10;
 const SOURCE_SERVICES = new Set([
@@ -150,9 +151,9 @@ async function getServiceApiCalls(req, res) {
           direct_event.layer, direct_event.service, direct_event.dependency, direct_event.method,
           direct_event.endpoint, direct_event.outcome, direct_event.http_status,
           direct_event.response_status, direct_event.error_payload, direct_event.event_time,
-          direct_event.duration_ms, direct_event.request_payload IS NOT NULL AS has_request_payload,
-          direct_event.response_payload IS NOT NULL AS has_response_payload,
-          direct_event.error_payload IS NOT NULL AS has_error_payload
+          direct_event.duration_ms, NULLIF(direct_event.request_payload, 'null'::jsonb) IS NOT NULL AS has_request_payload,
+          NULLIF(direct_event.response_payload, 'null'::jsonb) IS NOT NULL AS has_response_payload,
+          NULLIF(direct_event.error_payload, 'null'::jsonb) IS NOT NULL AS has_error_payload
         FROM ${queryParts.from}
         WHERE ${queryParts.where}
         ORDER BY direct_event.event_time DESC NULLS LAST, direct_event.id DESC
@@ -168,7 +169,7 @@ async function getServiceApiCalls(req, res) {
     return res.status(200).json({
       success: true,
       data: {
-        calls: callsResult.rows,
+        calls: callsResult.rows.map(sanitizeApiCall),
         summary: { total, successful: summary.successful || 0, failed: summary.failed || 0 },
       },
       pagination: { page, limit: PAGE_SIZE, total, totalPages: total ? Math.ceil(total / PAGE_SIZE) : 0 },

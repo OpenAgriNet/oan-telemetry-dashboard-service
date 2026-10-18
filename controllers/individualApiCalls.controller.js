@@ -1,5 +1,6 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
+const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 10;
@@ -113,9 +114,9 @@ async function getIndividualApiCalls(req, res) {
         SELECT
           id, event_mid, trace_id, event_name, layer, service, dependency,
           method, endpoint, outcome, http_status, response_status, error_payload,
-          event_time, duration_ms, request_payload IS NOT NULL AS has_request_payload,
-          response_payload IS NOT NULL AS has_response_payload,
-          error_payload IS NOT NULL AS has_error_payload
+          event_time, duration_ms, NULLIF(request_payload, 'null'::jsonb) IS NOT NULL AS has_request_payload,
+          NULLIF(response_payload, 'null'::jsonb) IS NOT NULL AS has_response_payload,
+          NULLIF(error_payload, 'null'::jsonb) IS NOT NULL AS has_error_payload
         FROM external_api_events
         WHERE ${where}
         ORDER BY event_time DESC NULLS LAST, id DESC
@@ -147,7 +148,7 @@ async function getIndividualApiCalls(req, res) {
     return res.status(200).json({
       success: true,
       data: {
-        calls: callsResult.rows,
+        calls: callsResult.rows.map(sanitizeApiCall),
         summary: { total, successful: summary.successful || 0, failed: summary.failed || 0 },
         filterOptions: {
           layers: optionsResult.rows[0]?.layers || [],
@@ -188,7 +189,7 @@ async function getIndividualApiCall(req, res) {
       [id],
     );
     if (!result.rows[0]) return res.status(404).json({ success: false, error: "API call not found" });
-    return res.status(200).json({ success: true, data: result.rows[0] });
+    return res.status(200).json({ success: true, data: sanitizeApiCall(result.rows[0]) });
   } catch (error) {
     if (error.code === "42P01") return noTablesResponse(res, {});
     console.error("Error fetching individual API call:", error);
