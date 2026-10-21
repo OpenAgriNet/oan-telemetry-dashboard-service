@@ -1,3 +1,4 @@
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const pool = require("../services/db");
 const { ensureEvaluationSchema } = require("../services/evaluationSchema");
 const evaluationWorker = require("../services/evaluationWorkerClient");
@@ -267,13 +268,13 @@ async function getFeedbackCandidates(req, res) {
              COUNT(*)::int AS feedback_count,
              BOOL_OR(NULLIF(TRIM(feedbacktext), '') IS NOT NULL) AS feedback_comment_present
       FROM feedback
-      WHERE ets >= $1 AND ets < $2 AND qid IS NOT NULL AND qid <> ''
+      WHERE ${validFeedbackSql()} AND ets >= $1 AND ets < $2 AND qid IS NOT NULL AND qid <> ''
       GROUP BY qid
       ORDER BY qid
     `, [startMs, endMs]);
     const unmatched = await pool.query(`
       SELECT COUNT(*)::int AS count FROM feedback
-      WHERE ets >= $1 AND ets < $2 AND (qid IS NULL OR qid = '')
+      WHERE ${validFeedbackSql()} AND ets >= $1 AND ets < $2 AND (qid IS NULL OR qid = '')
     `, [startMs, endMs]);
     res.json({ success: true, data: result.rows, unmatched_count: unmatched.rows[0].count });
   } catch (error) {

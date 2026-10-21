@@ -1,3 +1,4 @@
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const pool = require('../services/db');
 const { formatUTCToISTDate, formatDateToIST, parseDateRange } = require('../utils/dateUtils');
 
@@ -20,7 +21,7 @@ async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDa
             sid as session_id,
             ets
         FROM feedback
-        WHERE feedbacktype IN ('like', 'dislike')
+        WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -79,7 +80,7 @@ async function getTotalFeedbackCount(search = '', startDate = null, endDate = nu
     let query = `
         SELECT COUNT(*) as total
         FROM feedback
-        WHERE feedbacktype IN ('like', 'dislike')
+        WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -122,7 +123,7 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
             SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
             SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
         FROM feedback
-        WHERE feedbacktype IN ('like', 'dislike')
+        WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -278,7 +279,7 @@ async function fetchFeedbackByidFromDB(id) {
                 created_at,
                 qid AS question_id
             FROM feedback
-            WHERE id = $1
+            WHERE ${validFeedbackSql()} AND id = $1
         `,
         values: [id],
     };
@@ -383,7 +384,7 @@ const getFeedbackBySessionId = async (req, res) => {
                     sid as session_id,
                     ets
                 FROM feedback
-                WHERE sid = $1 
+                WHERE ${validFeedbackSql()} AND sid = $1
                     ${dateFilter}
                 ORDER BY ets DESC, id DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
@@ -396,7 +397,7 @@ const getFeedbackBySessionId = async (req, res) => {
             text: `
                 SELECT COUNT(*) as total
                 FROM feedback
-                WHERE sid = $1 
+                WHERE ${validFeedbackSql()} AND sid = $1
                     ${countDateFilter}
             `,
             values: countParams,
@@ -488,7 +489,7 @@ const getFeedbackStats = async (req, res) => {
                     COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                     COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                 FROM feedback
-                WHERE feedbacktype IN ('like', 'dislike') ${dateFilter}
+                WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike') ${dateFilter}
             `,
             values: queryParams
         };
@@ -625,7 +626,7 @@ const getFeedbackGraph = async (req, res) => {
                     EXTRACT(EPOCH FROM (${dateGrouping} AT TIME ZONE 'Asia/Kolkata')) * 1000 as timestamp,
                     ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM feedback
-                WHERE feedbacktype IN ('like', 'dislike')
+                WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike')
                     AND ets IS NOT NULL
                     ${dateFilter}
                 GROUP BY ${dateGrouping}

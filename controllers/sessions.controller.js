@@ -1,3 +1,4 @@
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const pool = require('../services/db');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
 
@@ -45,7 +46,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
                 NULL as questiontext,
                 ets
             FROM feedback
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE ${validFeedbackSql()} AND sid IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -135,7 +136,7 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
                 NULL as questiontext,
                 ets
             FROM feedback
-            WHERE sid IS NOT NULL${dateConditions}
+            WHERE ${validFeedbackSql()} AND sid IS NOT NULL${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -335,7 +336,7 @@ const getSessionById = async (req, res) => {
                     SELECT id, uid, sid, NULL::text AS questiontext, NULL::text AS answertext,
                         feedbacktext, feedbacktype, ets, created_at, channel, 'feedback' AS type
                     FROM feedback
-                    WHERE sid = $1${dateConditions}
+                    WHERE ${validFeedbackSql()} AND sid = $1${dateConditions}
                 ),
                 session_errors AS (
                     SELECT id, uid, sid, errortext AS questiontext, NULL::text AS answertext,
@@ -484,7 +485,7 @@ const getSessionsByUserId = async (req, res) => {
                         NULL as questiontext,
                         ets
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                    WHERE ${validFeedbackSql()} AND sid IS NOT NULL AND uid = $1${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
@@ -525,7 +526,7 @@ const getSessionsByUserId = async (req, res) => {
                         NULL as questiontext,
                         ets
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid = $1${dateConditions}
+                    WHERE ${validFeedbackSql()} AND sid IS NOT NULL AND uid = $1${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
@@ -627,7 +628,7 @@ const getSessionStats = async (req, res) => {
                     UNION
                     SELECT CONCAT(sid, '_', uid) as session_user_pair
                     FROM feedback
-                    WHERE sid IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND sid IS NOT NULL ${dateFilter}
                     UNION
                     SELECT CONCAT(sid, '_', uid) as session_user_pair
                     FROM errordetails
@@ -777,7 +778,7 @@ queryParams.push(Date.now());
                         ${dateFormat} as date,
                         'feedback' as activity_type
                     FROM feedback
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    WHERE ${validFeedbackSql()} AND sid IS NOT NULL AND uid IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,

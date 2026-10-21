@@ -6,7 +6,7 @@ This document provides an overview of the available API endpoints.
 
 ### 1. Get All Feedback
 *   **Endpoint:** `GET /feedback`
-*   **Description:** Retrieves a paginated list of all feedback entries. Supports searching and filtering by date range.
+*   **Description:** Retrieves a paginated list of valid ratings. Likes may have no comment; dislikes require a nonblank comment. This rule also applies to counts, charts, detail/session/user reports, and feedback evaluation candidates. Historical invalid dislikes remain in the database for investigation. Supports searching and filtering by date range.
 *   **Query Parameters:**
     *   `page` (optional, number): The page number for pagination (default: 1).
     *   `limit` (optional, number): The number of items per page (default: 10, max: 100).
