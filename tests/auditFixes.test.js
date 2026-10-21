@@ -7,10 +7,11 @@ const errors = require('../controllers/error.controller');
 const individual = require('../controllers/individualApiCalls.controller');
 const scoped = require('../controllers/serviceApiCalls.controller');
 const { buildServiceSnapshot } = require('../services/serviceSnapshot');
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const response = () => ({ statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
 const sqlText = query => typeof query === 'string' ? query : query.text;
 
-test('headline totals exclude empty answers and feedback comments are optional', async t => {
+test('headline totals exclude empty answers and require comments only for dislikes', async t => {
   let sql;
   t.mock.method(pool, 'query', async query => {
     sql = sqlText(query);
@@ -20,11 +21,11 @@ test('headline totals exclude empty answers and feedback comments are optional',
   assert.equal(res.statusCode, 200);
   assert.match(sql, /sid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''/);
   assert.match(sql, /uid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''/);
-  assert.match(sql, /WHERE feedbacktype IN \('like', 'dislike'\)/);
+  assert.ok(sql.includes(validFeedbackSql()));
   assert.doesNotMatch(sql, /feedbacktext IS NOT NULL/);
 });
 
-test('general feedback totals, lists, statistics and charts do not require a comment', async t => {
+test('feedback totals, lists, statistics and charts share the like/dislike comment rule', async t => {
   const seen = [];
   t.mock.method(pool, 'query', async query => {
     const sql = sqlText(query);seen.push(sql);
@@ -35,7 +36,7 @@ test('general feedback totals, lists, statistics and charts do not require a com
   await feedback.getTotalLikesDislikesCount();
   await feedback.getFeedbackStats({ query: {} }, response());
   await feedback.getFeedbackGraph({ query: {} }, response());
-  for (const sql of seen) { assert.match(sql, /feedbacktype IN \('like', 'dislike'\)/);assert.doesNotMatch(sql, /feedbacktext IS NOT NULL/); }
+  for (const sql of seen) { assert.ok(sql.includes(validFeedbackSql()));assert.match(sql, /feedbacktype IN \('like', 'dislike'\)/); }
 });
 
 test('error list, counts, statistics and session queries use numeric event bounds', async t => {

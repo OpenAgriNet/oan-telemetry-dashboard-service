@@ -11,6 +11,8 @@ const reportingPool = require('../services/db');
 const errors = require('../controllers/error.controller');
 const feedback = require('../controllers/feedback.controller');
 const dashboard = require('../controllers/dashboard.controller');
+const sessions = require('../controllers/sessions.controller');
+const users = require('../controllers/user.controller');
 const { getServiceSnapshot } = require('../controllers/serviceSnapshot.controller');
 const { getServiceApiCalls } = require('../controllers/serviceApiCalls.controller');
 const { getIndividualApiCalls, getIndividualApiCall } = require('../controllers/individualApiCalls.controller');
@@ -57,9 +59,19 @@ const report = { database: 'mh-17-10', publicBusinessWrites: 0, checks: {} };
       await connection.query('INSERT INTO pg_temp.questions(uid,sid,ets,questiontext,answertext) VALUES($1,$2,$3,$4,$5)',
         ['guest', 'synthetic-session', occurrence, 'Synthetic question', answer]);
     }
-    for (const [rating, comment] of [['like', null], ['dislike', 'Synthetic comment']]) {
-      await connection.query('INSERT INTO pg_temp.feedback(uid,sid,ets,feedbacktype,feedbacktext,created_at) VALUES($1,$2,$3,$4,$5,$6)',
-        ['guest', 'synthetic-session', occurrence, rating, comment, new Date(Date.UTC(2026, 9, 18))]);
+    const feedbackCases = [
+      ['like', null], ['like', ''], ['like', ' \t\n'], ['like', 'Helpful'],
+      ['dislike', 'Synthetic comment'], ['dislike', null], ['dislike', ''],
+      ['dislike', ' \t\r\n'], ['dislike', '\u00a0'], ['dislike', '\ufeff'],
+    ];
+    let invalidFeedbackId;
+    for (const [rating, comment] of feedbackCases) {
+      const standaloneInvalid = comment === '\ufeff';
+      const inserted = await connection.query(`INSERT INTO pg_temp.feedback(uid,sid,ets,feedbacktype,feedbacktext,answertext,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [standaloneInvalid ? 'invalid-feedback-user' : 'guest', standaloneInvalid ? 'invalid-feedback-only' : 'synthetic-session',
+          occurrence, rating, comment, 'Synthetic answer', new Date(Date.UTC(2026, 9, 18))]);
+      if (rating === 'dislike' && comment === null) invalidFeedbackId = inserted.rows[0].id;
     }
     for (const ets of [occurrence, Date.UTC(2026, 9, 14, 19)]) {
       await connection.query('INSERT INTO pg_temp.errordetails(uid,sid,ets,errortext,created_at) VALUES($1,$2,$3,$4,$5)',
@@ -68,18 +80,33 @@ const report = { database: 'mh-17-10', publicBusinessWrites: 0, checks: {} };
     const stats = response();await dashboard.getDashboardStats({ query }, stats);
     assert.equal(stats.statusCode, 200);
     assert.equal(stats.body.totalQuestions ?? stats.body.data?.totalQuestions, 1);
-    assert.equal(stats.body.totalFeedback ?? stats.body.data?.totalFeedback, 2);
+    assert.equal(stats.body.totalFeedback ?? stats.body.data?.totalFeedback, 5);
     assert.equal(stats.body.totalUsers ?? stats.body.data?.totalUsers, 1);
+    assert.equal(stats.body.totalSessions ?? stats.body.data?.totalSessions, 1);
     const feedbackRows = await feedback.fetchAllFeedbackFromDB(1, 10, '', query.startDate, query.endDate);
-    assert.equal(feedbackRows.length, 2);assert.equal(await feedback.getTotalFeedbackCount('', query.startDate, query.endDate), 2);
+    assert.equal(feedbackRows.length, 5);assert.equal(await feedback.getTotalFeedbackCount('', query.startDate, query.endDate), 5);
+    assert.deepEqual(await feedback.getTotalLikesDislikesCount('', query.startDate, query.endDate), { totalLikes: 4, totalDislikes: 1 });
     const ratings = response();await feedback.getFeedbackGraph({ query: { ...query, granularity: 'daily' } }, ratings);
-    assert.equal(ratings.statusCode, 200);assert.equal(ratings.body.metadata.summary.totalFeedback, 2);
+    assert.equal(ratings.statusCode, 200);assert.equal(ratings.body.metadata.summary.totalFeedback, 5);
     assert.ok(ratings.body.data.every(row => row.date === '2026-10-14'));
     const lateErrors = response();await errors.getAllErrors({ query }, lateErrors);
     assert.equal(lateErrors.statusCode, 200);assert.equal(lateErrors.body.total, 1);
     assert.equal(lateErrors.body.data[0].fullDate, new Date(occurrence).toISOString());
     report.checks.empty_answer_counts_and_shared_guest = true;
     report.checks.rating_only_feedback_in_ist = true;
+    const feedbackStats = response();await feedback.getFeedbackStats({ query }, feedbackStats);
+    assert.equal(feedbackStats.statusCode, 200);assert.equal(feedbackStats.body.data.totalFeedback, 5);
+    const feedbackBySession = response();await feedback.getFeedbackBySessionId({ query, params: { sessionId: 'synthetic-session' } }, feedbackBySession);
+    assert.equal(feedbackBySession.statusCode, 200);assert.equal(feedbackBySession.body.pagination.totalItems, 5);
+    const timeline = response();await sessions.getSessionById({ query, params: { sessionId: 'synthetic-session' } }, timeline);
+    assert.equal(timeline.statusCode, 200);assert.equal(timeline.body.data.feedback.length, 5);
+    const userFeedback = response();await users.getFeedbackStats({ query }, userFeedback);
+    assert.equal(userFeedback.statusCode, 200);assert.equal(userFeedback.body.data.totalFeedback, 5);
+    const hiddenDetail = response();await feedback.getFeedbackByid({ params: { id: invalidFeedbackId } }, hiddenDetail);
+    assert.equal(hiddenDetail.statusCode, 404);
+    assert.equal(Number((await connection.query('SELECT count(*) FROM pg_temp.feedback')).rows[0].count), feedbackCases.length,
+      'historical invalid rows remain stored');
+    report.checks.feedback_comment_policy = { stored: feedbackCases.length, reported: 5, likes: 4, dislikes: 1, invalidRowsRetained: true };
     report.checks.late_error_and_ist_boundary = true;
 
     const endpoint = '/webservices/fetch_nearest_five_common_data_by_location_and_category';

@@ -1,3 +1,4 @@
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const pool = require('../services/db'); // adjust path as needed
 const { getTotalFeedbackCount, getTotalLikesDislikesCount } = require('./feedback.controller');
 const { getTotalQuestionsCount } = require('./questions.controller');
@@ -190,7 +191,7 @@ const getDashboardStats = async (req, res) => {
               NULL AS questiontext,
               ets
             FROM feedback
-            WHERE sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
+            WHERE ${validFeedbackSql()} AND sid IS NOT NULL ${feedbackDateFilter} ${futureFilter}
             UNION ALL
             SELECT
               sid,
@@ -218,7 +219,7 @@ const getDashboardStats = async (req, res) => {
             COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) AS total_likes,
             COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) AS total_dislikes
           FROM feedback
-          WHERE feedbacktype IN ('like', 'dislike') ${feedbackDateFilter}
+          WHERE ${validFeedbackSql()} AND feedbacktype IN ('like', 'dislike') ${feedbackDateFilter}
         )
         SELECT 
           us.total_users,
