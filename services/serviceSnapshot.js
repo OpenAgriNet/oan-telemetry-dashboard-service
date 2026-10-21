@@ -115,6 +115,38 @@ function getApiDefinition(sourceService, endpointPath) {
   return DIRECT_APIS[sourceService]?.[endpointPath] || null;
 }
 
+function requestServiceKeySql(source, category, linkedEndpoint, providerEndpoint) {
+  const literal = value => `'${String(value).replace(/'/g, "''")}'`;
+  const cases = [];
+  for (const [provider, categories] of Object.entries(SERVICE_CATEGORIES)) {
+    for (const [raw, definition] of Object.entries(categories)) {
+      cases.push(`WHEN ${source}=${literal(provider)} AND ${category}=${literal(raw)} THEN ${literal(definition.key)}`);
+    }
+  }
+  for (const [provider, endpoints] of Object.entries(DIRECT_APIS)) {
+    for (const [endpoint, definition] of Object.entries(endpoints)) {
+      cases.push(`WHEN ${source}=${literal(provider)} AND ${linkedEndpoint}=${literal(endpoint)} THEN ${literal(definition.serviceKey)}`);
+    }
+  }
+  return `CASE ${cases.join('\n')}
+    WHEN ${category}='(unclassified)' AND ${providerEndpoint} IS NOT NULL
+      THEN 'unmapped-' || regexp_replace(lower('Unclassified: ' || ${providerEndpoint}), '[^a-z0-9]+', '-', 'g')
+    ELSE 'unmapped-' || regexp_replace(lower(COALESCE(${category}, 'service')), '[^a-z0-9]+', '-', 'g') END`;
+}
+
+function combineMetrics(left, right) {
+  if (!left) return right;
+  const max = [left.maxLatencyMs, right.maxLatencyMs].filter(value => value !== null);
+  // SQL groups by the final service key and computes its true percentile.
+  // If a non-SQL caller supplies separate pre-aggregated rows, percentiles
+  // cannot be added or averaged. Keep that combined value unavailable.
+  return toMetrics({ service_requests: left.requests + right.requests,
+    successful_requests: left.successfulRequests + right.successfulRequests,
+    failed_requests: left.failedRequests + right.failedRequests,
+    p90_latency_ms: left.requests === 0 ? right.p90LatencyMs : right.requests === 0 ? left.p90LatencyMs : null,
+    max_latency_ms: max.length ? Math.max(...max) : null }, 'service_requests');
+}
+
 function asArray(value) {
   if (Array.isArray(value)) return value.filter(Boolean);
   return value ? [value] : [];
@@ -168,9 +200,11 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     const providerName = PROVIDERS[row.source_service];
     if (!providerName) continue;
 
-    const service = ensureService(providerName, getRequestServiceDefinition(row));
-    service.metrics = toMetrics(row, "service_requests");
-    service.serviceCategories.push(row.service_category);
+    const canonical = Object.values(SERVICE_CATEGORIES[row.source_service] || {})
+      .find(definition => definition.key === row.service_key);
+    const service = ensureService(providerName, canonical || getRequestServiceDefinition(row));
+    service.metrics = combineMetrics(service.metrics, toMetrics(row, "service_requests"));
+    service.serviceCategories.push(...asArray(row.service_categories || row.service_category));
     service.providerEndpoints.push(...asArray(row.provider_endpoints));
     service.providerMethods.push(...asArray(row.provider_methods));
   }
@@ -211,14 +245,15 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       serviceDefinition
     );
 
+    const scopeCategories = (definition?.serviceKey === 'service-locations' || !definition)
+      ? [...new Set(serviceCategories.filter(Boolean))].sort() : [];
     service.apis.push({
-      key: `${row.method || ""}-${row.endpoint_path}`,
+      key: scopeCategories.length ? JSON.stringify([row.method || '', row.endpoint_path, scopeCategories])
+        : `${row.method || ""}-${row.endpoint_path}`,
       name: definition?.name || row.endpoint_path,
       description: definition?.description || "Observed direct provider API",
       sourceService: row.source_service,
-      scopeCategories: (definition?.serviceKey === "service-locations" || !definition)
-        ? serviceCategories.filter(Boolean)
-        : [],
+      scopeCategories,
       method: row.method || null,
       endpoint: row.endpoint_path,
       kind: "direct",
@@ -263,6 +298,7 @@ function buildServiceSnapshot(serviceRows, apiRows) {
 }
 
 module.exports = {
+  requestServiceKeySql,
   buildServiceSnapshot,
   getApiDefinition,
   getServiceDefinition,

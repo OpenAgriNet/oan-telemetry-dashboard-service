@@ -37,7 +37,7 @@ async function fetchSessionsFromDB(page = 1, limit = 10, search = '', startDate 
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -127,7 +127,7 @@ async function getTotalSessionsCount(search = '', startDate = null, endDate = nu
                 questiontext,
                 ets
             FROM questions
-            WHERE sid IS NOT NULL AND answertext IS NOT NULL${dateConditions}
+            WHERE sid IS NOT NULL AND answertext IS NOT NULL AND answertext <> ''${dateConditions}
             UNION ALL
             SELECT 
                 sid,
@@ -325,56 +325,30 @@ const getSessionById = async (req, res) => {
         const query = {
             text: `
                 WITH session_questions AS (
-                    SELECT 
-                        id,
-                        uid,
-                        sid,
-                        questiontext,
-                        answertext,
-                        ets,
-                        created_at,
-                        channel,
-                        'question' as type
+                    SELECT id, uid, sid, questiontext, answertext,
+                        NULL::text AS feedbacktext, NULL::text AS feedbacktype,
+                        ets, created_at, channel, 'question' AS type
                     FROM questions
-                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
+                    WHERE sid = $1 AND answertext IS NOT NULL AND answertext <> ''${dateConditions}
                 ),
                 session_feedback AS (
-                    SELECT 
-                        id,
-                        uid,
-                        sid,
-                        feedbacktext as content,
-                        feedbacktype,
-                        ets,
-                        created_at,
-                        channel,
-                        'feedback' as type
+                    SELECT id, uid, sid, NULL::text AS questiontext, NULL::text AS answertext,
+                        feedbacktext, feedbacktype, ets, created_at, channel, 'feedback' AS type
                     FROM feedback
-                    WHERE sid = $1 AND answertext IS NOT NULL${dateConditions}
+                    WHERE sid = $1${dateConditions}
                 ),
                 session_errors AS (
-                    SELECT 
-                        id,
-                        uid,
-                        sid,
-                        NULL as content,
-                        NULL as feedbacktype,
-                        ets,
-                        created_at,
-                        NULL as channel,
-                        'error' as type
+                    SELECT id, uid, sid, errortext AS questiontext, NULL::text AS answertext,
+                        NULL::text AS feedbacktext, NULL::text AS feedbacktype,
+                        ets, created_at, channel, 'error' AS type
                     FROM errordetails
                     WHERE sid = $1${dateConditions}
                 )
                 SELECT * FROM session_questions
                 UNION ALL
-                SELECT 
-                    id, uid, sid, content, feedbacktype, ets, created_at, channel, type
-                FROM session_feedback
+                SELECT * FROM session_feedback
                 UNION ALL
-                SELECT 
-                    id, uid, sid, content, feedbacktype, ets, created_at, channel, type
-                FROM session_errors
+                SELECT * FROM session_errors
                 ORDER BY ets DESC, created_at DESC
             `,
             values: queryParams,
@@ -416,11 +390,11 @@ const getSessionById = async (req, res) => {
             } else if (row.type === 'feedback') {
                 sessionData.feedback.push({
                     ...formattedRow,
-                    feedbackText: row.content,
+                    feedbackText: row.feedbacktext,
                     feedbackType: row.feedbacktype
                 });
             } else if (row.type === 'error') {
-                sessionData.errors.push(formattedRow);
+                sessionData.errors.push({ ...formattedRow, errorMessage: row.questiontext });
             }
         });
 
@@ -502,7 +476,7 @@ const getSessionsByUserId = async (req, res) => {
                         questiontext,
                         ets
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
+                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL AND answertext <> ''${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
@@ -543,7 +517,7 @@ const getSessionsByUserId = async (req, res) => {
                         questiontext,
                         ets
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL${dateConditions}
+                    WHERE sid IS NOT NULL AND uid = $1 AND answertext IS NOT NULL AND answertext <> ''${dateConditions}
                     UNION ALL
                     SELECT 
                         sid,
@@ -649,7 +623,7 @@ const getSessionStats = async (req, res) => {
                 FROM (
                     SELECT CONCAT(sid, '_', uid) as session_user_pair
                     FROM questions
-                    WHERE sid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    WHERE sid IS NOT NULL AND answertext IS NOT NULL AND answertext <> '' ${dateFilter}
                     UNION
                     SELECT CONCAT(sid, '_', uid) as session_user_pair
                     FROM feedback
@@ -793,7 +767,7 @@ queryParams.push(Date.now());
                         ${dateFormat} as date,
                         'question' as activity_type
                     FROM questions
-                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND ets IS NOT NULL${dateFilter}${futureFilter}
+                    WHERE sid IS NOT NULL AND uid IS NOT NULL AND answertext IS NOT NULL AND answertext <> '' AND ets IS NOT NULL${dateFilter}${futureFilter}
                     UNION ALL
                     SELECT 
                         sid,

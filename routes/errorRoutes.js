@@ -1,3 +1,4 @@
+const requireTelemetryDetail = require("../middleware/requireTelemetryDetail");
 const express = require('express');
 const router = express.Router();
 const errorController = require('../controllers/error.controller');
@@ -12,9 +13,9 @@ router.get('/errors/stats', errorController.getErrorStatistics);
 router.get('/errors/graph', errorController.getErrorGraph);
 
 // Route for getting error by ID
-router.get('/errors/id/:id', errorController.getErrorById);
+router.get('/errors/id/:id', requireTelemetryDetail, errorController.getErrorById);
 
 // Route for getting errors by session ID
-router.get('/errors/session/:sessionId', errorController.getErrorsBySessionId);
+router.get('/errors/session/:sessionId', requireTelemetryDetail, errorController.getErrorsBySessionId);
 
 module.exports = router; 

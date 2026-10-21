@@ -1,6 +1,6 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
-const { buildServiceSnapshot } = require("../services/serviceSnapshot");
+const { buildServiceSnapshot, requestServiceKeySql } = require("../services/serviceSnapshot");
 
 const categoryExpression = (tableAlias = "") => `
   COALESCE(
@@ -77,18 +77,14 @@ async function getServiceSnapshot(req, res) {
   try {
     const serviceRequestsQuery = {
       text: `
+        WITH scoped_requests AS (
         SELECT
           provider_event.service AS source_service,
-          ${categoryExpression("provider_event.")} AS service_category,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT NULLIF(split_part(regexp_replace(COALESCE(provider_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1), '')), NULL) AS provider_endpoints,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT NULLIF(provider_event.method, '')), NULL) AS provider_methods,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT linked_api.endpoint_path), NULL) AS linked_api_endpoints,
-          COUNT(*) AS service_requests,
-          COUNT(*) FILTER (WHERE provider_event.outcome = 'success') AS successful_requests,
-          COUNT(*) FILTER (WHERE provider_event.outcome = 'failure') AS failed_requests,
-          percentile_cont(0.90) WITHIN GROUP (ORDER BY provider_event.duration_ms)
-            FILTER (WHERE provider_event.duration_ms IS NOT NULL) AS p90_latency_ms,
-          MAX(provider_event.duration_ms) AS max_latency_ms
+          ${categoryExpression("provider_event.")} AS observed_category,
+          NULLIF(${normalisedEndpointExpression('provider_event.')}, '') AS provider_endpoint,
+          NULLIF(provider_event.method, '') AS provider_method,
+          linked_api.endpoint_path AS linked_api_endpoint,
+          provider_event.duration_ms, provider_event.outcome
         FROM external_api_events provider_event
         LEFT JOIN LATERAL (
           SELECT split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1) AS endpoint_path
@@ -112,7 +108,22 @@ async function getServiceSnapshot(req, res) {
           AND provider_event.service = ANY($${dateFilter.values.length + 1})
           AND provider_event.event_name = 'provider_request'
           ${dateFilter.sql}
-        GROUP BY provider_event.service, ${categoryExpression("provider_event.")}
+        ), classified_requests AS (
+          SELECT *, ${requestServiceKeySql('source_service', 'observed_category', 'linked_api_endpoint', 'provider_endpoint')} AS service_key
+          FROM scoped_requests
+        )
+        SELECT source_service, service_key, MIN(observed_category) AS service_category,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT observed_category), NULL) AS service_categories,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT provider_endpoint), NULL) AS provider_endpoints,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT provider_method), NULL) AS provider_methods,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT linked_api_endpoint), NULL) AS linked_api_endpoints,
+          COUNT(*) AS service_requests,
+          COUNT(*) FILTER (WHERE outcome='success') AS successful_requests,
+          COUNT(*) FILTER (WHERE outcome='failure') AS failed_requests,
+          percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE duration_ms IS NOT NULL) AS p90_latency_ms,
+          MAX(duration_ms) AS max_latency_ms
+        FROM classified_requests GROUP BY source_service, service_key
       `,
       values: [...dateFilter.values, sourceServices],
     };

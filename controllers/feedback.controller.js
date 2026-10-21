@@ -20,7 +20,7 @@ async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDa
             sid as session_id,
             ets
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -54,9 +54,9 @@ async function fetchAllFeedbackFromDB(page = 1, limit = 10, search = '', startDa
      const sortArray = ['created_at', 'user_id', 'feedbacktype', 'feedbacktext'];
 
          if(sortArray.includes(sortBy)) {
-        query += ` ORDER BY ${sortBy} ${sortOrder}`;
+        query += ` ORDER BY ${sortBy === 'created_at' ? 'ets' : sortBy} ${sortOrder}`;
         } else {    
-        query += ` ORDER BY created_at DESC`;
+        query += ` ORDER BY ets DESC`;
         }
 
 
@@ -79,7 +79,7 @@ async function getTotalFeedbackCount(search = '', startDate = null, endDate = nu
     let query = `
         SELECT COUNT(*) as total
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -122,7 +122,7 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
             SUM(CASE WHEN feedbacktype = 'like' THEN 1 ELSE 0 END) as total_likes,
             SUM(CASE WHEN feedbacktype = 'dislike' THEN 1 ELSE 0 END) as total_dislikes
         FROM feedback
-        WHERE feedbacktext IS NOT NULL AND questiontext IS NOT NULL
+        WHERE feedbacktype IN ('like', 'dislike')
     `;
 
     const queryParams = [];
@@ -167,32 +167,16 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
 }
 
 function formatFeedbackData(feedbackItem) {
-    // const dateObj = new Date(feedbackItem.created_at);
-    
-    // // Use utility function to format UTC to IST date
-    // const formattedDate = formatUTCToISTDate(dateObj);
-    let feedbackTime = null;
-      if (feedbackItem.created_at) {
-            // First try to parse the timestamp if it's in milliseconds
-            const timestamp = parseInt(feedbackItem.created_at);
-            if (!isNaN(timestamp)) {
-                // Convert to IST timezone
-                feedbackTime = formatDateToIST(timestamp);
-            } else {
-                // If not a timestamp, try parsing as a date string
-                const parsedDate = new Date(feedbackItem.created_at);
-                feedbackTime = formatDateToIST(parsedDate.getTime());
-            }
-        }
+    const eventTime = feedbackItem.ets == null ? NaN : Number(feedbackItem.ets);
+    const feedbackTime = Number.isFinite(eventTime) ? formatDateToIST(eventTime) : null;
 
-   
     return {
         qid: feedbackItem.qid,
         date: feedbackTime,
         user: feedbackItem.user_id,
         question: feedbackItem.questiontext,
         sessionId: feedbackItem.session_id,
-        answer: feedbackItem.answertext.substring(0, 100) + "...",
+        answer: feedbackItem.answertext ? feedbackItem.answertext.substring(0, 100) + "..." : "",
         rating: feedbackItem.feedbacktype,
         feedback: feedbackItem.feedbacktext,
         id: feedbackItem.id,
@@ -400,10 +384,8 @@ const getFeedbackBySessionId = async (req, res) => {
                     ets
                 FROM feedback
                 WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
                     ${dateFilter}
-                ORDER BY created_at DESC
+                ORDER BY ets DESC, id DESC
                 LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}
             `,
             values: queryParams,
@@ -415,8 +397,6 @@ const getFeedbackBySessionId = async (req, res) => {
                 SELECT COUNT(*) as total
                 FROM feedback
                 WHERE sid = $1 
-                    AND feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL
                     ${countDateFilter}
             `,
             values: countParams,
@@ -428,7 +408,7 @@ const getFeedbackBySessionId = async (req, res) => {
         ]);
 
         const totalCount = parseInt(countResult.rows[0].total);
-        const formattedData = feedbackResult.rows.map(formatFeedbackData);
+        const formattedData = feedbackResult.rows.map(item => ({ ...formatFeedbackData(item), answer: item.answertext || "" }));
 
         // Get accurate total likes and dislikes counts for the entire filtered session dataset
         const { totalLikes, totalDislikes } = await getTotalLikesDislikesCount('', startDate, endDate, sessionId.trim());
@@ -508,7 +488,7 @@ const getFeedbackStats = async (req, res) => {
                     COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                     COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                 FROM feedback
-                WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                WHERE feedbacktype IN ('like', 'dislike') ${dateFilter}
             `,
             values: queryParams
         };
@@ -608,24 +588,24 @@ const getFeedbackGraph = async (req, res) => {
 
         switch (granularity) {
             case 'hourly':
-                dateGrouping = "DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('hour', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD HH24:00')";
+                dateGrouping = "DATE_TRUNC('hour', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata'))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('hour', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata')), 'YYYY-MM-DD HH24:00')";
                 orderBy = "hour_bucket";
                 break;
             case 'weekly':
-                dateGrouping = "DATE_TRUNC('week', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('week', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('week', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata'))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('week', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata')), 'YYYY-MM-DD')";
                 orderBy = "week_bucket";
                 break;
             case 'monthly':
-                dateGrouping = "DATE_TRUNC('month', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('month', TO_TIMESTAMP(ets/1000)), 'YYYY-MM')";
+                dateGrouping = "DATE_TRUNC('month', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata'))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('month', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata')), 'YYYY-MM')";
                 orderBy = "month_bucket";
                 break;
             case 'daily':
             default:
-                dateGrouping = "DATE_TRUNC('day', TO_TIMESTAMP(ets/1000))";
-                dateFormat = "TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(ets/1000)), 'YYYY-MM-DD')";
+                dateGrouping = "DATE_TRUNC('day', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata'))";
+                dateFormat = "TO_CHAR(DATE_TRUNC('day', (TO_TIMESTAMP(ets/1000.0) AT TIME ZONE 'Asia/Kolkata')), 'YYYY-MM-DD')";
                 orderBy = "day_bucket";
                 break;
         }
@@ -642,11 +622,10 @@ const getFeedbackGraph = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) * 100.0 / 
                         NULLIF(COUNT(*), 0), 2
                     ) as satisfactionRate,
-                    EXTRACT(EPOCH FROM ${dateGrouping}) * 1000 as timestamp,
+                    EXTRACT(EPOCH FROM (${dateGrouping} AT TIME ZONE 'Asia/Kolkata')) * 1000 as timestamp,
                     ${granularity === 'hourly' ? `EXTRACT(HOUR FROM ${dateGrouping}) as hour_of_day` : 'NULL as hour_of_day'}
                 FROM feedback
-                WHERE feedbacktext IS NOT NULL 
-                    AND questiontext IS NOT NULL 
+                WHERE feedbacktype IN ('like', 'dislike')
                     AND ets IS NOT NULL
                     ${dateFilter}
                 GROUP BY ${dateGrouping}

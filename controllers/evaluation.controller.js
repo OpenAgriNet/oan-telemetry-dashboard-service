@@ -28,25 +28,6 @@ async function refreshRunProgress(runId) {
   return { run_id: runId, status, total, successful, failed };
 }
 
-async function refreshRunProgress(runId) {
-  const progress = await pool.query(`
-    SELECT COUNT(*)::int AS total,
-           COUNT(*) FILTER (WHERE status = 'synced')::int AS successful,
-           COUNT(*) FILTER (WHERE status = 'failed')::int AS failed
-    FROM evaluation_run_traces WHERE run_id = $1
-  `, [runId]);
-  const { total, successful, failed } = progress.rows[0];
-  const finished = total > 0 && successful + failed >= total;
-  const status = finished ? (failed > 0 ? "partial" : "complete") : "running";
-  await pool.query(`
-    UPDATE evaluation_runs SET status=$2, successful_count=$3, failed_count=$4,
-      score_source='langfuse', last_synced_at=NOW(),
-      completed_at=CASE WHEN $5 THEN NOW() ELSE completed_at END, updated_at=NOW()
-    WHERE run_id=$1
-  `, [runId, status, successful, failed, finished]);
-  return { run_id: runId, status, total, successful, failed };
-}
-
 async function persistEvaluationItem(runId, traceId, b) {
   const metrics = b.evaluation?.metrics || {};
   const dimensions = b.evaluation?.dimensions || {};
