@@ -771,12 +771,195 @@ const getBecknExtListHandler = async (req, res) => {
   }
 };
 
+/**
+ * Per-API call counts from ext_api_calls (one row per external API call).
+ * Unlike beckn_ext_events, several calls made for the same question are all kept.
+ *
+ * outcome: success  - upstream accepted the request
+ *          rejected - upstream answered but refused (e.g. wrong OTP)
+ *          error    - upstream unreachable / timeout / non-2xx / unreadable
+ * Rows without an outcome (older senders) count as error when success = false.
+ */
+async function getExtApiCallStats({
+  startDate = null,
+  endDate = null,
+  apiService = null,
+  apiPrefix = null,
+  telemetryState = null,
+} = {}) {
+  const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+  const queryParams = [];
+  let paramIndex = 0;
+  let where = " WHERE 1=1 ";
+
+  const {
+    clause: channelClause,
+    paramIndex: channelParamIndex,
+  } = buildChannelFilterClause("channel", telemetryState, queryParams, paramIndex);
+  paramIndex = channelParamIndex;
+  where += ` AND ${channelClause}`;
+
+  if (startTimestamp !== null) {
+    paramIndex++;
+    where += ` AND ets >= to_timestamp($${paramIndex}::double precision / 1000.0)`;
+    queryParams.push(startTimestamp);
+  }
+
+  if (endTimestamp !== null) {
+    paramIndex++;
+    where += ` AND ets <= to_timestamp($${paramIndex}::double precision / 1000.0)`;
+    queryParams.push(endTimestamp);
+  }
+
+  if (apiService) {
+    paramIndex++;
+    where += ` AND api_service = $${paramIndex}`;
+    queryParams.push(apiService);
+  }
+
+  if (apiPrefix) {
+    paramIndex++;
+    where += ` AND api_service LIKE $${paramIndex}`;
+    queryParams.push(`${apiPrefix.replace(/[\\%_]/g, "\\$&")}%`);
+  }
+
+  const countColumns = `
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE success IS TRUE)::int AS success,
+      COUNT(*) FILTER (WHERE outcome = 'rejected')::int AS rejected,
+      COUNT(*) FILTER (WHERE success IS FALSE AND outcome IS DISTINCT FROM 'rejected')::int AS error,
+      COUNT(*) FILTER (WHERE success IS NULL)::int AS unknown`;
+
+  const totalsQuery = `SELECT ${countColumns} FROM ext_api_calls ${where}`;
+
+  const perApiQuery = `
+    SELECT
+      api_service,
+      ${countColumns},
+      COALESCE(ROUND(AVG(latency_ms)), 0)::int AS avg_latency_ms,
+      COALESCE(MAX(latency_ms), 0)::int AS max_latency_ms,
+      MAX(ets) AS last_call_at
+    FROM ext_api_calls
+    ${where}
+    GROUP BY api_service
+    ORDER BY total DESC, api_service ASC
+  `;
+
+  const errorTypesQuery = `
+    SELECT api_service, COALESCE(error_type, 'unknown') AS error_type, COUNT(*)::int AS count
+    FROM ext_api_calls
+    ${where}
+      AND success IS FALSE
+      AND outcome IS DISTINCT FROM 'rejected'
+    GROUP BY api_service, COALESCE(error_type, 'unknown')
+    ORDER BY count DESC
+  `;
+
+  const [totalsRes, perApiRes, errorTypesRes] = await Promise.all([
+    pool.query(totalsQuery, queryParams),
+    pool.query(perApiQuery, queryParams),
+    pool.query(errorTypesQuery, queryParams),
+  ]);
+
+  const toCounts = (row = {}) => {
+    const total = parseInt(row.total, 10) || 0;
+    const success = parseInt(row.success, 10) || 0;
+    return {
+      total,
+      success,
+      rejected: parseInt(row.rejected, 10) || 0,
+      error: parseInt(row.error, 10) || 0,
+      unknown: parseInt(row.unknown, 10) || 0,
+      successRate: total > 0 ? Math.round((success / total) * 100) : 0,
+    };
+  };
+
+  return {
+    totals: toCounts(totalsRes.rows[0]),
+    apis: perApiRes.rows.map((r) => ({
+      apiService: r.api_service,
+      ...toCounts(r),
+      avgLatencyMs: parseInt(r.avg_latency_ms, 10) || 0,
+      maxLatencyMs: parseInt(r.max_latency_ms, 10) || 0,
+      // pg returns timestamptz as Date; formatDateToIST takes a string or ms
+      lastCallAt: r.last_call_at
+        ? formatDateToIST(new Date(r.last_call_at).toISOString())
+        : null,
+    })),
+    errorTypes: errorTypesRes.rows.map((r) => ({
+      apiService: r.api_service,
+      errorType: r.error_type,
+      count: parseInt(r.count, 10) || 0,
+    })),
+    filters: {
+      startDate,
+      endDate,
+      apiService: apiService || null,
+      apiPrefix: apiPrefix || null,
+      appliedStartTimestamp: startTimestamp,
+      appliedEndTimestamp: endTimestamp,
+    },
+  };
+}
+
+/**
+ * GET /v1/beckn-ext/api-calls/stats
+ * Query: startDate, endDate, apiService (exact), apiPrefix (e.g. "pmkisan_")
+ */
+const getExtApiCallStatsHandler = async (req, res) => {
+  try {
+    const startDate = req.query.startDate
+      ? String(req.query.startDate).trim()
+      : null;
+    const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+    const apiService = req.query.apiService
+      ? String(req.query.apiService).trim()
+      : null;
+    const apiPrefix = req.query.apiPrefix
+      ? String(req.query.apiPrefix).trim()
+      : null;
+
+    const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    if (
+      (startDate && startTimestamp === null) ||
+      (endDate && endTimestamp === null)
+    ) {
+      return res.status(400).json({
+        message:
+          "Invalid date format. Use ISO date string (YYYY-MM-DD) or unix timestamp",
+      });
+    }
+    if (startTimestamp && endTimestamp && startTimestamp > endTimestamp) {
+      return res
+        .status(400)
+        .json({ message: "Start date cannot be after end date" });
+    }
+
+    const stats = await getExtApiCallStats({
+      startDate,
+      endDate,
+      apiService,
+      apiPrefix,
+      telemetryState: req.telemetryState,
+    });
+
+    return res.status(200).json(stats);
+  } catch (error) {
+    console.error("Error fetching ext_api_calls stats:", error);
+    return res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
+  }
+};
+
 module.exports = {
   getBecknExtStatsHandler,
+  getExtApiCallStatsHandler,
   getBecknExtListHandler,
   getBecknExtLifecycleHandler,
   // exported for tests / reuse
   getBecknExtStats,
+  getExtApiCallStats,
   fetchBecknExtRows,
   fetchBecknExtLifecycle,
   formatBecknExtLifecycle,
