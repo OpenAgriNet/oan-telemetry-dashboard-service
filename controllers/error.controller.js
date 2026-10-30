@@ -33,17 +33,17 @@ async function fetchAllErrorsFromDB(
   const queryParams = [];
   let paramIndex = 0;
 
-  // Add date range filtering using created_at
+  // Reporting dates use the original event epoch.
   if (startTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at >= $${paramIndex}`;
-    queryParams.push(new Date(startTimestamp));
+    query += ` AND ets >= $${paramIndex}`;
+    queryParams.push(startTimestamp);
   }
 
   if (endTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at <= $${paramIndex}`;
-    queryParams.push(new Date(endTimestamp));
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(endTimestamp);
   }
 
   // Add search functionality if search term is provided
@@ -61,9 +61,9 @@ async function fetchAllErrorsFromDB(
 
      const sortArray = ["created_at", "user_id", "session_id", "error_message"];
   if (sortArray.includes(sortBy)) {
-    query += ` ORDER BY ${sortBy} ${sortOrder}`;
+    query += ` ORDER BY ${sortBy === "created_at" ? "ets" : sortBy} ${String(sortOrder).toUpperCase() === "ASC" ? "ASC" : "DESC"}`;
   } else {
-    query += ` ORDER BY created_at DESC`;
+    query += ` ORDER BY ets DESC`;
   }
 
   // Add pagination
@@ -99,14 +99,14 @@ async function getTotalErrorCount(
   // Add date range filtering
   if (startTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at >= $${paramIndex}`;
-    queryParams.push(new Date(startTimestamp));
+    query += ` AND ets >= $${paramIndex}`;
+    queryParams.push(startTimestamp);
   }
 
   if (endTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at <= $${paramIndex}`;
-    queryParams.push(new Date(endTimestamp));
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(endTimestamp);
   }
 
   // Add search filter to count query if search term is provided
@@ -145,14 +145,14 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
   // Add date range filtering
   if (startTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at >= $${paramIndex}`;
-    queryParams.push(new Date(startTimestamp));
+    query += ` AND ets >= $${paramIndex}`;
+    queryParams.push(startTimestamp);
   }
 
   if (endTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at <= $${paramIndex}`;
-    queryParams.push(new Date(endTimestamp));
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(endTimestamp);
   }
 
   // Add search filter if search term is provided
@@ -180,10 +180,10 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
 }
 
 function formatErrorData(errorItem) {
-  const dateObj = new Date(errorItem.created_at);
-
-  // Use utility function to format UTC to IST
-  const istDateTime = formatUTCToISTDateTime(dateObj);
+  const eventTime = errorItem.ets === null || errorItem.ets === undefined ? NaN : Number(errorItem.ets);
+  const istDateTime = Number.isFinite(eventTime) && !Number.isNaN(new Date(eventTime).getTime())
+    ? formatUTCToISTDateTime(new Date(eventTime))
+    : { date: null, time: null, fullDate: null };
 
   return {
     id: errorItem.id,
@@ -210,6 +210,7 @@ function formatErrorData(errorItem) {
     environment: "production", // Default environment
     channel: errorItem.channel,
     ets: errorItem.ets,
+    processedAt: errorItem.created_at,
   };
 }
 
@@ -335,17 +336,17 @@ async function fetchErrorsBySessionIdFromDB(
   // Add date range filtering
   if (startTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at >= $${paramIndex}`;
-    queryParams.push(new Date(startTimestamp));
+    query += ` AND ets >= $${paramIndex}`;
+    queryParams.push(startTimestamp);
   }
 
   if (endTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at <= $${paramIndex}`;
-    queryParams.push(new Date(endTimestamp));
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(endTimestamp);
   }
 
-  query += ` ORDER BY created_at DESC, id DESC`;
+  query += ` ORDER BY ets DESC, id DESC`;
 
   // Add pagination
   paramIndex++;
@@ -379,14 +380,14 @@ async function getTotalErrorsCountBySession(
   // Add date range filtering
   if (startTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at >= $${paramIndex}`;
-    queryParams.push(new Date(startTimestamp));
+    query += ` AND ets >= $${paramIndex}`;
+    queryParams.push(startTimestamp);
   }
 
   if (endTimestamp !== null) {
     paramIndex++;
-    query += ` AND created_at <= $${paramIndex}`;
-    queryParams.push(new Date(endTimestamp));
+    query += ` AND ets <= $${paramIndex}`;
+    queryParams.push(endTimestamp);
   }
 
   const result = await pool.query(query, queryParams);
@@ -441,8 +442,16 @@ const getErrorStatistics = async (req, res) => {
 // Controller function to get error graph data
 const getErrorGraph = async (req, res) => {
   try {
-    const { startDate, endDate, granularity = "day" } = req.query;
+    const { startDate, endDate } = req.query;
+    const grouping = { hour: 'hour', hourly: 'hour', day: 'day', daily: 'day', week: 'week', weekly: 'week', month: 'month', monthly: 'month' };
+    const requested = String(req.query.granularity || 'day').trim();
+    const granularity = Object.prototype.hasOwnProperty.call(grouping, requested) ? grouping[requested] : null;
+    if (!granularity) return res.status(400).json({ error: 'Unsupported graph grouping' });
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+    if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)
+        || (startTimestamp !== null && endTimestamp !== null && startTimestamp > endTimestamp)) {
+      return res.status(400).json({ error: 'Invalid date range' });
+    }
 
     let dateFormat, dateInterval;
     switch (granularity) {
@@ -470,21 +479,21 @@ const getErrorGraph = async (req, res) => {
     let query = `
             WITH date_series AS (
                 SELECT generate_series(
-                    date_trunc('${granularity}', $1::timestamp),
-                    date_trunc('${granularity}', $2::timestamp),
+                    date_trunc('${granularity}', to_timestamp($1::bigint / 1000.0) AT TIME ZONE 'Asia/Kolkata'),
+                    date_trunc('${granularity}', to_timestamp($2::bigint / 1000.0) AT TIME ZONE 'Asia/Kolkata'),
                     interval '${dateInterval}'
                 ) AS date_period
             ),
             error_counts AS (
                 SELECT 
-                    date_trunc('${granularity}', created_at) as error_period,
+                    date_trunc('${granularity}', to_timestamp(ets / 1000.0) AT TIME ZONE 'Asia/Kolkata') as error_period,
                     COUNT(*) as error_count,
                     COUNT(DISTINCT uid) as unique_users,
                     COUNT(DISTINCT sid) as unique_sessions,
                     COUNT(DISTINCT channel) as unique_channels
                 FROM errordetails
-                WHERE created_at >= $1 AND created_at <= $2 AND errortext IS NOT NULL
-                GROUP BY date_trunc('${granularity}', created_at)
+                WHERE ets >= $1 AND ets <= $2 AND errortext IS NOT NULL
+                GROUP BY date_trunc('${granularity}', to_timestamp(ets / 1000.0) AT TIME ZONE 'Asia/Kolkata')
             )
             SELECT 
                 ds.date_period,
@@ -499,16 +508,9 @@ const getErrorGraph = async (req, res) => {
             ORDER BY ds.date_period
         `;
 
-    const queryParams = [];
-    if (startTimestamp !== null && endTimestamp !== null) {
-      queryParams.push(new Date(startTimestamp), new Date(endTimestamp));
-    } else {
-      // Default to last 30 days if no date range provided
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 30);
-      queryParams.push(startDate, endDate);
-    }
+    const end = endTimestamp === null ? Date.now() : endTimestamp;
+    const start = startTimestamp === null ? end - 30 * 24 * 60 * 60 * 1000 : startTimestamp;
+    const queryParams = [start, end];
 
     const result = await pool.query(query, queryParams);
 

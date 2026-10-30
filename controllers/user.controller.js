@@ -1,3 +1,4 @@
+const { validFeedbackSql } = require('../utils/feedbackPolicy');
 const pool = require('../services/db');
 const { v4: uuidv4 } = require('uuid');
 const { parseDateRange, formatDateToIST, getCurrentTimestamp } = require('../utils/dateUtils');
@@ -98,7 +99,7 @@ async function fetchUsersFromDB(page = 1, limit = 10, search = '', startDate = n
                 COUNT(CASE WHEN f.feedbacktype = 'like' THEN 1 END) as likes,
                 COUNT(CASE WHEN f.feedbacktype = 'dislike' THEN 1 END) as dislikes
             FROM base_users bu
-            LEFT JOIN feedback f ON f.uid = bu.uid AND f.uid IS NOT NULL AND f.answertext IS NOT NULL
+            LEFT JOIN feedback f ON f.uid = bu.uid AND f.uid IS NOT NULL AND f.answertext IS NOT NULL AND ${validFeedbackSql('f')}
             ${startTimestamp ? `AND f.ets >= ${startTimestamp}` : ''}
             ${endTimestamp ? `AND f.ets <= ${endTimestamp}` : ''}
             AND f.ets <= ${getCurrentTimestamp()}
@@ -482,7 +483,7 @@ const getUserByUsername = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes
                     FROM feedback
-                    WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND uid = $1 AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY uid
                 ),
                 user_channels AS (
@@ -492,7 +493,7 @@ const getUserByUsername = async (req, res) => {
                     FROM (
                         SELECT uid, channel FROM questions WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
                         UNION
-                        SELECT uid, channel FROM feedback WHERE uid = $1 AND answertext IS NOT NULL ${dateFilter}
+                        SELECT uid, channel FROM feedback WHERE ${validFeedbackSql()} AND uid = $1 AND answertext IS NOT NULL ${dateFilter}
                     ) combined
                     GROUP BY uid
                 )
@@ -623,7 +624,7 @@ const getUserStats = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as total_likes,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as total_dislikes
                     FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
+                    WHERE ${validFeedbackSql()} AND uid IS NOT NULL AND answertext IS NOT NULL ${feedbackDateFilter}
                 ),
                 activity_by_day AS (
                     SELECT 
@@ -1024,7 +1025,7 @@ const getFeedbackStats = async (req, res) => {
                         ) as satisfaction_rate,
                         AVG(LENGTH(feedbacktext)) as avg_feedback_length
                     FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                 ),
                 feedback_activity_by_day AS (
                     SELECT 
@@ -1038,7 +1039,7 @@ const getFeedbackStats = async (req, res) => {
                             NULLIF(COUNT(*), 0), 2
                         ) as daily_satisfaction_rate
                     FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY DATE(created_at)
                     ORDER BY activity_date DESC
                     LIMIT 30
@@ -1055,7 +1056,7 @@ const getFeedbackStats = async (req, res) => {
                             NULLIF(COUNT(*), 0), 2
                         ) as channel_satisfaction_rate
                     FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND uid IS NOT NULL AND answertext IS NOT NULL AND channel IS NOT NULL ${dateFilter}
                     GROUP BY channel
                     ORDER BY feedback_count DESC
                 ),
@@ -1066,7 +1067,7 @@ const getFeedbackStats = async (req, res) => {
                         COUNT(CASE WHEN feedbacktype = 'like' THEN 1 END) as likes_count,
                         COUNT(CASE WHEN feedbacktype = 'dislike' THEN 1 END) as dislikes_count
                     FROM feedback
-                    WHERE uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
+                    WHERE ${validFeedbackSql()} AND uid IS NOT NULL AND answertext IS NOT NULL ${dateFilter}
                     GROUP BY uid
                     ORDER BY feedback_count DESC
                     LIMIT 10

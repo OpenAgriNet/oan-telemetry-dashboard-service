@@ -6,7 +6,7 @@ This document provides an overview of the available API endpoints.
 
 ### 1. Get All Feedback
 *   **Endpoint:** `GET /feedback`
-*   **Description:** Retrieves a paginated list of all feedback entries. Supports searching and filtering by date range.
+*   **Description:** Retrieves a paginated list of valid ratings. Likes may have no comment; dislikes require a nonblank comment. This rule also applies to counts, charts, detail/session/user reports, and feedback evaluation candidates. Historical invalid dislikes remain in the database for investigation. Supports searching and filtering by date range.
 *   **Query Parameters:**
     *   `page` (optional, number): The page number for pagination (default: 1).
     *   `limit` (optional, number): The number of items per page (default: 10, max: 100).
@@ -126,6 +126,10 @@ This document provides an overview of the available API endpoints.
 Evaluation read endpoints use the same bearer-token/Keycloak authentication as the rest of the dashboard API. Langfuse credentials are server-side only.
 
 ## Dashboard endpoints
+
+- `GET /v1/service-snapshot` — returns the provider → service → API health snapshot from sanitized external telemetry. Supports the existing `startDate` and `endDate` IST date-range parameters. Service rows represent final provider-request outcomes; API rows represent direct provider API attempts. Internal Redis/PostgreSQL dependency spans are excluded.
+- `GET /v1/individual-api-calls` — lists one sanitized external HTTP/API call per row. Supports `startDate`, `endDate`, `outcome` (`success` or `failure`), `layer`, `service`, `search`, `page`, and `limit`.
+- `GET /v1/individual-api-calls/:id` — returns the metadata and already-sanitized request, response, and error payload for one captured API call.
 
 - `GET /v1/evaluations/runs` — list recent evaluation runs.
 - `GET /v1/evaluations/runs/{runId}/summary` — return four dimension averages, the overall score, pass/failure counts, and all 18 metric averages.

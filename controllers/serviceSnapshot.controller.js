@@ -1,0 +1,199 @@
+const pool = require("../services/db");
+const { parseDateRange } = require("../utils/dateUtils");
+const { buildServiceSnapshot, requestServiceKeySql } = require("../services/serviceSnapshot");
+
+const categoryExpression = (tableAlias = "") => `
+  COALESCE(
+    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,code}',
+    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,name}',
+    ${tableAlias}request_payload #>> '{message,order,items,0,category_ids,0}',
+    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,code}',
+    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,name}',
+    ${tableAlias}response_payload #>> '{message,order,items,0,category_ids,0}',
+    '(unclassified)'
+  )
+`;
+
+// These endpoints serve several business services. Their outbound payload
+// identifies the actual service (for example, { "category": "kvk" }), so a
+// trace-level parent request must not be used to infer it.
+const SHARED_CATEGORY_ENDPOINTS = [
+  "/webservices/fetch_common_data_by_category",
+  "/webservices/fetch_nearest_five_common_data_by_location_and_category",
+];
+
+function normalisedEndpointExpression(tableAlias = "") {
+  return `split_part(regexp_replace(COALESCE(${tableAlias}endpoint, ''), '^https?://[^/]+', ''), '?', 1)`;
+}
+
+function directApiCategoryExpression(tableAlias = "") {
+  return `COALESCE(
+    NULLIF(${tableAlias}request_payload #>> '{category}', ''),
+    ${categoryExpression(tableAlias)}
+  )`;
+}
+
+function apiServiceCategoryExpression(tableAlias = "") {
+  const endpoint = normalisedEndpointExpression(tableAlias);
+  const sharedEndpoints = SHARED_CATEGORY_ENDPOINTS.map((path) => `'${path}'`).join(", ");
+  return `CASE
+    WHEN ${endpoint} IN (${sharedEndpoints}) THEN ${directApiCategoryExpression(tableAlias)}
+    ELSE '(endpoint-mapped)'
+  END`;
+}
+
+function buildDateFilter(startTimestamp, endTimestamp) {
+  const values = [];
+  const clauses = [];
+
+  if (startTimestamp !== null) {
+    values.push(new Date(startTimestamp));
+    clauses.push(`event_time >= $${values.length}`);
+  }
+  if (endTimestamp !== null) {
+    values.push(new Date(endTimestamp));
+    clauses.push(`event_time <= $${values.length}`);
+  }
+
+  return { values, sql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "" };
+}
+
+async function getServiceSnapshot(req, res) {
+  const startDate = req.query.startDate ? String(req.query.startDate).trim() : null;
+  const endDate = req.query.endDate ? String(req.query.endDate).trim() : null;
+  const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
+
+  if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)) {
+    return res.status(400).json({ success: false, error: "Invalid date format" });
+  }
+
+  if (startTimestamp !== null && endTimestamp !== null && startTimestamp > endTimestamp) {
+    return res.status(400).json({ success: false, error: "Start date must be before end date" });
+  }
+
+  const dateFilter = buildDateFilter(startTimestamp, endTimestamp);
+  const sourceServices = ["mh-provider-backend", "mh-pocradbt-provider-backend"];
+
+  try {
+    const serviceRequestsQuery = {
+      text: `
+        WITH scoped_requests AS (
+        SELECT
+          provider_event.service AS source_service,
+          ${categoryExpression("provider_event.")} AS observed_category,
+          NULLIF(${normalisedEndpointExpression('provider_event.')}, '') AS provider_endpoint,
+          NULLIF(provider_event.method, '') AS provider_method,
+          linked_api.endpoint_path AS linked_api_endpoint,
+          provider_event.duration_ms, provider_event.outcome
+        FROM external_api_events provider_event
+        LEFT JOIN LATERAL (
+          SELECT split_part(regexp_replace(COALESCE(direct_event.endpoint, ''), '^https?://[^/]+', ''), '?', 1) AS endpoint_path
+          FROM external_api_events direct_event
+          WHERE direct_event.trace_scope = 'beckn_external_api'
+            AND direct_event.service = provider_event.service
+            AND direct_event.event_name = 'provider_webservice_call'
+            AND NULLIF(TRIM(COALESCE(direct_event.endpoint, '')), '') IS NOT NULL
+            AND (
+              (provider_event.trace_id IS NOT NULL AND direct_event.trace_id = provider_event.trace_id)
+              OR (
+                provider_event.trace_id IS NULL
+                AND provider_event.transaction_id IS NOT NULL
+                AND direct_event.transaction_id = provider_event.transaction_id
+              )
+            )
+          ORDER BY direct_event.event_time ASC NULLS LAST
+          LIMIT 1
+        ) linked_api ON TRUE
+        WHERE provider_event.trace_scope = 'beckn_external_api'
+          AND provider_event.service = ANY($${dateFilter.values.length + 1})
+          AND provider_event.event_name = 'provider_request'
+          ${dateFilter.sql}
+        ), classified_requests AS (
+          SELECT *, ${requestServiceKeySql('source_service', 'observed_category', 'linked_api_endpoint', 'provider_endpoint')} AS service_key
+          FROM scoped_requests
+        )
+        SELECT source_service, service_key, MIN(observed_category) AS service_category,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT observed_category), NULL) AS service_categories,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT provider_endpoint), NULL) AS provider_endpoints,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT provider_method), NULL) AS provider_methods,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT linked_api_endpoint), NULL) AS linked_api_endpoints,
+          COUNT(*) AS service_requests,
+          COUNT(*) FILTER (WHERE outcome='success') AS successful_requests,
+          COUNT(*) FILTER (WHERE outcome='failure') AS failed_requests,
+          percentile_cont(0.90) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE duration_ms IS NOT NULL) AS p90_latency_ms,
+          MAX(duration_ms) AS max_latency_ms
+        FROM classified_requests GROUP BY source_service, service_key
+      `,
+      values: [...dateFilter.values, sourceServices],
+    };
+
+    const apiRequestsQuery = {
+      text: `
+        SELECT
+          direct_event.service AS source_service,
+          NULLIF(TRIM(direct_event.method), '') AS method,
+          ${normalisedEndpointExpression("direct_event.")} AS endpoint_path,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT ${apiServiceCategoryExpression("direct_event.")}), NULL) AS service_categories,
+          COUNT(*) AS api_requests,
+          COUNT(*) FILTER (WHERE direct_event.outcome = 'success') AS successful_requests,
+          COUNT(*) FILTER (WHERE direct_event.outcome = 'failure') AS failed_requests,
+          percentile_cont(0.90) WITHIN GROUP (ORDER BY direct_event.duration_ms)
+            FILTER (WHERE direct_event.duration_ms IS NOT NULL) AS p90_latency_ms,
+          MAX(direct_event.duration_ms) AS max_latency_ms
+        FROM external_api_events direct_event
+        WHERE direct_event.trace_scope = 'beckn_external_api'
+          AND direct_event.service = ANY($${dateFilter.values.length + 1})
+          AND direct_event.event_name = 'provider_webservice_call'
+          AND NULLIF(TRIM(COALESCE(direct_event.endpoint, '')), '') IS NOT NULL
+          ${dateFilter.sql}
+        GROUP BY
+          direct_event.service,
+          NULLIF(TRIM(direct_event.method), ''),
+          ${normalisedEndpointExpression("direct_event.")},
+          ${apiServiceCategoryExpression("direct_event.")}
+      `,
+      values: [...dateFilter.values, sourceServices],
+    };
+
+    const [serviceResult, apiResult] = await Promise.all([
+      pool.query(serviceRequestsQuery),
+      pool.query(apiRequestsQuery),
+    ]);
+    const providers = buildServiceSnapshot(serviceResult.rows, apiResult.rows);
+    const services = providers.flatMap((provider) => provider.services);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        providers,
+        summary: {
+          providerCount: providers.length,
+          serviceCount: services.length,
+          serviceRequests: services.reduce((total, service) => total + service.metrics.requests, 0),
+          apiRequests: services.reduce((total, service) => total + service.apiRequests, 0),
+        },
+      },
+      filters: {
+        startDate,
+        endDate,
+        appliedStartTimestamp: startTimestamp,
+        appliedEndTimestamp: endTimestamp,
+      },
+    });
+  } catch (error) {
+    if (error.code === "42P01") {
+      return res.status(200).json({
+        success: true,
+        data: { providers: [], summary: { providerCount: 0, serviceCount: 0, serviceRequests: 0, apiRequests: 0 } },
+        filters: { startDate, endDate, appliedStartTimestamp: startTimestamp, appliedEndTimestamp: endTimestamp },
+        warning: "External telemetry tables are not available yet.",
+      });
+    }
+
+    console.error("Error fetching service snapshot:", error);
+    return res.status(500).json({ success: false, error: "Error fetching service snapshot" });
+  }
+}
+
+module.exports = { getServiceSnapshot };

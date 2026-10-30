@@ -10,6 +10,8 @@ const sessionRoutes = require("./routes/sessionRoutes");
 const feedbackRoutes = require("./routes/feedbackRoutes");
 const errorRoutes = require("./routes/errorRoutes");
 const dashboardRoutes = require("./routes/dashboard.Routes");
+const serviceSnapshotRoutes = require("./routes/serviceSnapshotRoutes");
+const individualApiCallsRoutes = require("./routes/individualApiCallsRoutes");
 const authController = require("./controllers/auth.controller");
 const leaderboardRoutes = require("./routes/leaderboard.Routes");
 const villageRoutes = require("./routes/villageRoutes");
@@ -23,6 +25,9 @@ const app = express();
 
 app.use(express.json({ limit: "2mb" }));
 app.set("trust proxy", true);
+
+morgan.token('safe-url', req => req.route?.path || '[unmatched]');
+app.use(morgan(':method :safe-url :status :response-time ms'));
 
 // app.use(cors());
 app.use(
@@ -109,16 +114,6 @@ app.get("/health", async (req, res) => {
   }
 });
 
-// Schedule health check to run every hour
-cron.schedule('0 * * * *', async () => {
-  console.log('Running scheduled health check...');
-  try {
-    await checkHealthStatus({ notify: true });
-  } catch (error) {
-    console.error('Scheduled health check failed:', error);
-  }
-});
-
 app.use("/v1/leaderboard", leaderboardAuthController, leaderboardRoutes);
 app.use("/v1/internal/evaluations", evaluationWorkerAuth, internalEvaluationRoutes);
 // app.use("/", authController, (req, res) => {
@@ -131,16 +126,32 @@ app.use("/v1", authController, sessionRoutes);
 app.use("/v1", authController, feedbackRoutes);
 app.use("/v1", authController, errorRoutes);
 app.use("/v1", authController, dashboardRoutes);
+app.use("/v1", authController, serviceSnapshotRoutes);
+app.use("/v1", authController, individualApiCallsRoutes);
 app.use("/v1", authController, evaluationRoutes);
 app.use("/v1/api/villages", authController, villageRoutes);
-app.use(morgan("combined"));
 
 const PORT = process.env.PORT || 3000;
 
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Service is running on port ${PORT}`);
-});
-startEvaluationScheduler();
+let server;
+function startServer() {
+  if (server) return server;
+  // Schedule health check to run every hour
+  cron.schedule('0 * * * *', async () => {
+    console.log('Running scheduled health check...');
+    try {
+      await checkHealthStatus({ notify: true });
+    } catch (error) {
+      console.error('Scheduled health check failed:', error);
+    }
+  });
+
+  server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Service is running on port ${PORT}`);
+  });
+  startEvaluationScheduler();
+  return server;
+}
 
 // Graceful shutdown: close HTTP server and DB pool.
 // Call this on SIGTERM / SIGINT so Docker or orchestrator can stop cleanly.
@@ -163,16 +174,22 @@ async function shutdown(signal) {
   }
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+if (require.main === module) {
+  startServer();
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 
-// defensive crash handlers - log and exit so Docker restarts the container
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection at:", reason);
-  process.exit(1);
-});
+  // defensive crash handlers - log and exit so Docker restarts the container
+  process.on("unhandledRejection", (reason) => {
+    console.error("Unhandled Rejection at:", reason);
+    process.exit(1);
+  });
 
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception thrown:", err);
-  process.exit(1);
-});
+  process.on("uncaughtException", (err) => {
+    console.error("Uncaught Exception thrown:", err);
+    process.exit(1);
+  });
+
+}
+
+module.exports = { app, startServer, shutdown, checkHealthStatus };
