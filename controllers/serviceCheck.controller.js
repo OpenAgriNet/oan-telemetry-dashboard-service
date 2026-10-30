@@ -1,5 +1,9 @@
+const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
-const { getExtApiCallStats } = require("./becknExt.controller");
+const {
+  getExtApiCallStats,
+  buildExtApiCallFilters,
+} = require("./becknExt.controller");
 const {
   SERVICE_CHECKS,
   findServiceForApi,
@@ -101,6 +105,44 @@ function groupByService(apis, errorTypes) {
 }
 
 /**
+ * Tool calls per service: one user request (Beckn question) can make several
+ * upstream API calls, e.g. a PM-Kisan status check = verify OTP + user details
+ * + beneficiary status. Counted as distinct question_id, falling back to the
+ * Beckn transaction id, then the event mid.
+ * Service grouping mirrors findServiceForApi (configured prefix, else the text
+ * before the first "_").
+ */
+async function getToolCallsByService({ startDate, endDate, telemetryState }) {
+  const { where, queryParams } = buildExtApiCallFilters({
+    startDate,
+    endDate,
+    telemetryState,
+  });
+
+  let paramIndex = queryParams.length;
+  const cases = SERVICE_CHECKS.map((service) => {
+    queryParams.push(`${service.apiPrefix.replace(/[\\%_]/g, "\\$&")}%`);
+    queryParams.push(service.id);
+    paramIndex += 2;
+    return `WHEN api_service LIKE $${paramIndex - 1} THEN $${paramIndex}::text`;
+  }).join(" ");
+  const serviceExpr = `CASE ${cases} ELSE COALESCE(NULLIF(split_part(api_service, '_', 1), ''), 'unknown') END`;
+
+  const { rows } = await pool.query(
+    `
+    SELECT ${serviceExpr} AS service_id,
+           COUNT(DISTINCT COALESCE(question_id::text, NULLIF(beckn_transaction_id, ''), mid))::int AS tool_calls
+    FROM ext_api_calls
+    ${where}
+    GROUP BY 1
+    `,
+    queryParams,
+  );
+
+  return Object.fromEntries(rows.map((r) => [r.service_id, r.tool_calls]));
+}
+
+/**
  * GET /v1/service-check
  * Query: startDate, endDate, service (service id, e.g. "pmkisan")
  */
@@ -128,13 +170,23 @@ const getServiceCheckHandler = async (req, res) => {
         .json({ message: "Start date cannot be after end date" });
     }
 
-    const stats = await getExtApiCallStats({
-      startDate,
-      endDate,
-      telemetryState: req.telemetryState,
-    });
+    const [stats, toolCalls] = await Promise.all([
+      getExtApiCallStats({
+        startDate,
+        endDate,
+        telemetryState: req.telemetryState,
+      }),
+      getToolCallsByService({
+        startDate,
+        endDate,
+        telemetryState: req.telemetryState,
+      }),
+    ]);
 
-    let services = groupByService(stats.apis, stats.errorTypes);
+    let services = groupByService(stats.apis, stats.errorTypes).map((s) => ({
+      ...s,
+      toolCalls: toolCalls[s.id] || 0,
+    }));
     if (serviceId) {
       services = services.filter((s) => s.id === serviceId);
     }

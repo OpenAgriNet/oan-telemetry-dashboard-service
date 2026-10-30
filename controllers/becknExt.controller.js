@@ -780,7 +780,10 @@ const getBecknExtListHandler = async (req, res) => {
  *          error    - upstream unreachable / timeout / non-2xx / unreadable
  * Rows without an outcome (older senders) count as error when success = false.
  */
-async function getExtApiCallStats({
+/**
+ * Shared WHERE for ext_api_calls: state channel, ets date range, api filters.
+ */
+function buildExtApiCallFilters({
   startDate = null,
   endDate = null,
   apiService = null,
@@ -822,6 +825,25 @@ async function getExtApiCallStats({
     where += ` AND api_service LIKE $${paramIndex}`;
     queryParams.push(`${apiPrefix.replace(/[\\%_]/g, "\\$&")}%`);
   }
+
+  return { where, queryParams, paramIndex, startTimestamp, endTimestamp };
+}
+
+async function getExtApiCallStats({
+  startDate = null,
+  endDate = null,
+  apiService = null,
+  apiPrefix = null,
+  telemetryState = null,
+} = {}) {
+  const { where, queryParams, startTimestamp, endTimestamp } =
+    buildExtApiCallFilters({
+      startDate,
+      endDate,
+      apiService,
+      apiPrefix,
+      telemetryState,
+    });
 
   const countColumns = `
       COUNT(*)::int AS total,
@@ -960,6 +982,7 @@ module.exports = {
   // exported for tests / reuse
   getBecknExtStats,
   getExtApiCallStats,
+  buildExtApiCallFilters,
   fetchBecknExtRows,
   fetchBecknExtLifecycle,
   formatBecknExtLifecycle,
