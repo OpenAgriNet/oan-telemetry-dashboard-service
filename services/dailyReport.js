@@ -236,7 +236,7 @@ function renderHtml(data) {
         </td>
       </tr>
       <tr>
-        <td style="padding:12px 20px 8px;">
+        <td style="padding:12px 20px 20px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #e5e7eb;">
             <tr>
               <th align="left" style="${head}">API</th>
@@ -248,13 +248,6 @@ function renderHtml(data) {
             ${rows.map((r) => renderRow(r)).join("")}
             ${renderRow(total, true)}
           </table>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:8px 20px 20px;font-size:12px;line-height:1.5;color:#6b7280;">
-          Tool calls = user requests to the PM KISAN tool (one request can make several API calls).<br>
-          Success % = completed ÷ requests. Rejected = PM KISAN answered but refused (e.g. wrong OTP); error = timeout, network or HTTP failure.<br>
-          Sent automatically by the Vistaar telemetry dashboard.
         </td>
       </tr>
     </table>
@@ -278,8 +271,6 @@ function renderText(data) {
     `${"API".padEnd(width)} ${"Requests".padStart(8)} ${"Success %".padStart(10)} ${"Avg latency".padStart(12)}`,
     ...rows.map(line),
     line(total),
-    "",
-    "Success % = completed / requests. Rejected = PM KISAN refused (e.g. wrong OTP); error = timeout, network or HTTP failure.",
   ].join("\n");
 }
 
