@@ -31,7 +31,8 @@ const {
  *
  * To add a report, add an entry to DAILY_REPORTS. Its rows are every API of
  * the service in utils/serviceCheckConfig.js (same as the Service Check page)
- * plus any other api_service seen for that service; rowLabels renames rows.
+ * plus any other api_service seen for that service; rowLabels renames rows
+ * and excludeApis leaves rows out of the email.
  */
 const DAILY_REPORTS = [
   {
@@ -45,6 +46,7 @@ const DAILY_REPORTS = [
       pmkisan_verify_otp: "OTP VALIDATE",
       pmkisan_beneficiary_status: "STATUS CHECK",
     },
+    excludeApis: ["pmkisan_grievance_aadhaar_token"],
   },
 ];
 
@@ -109,7 +111,8 @@ async function buildReportData(report, endMs = Date.now()) {
       .sort(),
   ];
 
-  const rows = apiServices.map((apiService) => {
+  const excluded = new Set(report.excludeApis || []);
+  const rows = apiServices.filter((a) => !excluded.has(a)).map((apiService) => {
     const label = (
       report.rowLabels?.[apiService] || getApiLabel(service, apiService)
     ).toUpperCase();
