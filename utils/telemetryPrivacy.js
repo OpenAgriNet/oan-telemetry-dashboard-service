@@ -8,7 +8,7 @@ function sanitizeApiCall(row) {
     const absolute = /^https?:\/\//i.test(endpoint);
     const url = new URL(endpoint, 'https://telemetry.invalid');
     return { ...row, endpoint: absolute ? `${url.origin}${url.pathname}` : url.pathname };
-  } catch (_) {
+  } catch {
     // Older endpoint strings may not be valid URLs. Keep the fallback that
     // removes their query string and fragment when URL parsing is unavailable.
     return { ...row, endpoint: endpoint.split(/[?#]/, 1)[0] };

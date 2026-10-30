@@ -133,6 +133,13 @@ test('URL-only login tokens are rejected without contacting an identity server',
   assert.equal(res.statusCode, 401);assert.equal(allowed, false);
 });
 
+test('malformed captured URLs retain the safe query-and-fragment fallback', () => {
+  const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
+  const row = { id: 1, endpoint: 'http://[invalid?api_key=SYNTHETIC_SECRET#private' };
+  assert.deepEqual(sanitizeApiCall(row), { id: 1, endpoint: 'http://[invalid' });
+  assert.equal(row.endpoint, 'http://[invalid?api_key=SYNTHETIC_SECRET#private');
+});
+
 test('importing the service starts no HTTP server, scheduled jobs or database queries', t => {
   const cron = require('node-cron');const express = require('express');
   const schedules = t.mock.method(cron, 'schedule', () => { throw new Error('Unexpected schedule'); });
