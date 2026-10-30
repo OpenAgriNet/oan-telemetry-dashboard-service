@@ -23,6 +23,8 @@ const exportRoutes = require("./routes/exportRoutes");
 const { initExportFeature } = require("./services/exportInit");
 const becknExtRoutes = require("./routes/becknExtRoutes");
 const serviceCheckRoutes = require("./routes/serviceCheckRoutes");
+const reportSettingsRoutes = require("./routes/reportSettingsRoutes");
+const { scheduleDailyReports } = require("./services/dailyReport");
 const pool = require("./services/db");
 const piiMaskingMiddleware = require("./middleware/piiMaskingMiddleware");
 const { ensureExportInfrastructure } = require("./middleware/ensureExportInfrastructure");
@@ -138,6 +140,9 @@ cron.schedule("0 * * * *", async () => {
   }
 });
 
+// Daily health report emails at 9 PM IST (only when DAILY_REPORT_ENABLED=true)
+scheduleDailyReports(cron);
+
 // Public CSV download — no auth required (for Google Sheets / sharing).
 const { downloadExportPublic } = require("./controllers/exports.controller");
 app.get(
@@ -168,6 +173,7 @@ app.use("/v1", notificationsRoutes);
 app.use("/v1", exportRoutes);
 app.use("/v1", becknExtRoutes);
 app.use("/v1", serviceCheckRoutes);
+app.use("/v1", reportSettingsRoutes);
 app.use("/v1/api/villages", villageRoutes);
 app.use(morgan("combined"));
 

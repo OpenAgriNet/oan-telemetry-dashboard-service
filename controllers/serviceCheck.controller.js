@@ -210,4 +210,5 @@ module.exports = {
   getServiceCheckHandler,
   // exported for tests / reuse
   groupByService,
+  getToolCallsByService,
 };
