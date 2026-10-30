@@ -168,7 +168,7 @@ async function getTotalLikesDislikesCount(search = '', startDate = null, endDate
 }
 
 function formatFeedbackData(feedbackItem) {
-    const eventTime = feedbackItem.ets == null ? NaN : Number(feedbackItem.ets);
+    const eventTime = feedbackItem.ets == null ? Number.NaN : Number(feedbackItem.ets);
     const feedbackTime = Number.isFinite(eventTime) ? formatDateToIST(eventTime) : null;
 
     return {

@@ -20,7 +20,53 @@ const { parseDateRange } = require('../utils/dateUtils');
 const response = () => ({ statusCode: 200, status(value) { this.statusCode = value;return this; }, json(body) { this.body = body;return this; } });
 const report = { database: 'mh-17-10', publicBusinessWrites: 0, checks: {} };
 
-(async () => {
+async function verifyServiceReports(connection, query, occurrence) {
+  const endpoint = '/webservices/fetch_nearest_five_common_data_by_location_and_category';
+  for (let i = 0; i < 15; i++) {
+    const category = i < 10 ? 'chc' : 'rent';
+    const success = i < 9 || i === 10;
+    await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,duration_ms,event_time,request_payload)
+      VALUES($1,'provider_request','beckn_external_api','mh-provider-backend','/provider','POST',$2,$3,$4,$5)`,
+      [`synthetic-provider-${i}`, success ? 'success' : 'failure', i < 10 ? 100 : 900, new Date(occurrence),
+        { message: { intent: { category: { descriptor: { code: category } } } } }]);
+  }
+  const directIds = [];
+  for (const category of ['chc', 'rent']) {
+    const inserted = await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,event_time,request_payload,response_payload)
+      VALUES($1,'provider_webservice_call','beckn_external_api','mh-provider-backend',$2,'POST','success',$3,$4,'null'::jsonb) RETURNING id`,
+      [`synthetic-api-${category}`, `https://test-user:test-password@example.invalid${endpoint}?api_key=SYNTHETIC_SECRET`, new Date(occurrence), { category }]);
+    directIds.push(inserted.rows[0].id);
+  }
+  await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,event_time)
+    VALUES('synthetic-standalone','provider_webservice_call','beckn_external_api','mh-provider-backend','/webservices/warehouse_center_info','POST','success',$1)`, [new Date(occurrence)]);
+  const snapshot = response();await getServiceSnapshot({ query }, snapshot);
+  assert.equal(snapshot.statusCode, 200);
+  const service = snapshot.body.data.providers[0].services.find(row => row.key === 'chc');
+  assert.equal(service.metrics.requests, 15);assert.equal(service.metrics.successfulRequests, 10);
+  assert.equal(service.metrics.failedRequests, 5);assert.equal(service.metrics.p90LatencyMs, 900);assert.equal(service.metrics.maxLatencyMs, 900);
+  assert.equal(service.apis.length, 2);assert.notEqual(service.apis[0].key, service.apis[1].key);
+  for (const api of service.apis) {
+    const calls = response();await getServiceApiCalls({ query: { ...query, sourceService: api.sourceService, endpoint: api.endpoint,
+      method: api.method, kind: api.kind, categories: JSON.stringify(api.scopeCategories) } }, calls);
+    assert.equal(calls.statusCode, 200);assert.equal(calls.body.pagination.total, 1);
+    assert.equal(calls.body.data.calls[0].has_response_payload, false);
+    assert.ok(!JSON.stringify(calls.body).includes('SYNTHETIC_SECRET'));
+  }
+  const detail = response();await getIndividualApiCall({ params: { id: String(directIds[0]) } }, detail);
+  assert.equal(detail.statusCode, 200);assert.ok(!detail.body.data.endpoint.includes('test-password'));
+  assert.ok(!detail.body.data.endpoint.includes('SYNTHETIC_SECRET'));
+  const individual = response();await getIndividualApiCalls({ query }, individual);
+  assert.equal(individual.statusCode, 200);assert.equal(individual.body.pagination.total, 18);
+  assert.ok(individual.body.data.calls.some(call => call.endpoint === '/webservices/warehouse_center_info'));
+  assert.equal(snapshot.body.data.summary.apiRequests, 2);
+  report.checks.combined_totals_and_true_percentile = { requests: 15, p90: 900, max: 900 };
+  report.checks.separate_api_group_drilldowns = true;
+  report.checks.older_url_credentials_hidden = true;
+  report.checks.older_json_null_flags = true;
+  report.checks.standalone_visibility_policy_unchanged = true;
+}
+
+async function main() {
   let connection;
   try {
     connection = await local.connect();
@@ -109,49 +155,7 @@ const report = { database: 'mh-17-10', publicBusinessWrites: 0, checks: {} };
     report.checks.feedback_comment_policy = { stored: feedbackCases.length, reported: 5, likes: 4, dislikes: 1, invalidRowsRetained: true };
     report.checks.late_error_and_ist_boundary = true;
 
-    const endpoint = '/webservices/fetch_nearest_five_common_data_by_location_and_category';
-    for (let i = 0; i < 15; i++) {
-      const category = i < 10 ? 'chc' : 'rent';
-      const success = i < 9 || i === 10;
-      await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,duration_ms,event_time,request_payload)
-        VALUES($1,'provider_request','beckn_external_api','mh-provider-backend','/provider','POST',$2,$3,$4,$5)`,
-        [`synthetic-provider-${i}`, success ? 'success' : 'failure', i < 10 ? 100 : 900, new Date(occurrence),
-          { message: { intent: { category: { descriptor: { code: category } } } } }]);
-    }
-    const directIds = [];
-    for (const category of ['chc', 'rent']) {
-      const inserted = await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,event_time,request_payload,response_payload)
-        VALUES($1,'provider_webservice_call','beckn_external_api','mh-provider-backend',$2,'POST','success',$3,$4,'null'::jsonb) RETURNING id`,
-        [`synthetic-api-${category}`, `https://test-user:test-password@example.invalid${endpoint}?api_key=SYNTHETIC_SECRET`, new Date(occurrence), { category }]);
-      directIds.push(inserted.rows[0].id);
-    }
-    await connection.query(`INSERT INTO pg_temp.external_api_events(event_mid,event_name,trace_scope,service,endpoint,method,outcome,event_time)
-      VALUES('synthetic-standalone','provider_webservice_call','beckn_external_api','mh-provider-backend','/webservices/warehouse_center_info','POST','success',$1)`, [new Date(occurrence)]);
-    const snapshot = response();await getServiceSnapshot({ query }, snapshot);
-    assert.equal(snapshot.statusCode, 200);
-    const service = snapshot.body.data.providers[0].services.find(row => row.key === 'chc');
-    assert.equal(service.metrics.requests, 15);assert.equal(service.metrics.successfulRequests, 10);
-    assert.equal(service.metrics.failedRequests, 5);assert.equal(service.metrics.p90LatencyMs, 900);assert.equal(service.metrics.maxLatencyMs, 900);
-    assert.equal(service.apis.length, 2);assert.notEqual(service.apis[0].key, service.apis[1].key);
-    for (const api of service.apis) {
-      const calls = response();await getServiceApiCalls({ query: { ...query, sourceService: api.sourceService, endpoint: api.endpoint,
-        method: api.method, kind: api.kind, categories: JSON.stringify(api.scopeCategories) } }, calls);
-      assert.equal(calls.statusCode, 200);assert.equal(calls.body.pagination.total, 1);
-      assert.equal(calls.body.data.calls[0].has_response_payload, false);
-      assert.ok(!JSON.stringify(calls.body).includes('SYNTHETIC_SECRET'));
-    }
-    const detail = response();await getIndividualApiCall({ params: { id: String(directIds[0]) } }, detail);
-    assert.equal(detail.statusCode, 200);assert.ok(!detail.body.data.endpoint.includes('test-password'));
-    assert.ok(!detail.body.data.endpoint.includes('SYNTHETIC_SECRET'));
-    const individual = response();await getIndividualApiCalls({ query }, individual);
-    assert.equal(individual.statusCode, 200);assert.equal(individual.body.pagination.total, 18);
-    assert.ok(individual.body.data.calls.some(call => call.endpoint === '/webservices/warehouse_center_info'));
-    assert.equal(snapshot.body.data.summary.apiRequests, 2);
-    report.checks.combined_totals_and_true_percentile = { requests: 15, p90: 900, max: 900 };
-    report.checks.separate_api_group_drilldowns = true;
-    report.checks.older_url_credentials_hidden = true;
-    report.checks.older_json_null_flags = true;
-    report.checks.standalone_visibility_policy_unchanged = true;
+    await verifyServiceReports(connection, query, occurrence);
     report.success = true;
   } catch (error) {
     report.success = false;report.error = { code: error.code || error.name, message: error.message };process.exitCode = 1;
@@ -161,4 +165,9 @@ const report = { database: 'mh-17-10', publicBusinessWrites: 0, checks: {} };
     if (process.env.LOCAL_TEST_REPORT) fs.writeFileSync(process.env.LOCAL_TEST_REPORT, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report));
   }
-})();
+}
+
+main().catch(error => {
+  console.error('Local database audit cleanup failed:', error.code || error.name);
+  process.exitCode = 1;
+});

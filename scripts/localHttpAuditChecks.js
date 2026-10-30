@@ -14,7 +14,7 @@ let issuerServer, server, pool;
 const logs = [];
 const write = process.stdout.write;
 const report = { database: 'mh-17-10', loopbackOnly: true, readOnly: true, checks: {} };
-(async () => {
+async function main() {
   try {
     const jose = await import('jose');
     const pair = await jose.generateKeyPair('RS256', { extractable: true });
@@ -34,7 +34,13 @@ const report = { database: 'mh-17-10', loopbackOnly: true, readOnly: true, check
     const ordinary = await token([]), viewer = await token(['telemetry-detail-viewer']);
     const headers = { Authorization: `Bearer ${ordinary}` };
     process.stdout.write = function(chunk, encoding, callback) {
-      logs.push(String(chunk));if (typeof encoding === 'function') encoding();else if (typeof callback === 'function') callback();return true;
+      logs.push(String(chunk));
+      if (typeof encoding === 'function') {
+        encoding();
+      } else if (typeof callback === 'function') {
+        callback();
+      }
+      return true;
     };
     const dates = 'startDate=2026-10-14T00%3A00%3A00.000&endDate=2026-10-14T23%3A59%3A59.999';
     assert.equal((await fetch(`${base}/v1/errors?token=${ordinary}`)).status, 401);
@@ -62,4 +68,10 @@ const report = { database: 'mh-17-10', loopbackOnly: true, readOnly: true, check
     if (process.env.LOCAL_TEST_REPORT) fs.writeFileSync(process.env.LOCAL_TEST_REPORT, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report));
   }
-})();
+}
+
+main().catch(error => {
+  process.stdout.write = write;
+  console.error('Local HTTP audit cleanup failed:', error.code || error.name);
+  process.exitCode = 1;
+});
