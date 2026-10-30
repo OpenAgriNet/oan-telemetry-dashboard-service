@@ -1,6 +1,11 @@
 const nodemailer = require("nodemailer");
 const pool = require("./db");
 const { STATE_CONFIG } = require("../utils/stateAccess");
+const {
+  SERVICE_CHECKS,
+  findServiceForApi,
+  getApiLabel,
+} = require("../utils/serviceCheckConfig");
 const { getExtApiCallStats } = require("../controllers/becknExt.controller");
 const {
   getToolCallsByService,
@@ -24,7 +29,9 @@ const {
  *   DAILY_REPORT_CRON        cron expression in IST (default "0 21 * * *")
  *   DAILY_REPORT_RECIPIENTS  used when no recipients are saved in Settings
  *
- * To add a report, add an entry to DAILY_REPORTS.
+ * To add a report, add an entry to DAILY_REPORTS. Its rows are every API of
+ * the service in utils/serviceCheckConfig.js (same as the Service Check page)
+ * plus any other api_service seen for that service; rowLabels renames rows.
  */
 const DAILY_REPORTS = [
   {
@@ -33,11 +40,11 @@ const DAILY_REPORTS = [
     stateId: "bharat-vistaar",
     subject: "PM KISAN status check daily health check",
     title: "PM KISAN status check — daily health check",
-    rows: [
-      { apiService: "pmkisan_send_otp", label: "PM KISAN OTP SEND" },
-      { apiService: "pmkisan_verify_otp", label: "OTP VALIDATE" },
-      { apiService: "pmkisan_beneficiary_status", label: "STATUS CHECK" },
-    ],
+    rowLabels: {
+      pmkisan_send_otp: "PM KISAN OTP SEND",
+      pmkisan_verify_otp: "OTP VALIDATE",
+      pmkisan_beneficiary_status: "STATUS CHECK",
+    },
   },
 ];
 
@@ -87,7 +94,25 @@ async function buildReportData(report, endMs = Date.now()) {
     getToolCallsByService(range),
   ]);
 
-  const rows = report.rows.map(({ apiService, label }) => {
+  const service =
+    SERVICE_CHECKS.find((s) => s.id === report.serviceId) ||
+    findServiceForApi(`${report.serviceId}_`);
+  // Configured APIs in their order, then any other API seen for the service
+  const apiServices = [
+    ...Object.keys(service.apis),
+    ...stats.apis
+      .map((a) => a.apiService)
+      .filter(
+        (a) =>
+          a && findServiceForApi(a).id === report.serviceId && !(a in service.apis),
+      )
+      .sort(),
+  ];
+
+  const rows = apiServices.map((apiService) => {
+    const label = (
+      report.rowLabels?.[apiService] || getApiLabel(service, apiService)
+    ).toUpperCase();
     const api = stats.apis.find((a) => a.apiService === apiService) || {};
     const requests = api.total || 0;
     const completed = api.success || 0;
@@ -236,8 +261,9 @@ function renderHtml(data) {
 
 function renderText(data) {
   const { report, startMs, endMs, toolCalls, rows, total } = data;
+  const width = Math.max(...[...rows, total].map((r) => r.label.length), 3) + 2;
   const line = (r) =>
-    `${r.label.padEnd(18)} ${String(r.requests).padStart(8)} ${formatPercent(r.successRate).padStart(10)} ${formatLatency(r.avgLatencyMs).padStart(12)}   (${r.rejected} rejected, ${r.error} error)`;
+    `${r.label.padEnd(width)} ${String(r.requests).padStart(8)} ${formatPercent(r.successRate).padStart(10)} ${formatLatency(r.avgLatencyMs).padStart(12)}   (${r.rejected} rejected, ${r.error} error)`;
 
   return [
     report.title,
@@ -246,7 +272,7 @@ function renderText(data) {
     "",
     `Number of tool calls: ${toolCalls}`,
     "",
-    `${"API".padEnd(18)} ${"Requests".padStart(8)} ${"Success %".padStart(10)} ${"Avg latency".padStart(12)}`,
+    `${"API".padEnd(width)} ${"Requests".padStart(8)} ${"Success %".padStart(10)} ${"Avg latency".padStart(12)}`,
     ...rows.map(line),
     line(total),
     "",
