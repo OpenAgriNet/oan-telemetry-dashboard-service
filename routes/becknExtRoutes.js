@@ -9,6 +9,13 @@ router.use(requireStateAccess);
 // Filters: startDate, endDate, useCase (service_name)
 router.get("/beckn-ext/stats", becknExtController.getBecknExtStatsHandler);
 
+// Per-API call counts (success / rejected / error) from ext_api_calls
+// Filters: startDate, endDate, apiService, apiPrefix (e.g. pmkisan_)
+router.get(
+  "/beckn-ext/api-calls/stats",
+  becknExtController.getExtApiCallStatsHandler,
+);
+
 // Full lifecycle detail (must be before generic /beckn-ext if any param routes collide)
 // GET /beckn-ext/lifecycle/:questionId?sessionId=
 router.get(

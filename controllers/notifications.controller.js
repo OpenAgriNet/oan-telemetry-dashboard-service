@@ -166,6 +166,11 @@ async function getNotifications(req, res) {
           event_time,
           metadata,
           notification_id,
+          notification_description,
+          message_type,
+          category_type,
+          latitude,
+          longitude,
           action,
           reason,
           feedback,
@@ -266,8 +271,10 @@ async function getNotificationSummary(req, res) {
       endTimestamp,
     } = getCommonParams(req);
 
-    const result = await pool.query(
-      `
+    const queryParams = [exactChannels, prefixChannels, startTimestamp, endTimestamp];
+    const [result, categoryCountsResult] = await Promise.all([
+      pool.query(
+        `
         SELECT
           COUNT(*) FILTER (WHERE event_name = 'location_allowed') AS location_prompt_allowed,
           COUNT(*) FILTER (WHERE event_name = 'location_denied') AS location_prompt_denied,
@@ -311,12 +318,50 @@ async function getNotificationSummary(req, res) {
             OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($4::double precision / 1000.0)
           )
       `,
-      [exactChannels, prefixChannels, startTimestamp, endTimestamp],
-    );
+        queryParams,
+      ),
+      pool.query(
+        `
+          SELECT
+            category_type,
+            COUNT(*) AS count
+          FROM ui_interaction_events
+          WHERE event_name = 'notification_feedback_dislike_submitted'
+            AND category_type IS NOT NULL
+            AND BTRIM(category_type) <> ''
+            AND (
+              (
+                COALESCE(array_length($1::text[], 1), 0) = 0
+                AND COALESCE(array_length($2::text[], 1), 0) = 0
+              )
+              OR channel = ANY($1::text[])
+              OR EXISTS (
+                SELECT 1
+                FROM unnest($2::text[]) AS prefixes(prefix)
+                WHERE channel ILIKE prefixes.prefix || '%'
+              )
+            )
+            AND (
+              $3::double precision IS NULL
+              OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) >= to_timestamp($3::double precision / 1000.0)
+            )
+            AND (
+              $4::double precision IS NULL
+              OR COALESCE(event_time, to_timestamp(ets::double precision / 1000.0)) <= to_timestamp($4::double precision / 1000.0)
+            )
+          GROUP BY category_type
+          ORDER BY count DESC, category_type ASC
+        `,
+        queryParams,
+      ),
+    ]);
 
     res.json({
       success: true,
-      data: result.rows[0] || {},
+      data: {
+        ...(result.rows[0] || {}),
+        category_counts: categoryCountsResult.rows,
+      },
     });
   } catch (error) {
     console.error("Error fetching notification telemetry summary:", error);
@@ -349,6 +394,11 @@ async function getNotificationById(req, res) {
           event_time,
           metadata,
           notification_id,
+          notification_description,
+          message_type,
+          category_type,
+          latitude,
+          longitude,
           action,
           reason,
           feedback,
