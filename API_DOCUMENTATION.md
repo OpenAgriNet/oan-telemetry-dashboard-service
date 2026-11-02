@@ -2,6 +2,35 @@
 
 This document provides an overview of the available API endpoints.
 
+## Service Check
+
+**Endpoint:** `GET /v1/service-check`
+
+Requires bearer authentication and an authorized `x-telemetry-state` header.
+Optional query parameters are `startDate`, `endDate`, and `service` (`pmkisan` or
+`voice`). Dates accept date-only IST days, explicitly zoned ISO timestamps, or
+Unix milliseconds. Invalid dates or reversed ranges return 400; absent state
+returns 400, forbidden state returns 403, and query failures return 500.
+
+The response is `{ "services": [...], "filters": {...} }`. Each service includes
+`id`, `label`, `toolCalls`, `totals`, and `apis`. Each API row includes:
+
+- `apiService`, `label`
+- `total`, `success`, `failed`, `rejected`, `error`, `unknown`, `successRate`
+- `avgLatencyMs`, `maxLatencyMs`, `lastCallAt`, `errorTypes`
+
+`service=voice` selects **Voice / Chat Completions**
+(`apiService=voice_chat_completions`). `total` and `toolCalls` count recorded
+incoming voice requests, not underlying model calls or SSE chunks. A completed
+2xx response is successful; a completed 4xx response is rejected; server errors
+and unfinished/disconnected streams are errors, even after 200 stream headers.
+`failed` is rejected + error; `successRate` is rounded to a whole percentage.
+Configured API rows remain present with zeros and `lastCallAt=null` without data.
+
+Voice events use channel `BharatVistaar-voice` and appear in Bharat Vistaar.
+Metrics start after deploying the voice outcome producer and updated processor;
+historical voice turns have no reliable request-outcome data.
+
 ## Feedback API (`controllers/feedback.controller.js`)
 
 ### 1. Get All Feedback
