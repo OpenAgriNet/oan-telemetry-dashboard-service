@@ -42,6 +42,18 @@ test("scopes a fallback provider operation using its own service category", () =
   assert.deepEqual(parts.values.at(-1), ["(unclassified)"]);
 });
 
+test("scopes SMAM fallback calls by the same specific classification used in the summary", () => {
+  const scope = buildScope({ query: {
+    sourceService: "mh-provider-backend", endpoint: "/mh-vistaar/search", method: "POST",
+    kind: "fallback", categories: JSON.stringify(["smam-application-status"]),
+  } });
+  const parts = scopedQueryParts({ scope, range: { startTimestamp: null, endTimestamp: null }, outcome: "" });
+  assert.match(parts.where, /direct_event\.service = 'mh-provider-backend'/);
+  assert.match(parts.where, /\{message,intent,provider,id\}.*= 'smam'/);
+  assert.match(parts.where, /\{message,intent,item,descriptor,code\}.*= 'application_status'/);
+  assert.deepEqual(parts.values.at(-1), ["smam-application-status"]);
+});
+
 test("rejects invalid scoped API inputs", () => {
   assert.equal(buildScope({ query: { sourceService: "unknown", endpoint: "/x" } }).error, "Invalid source service");
   assert.equal(buildScope({ query: { sourceService: "mh-provider-backend", endpoint: "https://not-a-path" } }).error, "Invalid API endpoint");
