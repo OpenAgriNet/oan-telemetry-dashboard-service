@@ -2,6 +2,27 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildServiceSnapshot } = require("../services/serviceSnapshot");
 
+test("shows MahaDBT and SMAM status as separate MH Vistaar services with scoped fallback calls", () => {
+  const rows = [
+    ["farmer-details-info", "100"],
+    ["smam-application-status", "8"],
+  ].map(([service_category, service_requests]) => ({
+    source_service: "mh-provider-backend", service_category,
+    provider_endpoints: ["/mh-vistaar/search"], provider_methods: ["POST"],
+    service_requests, successful_requests: "0", failed_requests: service_requests,
+    p90_latency_ms: "1", max_latency_ms: "1",
+  }));
+  const [provider] = buildServiceSnapshot(rows, []);
+  assert.equal(provider.name, "MH Vistaar");
+  const maha = provider.services.find(service => service.name === "MahaDBT application status");
+  const smam = provider.services.find(service => service.name === "SMAM application status");
+  assert.equal(maha.metrics.requests, 100);
+  assert.equal(smam.metrics.requests, 8);
+  assert.deepEqual(maha.apis[0].scopeCategories, ["farmer-details-info"]);
+  assert.deepEqual(smam.apis[0].scopeCategories, ["smam-application-status"]);
+  assert.equal(smam.apis[0].kind, "fallback");
+});
+
 test("builds an MH Vistaar service row with its direct API child", () => {
   const providers = buildServiceSnapshot(
     [{

@@ -1,18 +1,7 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { buildServiceSnapshot, requestServiceKeySql } = require("../services/serviceSnapshot");
-
-const categoryExpression = (tableAlias = "") => `
-  COALESCE(
-    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,code}',
-    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,name}',
-    ${tableAlias}request_payload #>> '{message,order,items,0,category_ids,0}',
-    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,code}',
-    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,name}',
-    ${tableAlias}response_payload #>> '{message,order,items,0,category_ids,0}',
-    '(unclassified)'
-  )
-`;
+const { categoryExpression } = require("../services/serviceCategory");
 
 // These endpoints serve several business services. Their outbound payload
 // identifies the actual service (for example, { "category": "kvk" }), so a

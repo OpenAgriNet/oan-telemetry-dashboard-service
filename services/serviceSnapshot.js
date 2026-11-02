@@ -7,7 +7,9 @@ const SERVICE_CATEGORIES = {
   "mh-provider-backend": {
     "price-discovery": { key: "mandi", name: "Mandi", description: "APMC market-price information" },
     "schemes-agri": { key: "scheme-information", name: "Scheme information", description: "Agricultural scheme information" },
-    "dbt-application-status": { key: "dbt-application-status", name: "DBT application status", description: "DBT application-status information" },
+    "dbt-application-status": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
+    "farmer-details-info": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
+    "smam-application-status": { key: "smam-application-status", name: "SMAM application status", description: "SMAM application-status information" },
     "agristack_farmer_info": { key: "farmer-agristack", name: "Farmer / Agristack", description: "Farmer and land information" },
     "Weather-Forecast": { key: "weather-forecast", name: "Weather – Forecast", description: "IMD weather forecast for a location and date range" },
     "Weather-Historical": { key: "weather-historical", name: "Weather – Historical", description: "Historical and daily weather for a location and date range" },
