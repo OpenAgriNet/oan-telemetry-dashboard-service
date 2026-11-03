@@ -101,6 +101,15 @@ test('API rows that share an endpoint retain distinct group identities', () => {
   assert.deepEqual(rows.find(row => row.key === rows[1].key).scopeCategories, ['rent']);
 });
 
+test('API scope keys preserve text sorting for uppercase and accented categories', () => {
+  const service = { source_service: 'mh-provider-backend', service_category: 'chc', service_requests: '1', successful_requests: '1', failed_requests: '0', p90_latency_ms: null, max_latency_ms: null };
+  const endpoint = '/webservices/fetch_nearest_five_common_data_by_location_and_category';
+  const api = { ...service, service_categories: ['chc', 'é', 'Z', 'a'], method: 'POST', endpoint_path: endpoint, api_requests: '1' };
+  const result = buildServiceSnapshot([service], [api])[0].services[0].apis[0];
+  assert.deepEqual(result.scopeCategories, ['Z', 'a', 'chc', 'é']);
+  assert.equal(result.key, JSON.stringify(['POST', endpoint, ['Z', 'a', 'chc', 'é']]));
+});
+
 test('API list and detail responses hide query credentials from older captured records', async t => {
   const endpoint = 'https://test-user:test-secret@example.invalid/check?api_key=old-secret#token=old-token';
   t.mock.method(pool, 'query', async query => {
@@ -122,6 +131,13 @@ test('URL-only login tokens are rejected without contacting an identity server',
   const res = response();let allowed = false;
   await require('../controllers/auth.controller')({ headers: {}, query: { token: 'synthetic-url-token' } }, res, () => { allowed = true; });
   assert.equal(res.statusCode, 401);assert.equal(allowed, false);
+});
+
+test('malformed captured URLs retain the safe query-and-fragment fallback', () => {
+  const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
+  const row = { id: 1, endpoint: 'http://[invalid?api_key=SYNTHETIC_SECRET#private' };
+  assert.deepEqual(sanitizeApiCall(row), { id: 1, endpoint: 'http://[invalid' });
+  assert.equal(row.endpoint, 'http://[invalid?api_key=SYNTHETIC_SECRET#private');
 });
 
 test('importing the service starts no HTTP server, scheduled jobs or database queries', t => {

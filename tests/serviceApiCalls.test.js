@@ -40,6 +40,16 @@ test("scopes a fallback provider operation using its own service category", () =
   assert.match(parts.where, /direct_event\.request_payload/);
   assert.doesNotMatch(parts.from, /LEFT JOIN LATERAL/);
   assert.deepEqual(parts.values.at(-1), ["(unclassified)"]);
+  assert.match(parts.where, /advisory-agri-qdrant/);
+  assert.match(parts.where, /\{message,intent,provider,id\}/);
+});
+
+test("does not apply the provider-operation exclusions to direct API calls", () => {
+  const scope = buildScope({ query: {
+    sourceService: "mh-provider-backend", endpoint: "/webservices/example", method: "POST", kind: "direct",
+  } });
+  const parts = scopedQueryParts({ scope, range: { startTimestamp: null, endTimestamp: null }, outcome: "" });
+  assert.doesNotMatch(parts.where, /advisory-agri-qdrant|\{message,intent,provider,id\}/);
 });
 
 test("rejects invalid scoped API inputs", () => {

@@ -1,24 +1,13 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
+const { categoryExpression, includeProviderRequestExpression } = require('../services/serviceCategory');
 
 const PAGE_SIZE = 10;
 const SOURCE_SERVICES = new Set([
   "mh-provider-backend",
   "mh-pocradbt-provider-backend",
 ]);
-
-const categoryExpression = (tableAlias = "") => `
-  COALESCE(
-    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,code}',
-    ${tableAlias}request_payload #>> '{message,intent,category,descriptor,name}',
-    ${tableAlias}request_payload #>> '{message,order,items,0,category_ids,0}',
-    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,code}',
-    ${tableAlias}response_payload #>> '{message,intent,category,descriptor,name}',
-    ${tableAlias}response_payload #>> '{message,order,items,0,category_ids,0}',
-    '(unclassified)'
-  )
-`;
 
 function directApiCategoryExpression(tableAlias = "") {
   return `COALESCE(
@@ -94,6 +83,10 @@ function scopedQueryParts({ scope, range, outcome }) {
     "NULLIF(TRIM(direct_event.method), '') IS NOT DISTINCT FROM $4",
   ];
   let from = "external_api_events direct_event";
+
+  if (scope.kind === "fallback") {
+    where.push(includeProviderRequestExpression("direct_event."));
+  }
 
   if (scope.categories.length) {
     if (scope.kind === "fallback") {

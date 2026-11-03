@@ -2,6 +2,40 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildServiceSnapshot } = require("../services/serviceSnapshot");
 
+test("shows only mapped services when mapped and unmapped requests are mixed", () => {
+  const row = (source_service, service_category, extra = {}) => ({
+    source_service, service_category, service_requests: "1", successful_requests: "1", failed_requests: "0",
+    p90_latency_ms: "1", max_latency_ms: "1", ...extra,
+  });
+  const providers = buildServiceSnapshot([
+    row("mh-provider-backend", "farmer-details-info"),
+    row("mh-provider-backend", "unknown-category", { service_key: "unmapped-unknown-category" }),
+    row("mh-pocradbt-provider-backend", "(unclassified)", { provider_endpoints: ["/unknown"] }),
+    row("mh-pocradbt-provider-backend", "(unclassified)", { linked_api_endpoints: ["/api/ApplicationStatus/application-list"] }),
+  ], []);
+  assert.deepEqual(providers.map(provider => [provider.name, provider.services.map(service => service.name)]), [
+    ["MH Vistaar", ["MahaDBT application status"]],
+    ["POCRA", ["DBT application status"]],
+  ]);
+});
+
+test("shows MahaDBT status with scoped fallback calls", () => {
+  const rows = [
+    ["farmer-details-info", "100"],
+  ].map(([service_category, service_requests]) => ({
+    source_service: "mh-provider-backend", service_category,
+    provider_endpoints: ["/mh-vistaar/search"], provider_methods: ["POST"],
+    service_requests, successful_requests: "0", failed_requests: service_requests,
+    p90_latency_ms: "1", max_latency_ms: "1",
+  }));
+  const [provider] = buildServiceSnapshot(rows, []);
+  assert.equal(provider.name, "MH Vistaar");
+  const maha = provider.services.find(service => service.name === "MahaDBT application status");
+  assert.equal(maha.metrics.requests, 100);
+  assert.deepEqual(maha.apis[0].scopeCategories, ["farmer-details-info"]);
+  assert.equal(maha.apis[0].kind, "fallback");
+});
+
 test("builds an MH Vistaar service row with its direct API child", () => {
   const providers = buildServiceSnapshot(
     [{
@@ -90,7 +124,7 @@ test("classifies an unclassified DBT status request from its linked upstream API
   assert.equal(service.apis[0].endpoint, "/api/ApplicationStatus/application-list");
 });
 
-test("keeps an unclassified request visible with its real endpoint", () => {
+test("omits an unclassified request without a mapped endpoint", () => {
   const providers = buildServiceSnapshot(
     [{
       source_service: "mh-pocradbt-provider-backend",
@@ -106,9 +140,7 @@ test("keeps an unclassified request visible with its real endpoint", () => {
     []
   );
 
-  const service = providers[0].services[0];
-  assert.equal(service.name, "Unclassified: /mh-vistaar/unknown");
-  assert.equal(service.apis[0].endpoint, "/mh-vistaar/unknown");
+  assert.deepEqual(providers, []);
 });
 
 test("keeps an uncaptured HTTP method empty instead of assuming POST", () => {
@@ -168,7 +200,7 @@ test("shows a captured unmapped API under its known parent service", () => {
   assert.equal(service.apis[0].endpoint, "/webservices/new-market-endpoint");
 });
 
-test("shows a captured unmapped API under the real unclassified provider route", () => {
+test("omits an unmapped service even when it has an observed API", () => {
   const providers = buildServiceSnapshot(
     [{
       source_service: "mh-pocradbt-provider-backend",
@@ -194,10 +226,7 @@ test("shows a captured unmapped API under the real unclassified provider route",
     }]
   );
 
-  const service = providers[0].services[0];
-  assert.equal(service.name, "Unclassified: /mh-vistaar/status");
-  assert.equal(service.apis[0].endpoint, "/api/new-status-endpoint");
-  assert.equal(service.apis[0].method, null);
+  assert.deepEqual(providers, []);
 });
 
 test("does not duplicate a fixed-mapped API when its parent categories differ", () => {

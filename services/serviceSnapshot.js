@@ -7,7 +7,8 @@ const SERVICE_CATEGORIES = {
   "mh-provider-backend": {
     "price-discovery": { key: "mandi", name: "Mandi", description: "APMC market-price information" },
     "schemes-agri": { key: "scheme-information", name: "Scheme information", description: "Agricultural scheme information" },
-    "dbt-application-status": { key: "dbt-application-status", name: "DBT application status", description: "DBT application-status information" },
+    "dbt-application-status": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
+    "farmer-details-info": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
     "agristack_farmer_info": { key: "farmer-agristack", name: "Farmer / Agristack", description: "Farmer and land information" },
     "Weather-Forecast": { key: "weather-forecast", name: "Weather – Forecast", description: "IMD weather forecast for a location and date range" },
     "Weather-Historical": { key: "weather-historical", name: "Weather – Historical", description: "Historical and daily weather for a location and date range" },
@@ -116,7 +117,7 @@ function getApiDefinition(sourceService, endpointPath) {
 }
 
 function requestServiceKeySql(source, category, linkedEndpoint, providerEndpoint) {
-  const literal = value => `'${String(value).replace(/'/g, "''")}'`;
+  const literal = value => `'${String(value).replaceAll("'", "''")}'`;
   const cases = [];
   for (const [provider, categories] of Object.entries(SERVICE_CATEGORIES)) {
     for (const [raw, definition] of Object.entries(categories)) {
@@ -140,10 +141,13 @@ function combineMetrics(left, right) {
   // SQL groups by the final service key and computes its true percentile.
   // If a non-SQL caller supplies separate pre-aggregated rows, percentiles
   // cannot be added or averaged. Keep that combined value unavailable.
+  let p90LatencyMs = null;
+  if (left.requests === 0) p90LatencyMs = right.p90LatencyMs;
+  else if (right.requests === 0) p90LatencyMs = left.p90LatencyMs;
   return toMetrics({ service_requests: left.requests + right.requests,
     successful_requests: left.successfulRequests + right.successfulRequests,
     failed_requests: left.failedRequests + right.failedRequests,
-    p90_latency_ms: left.requests === 0 ? right.p90LatencyMs : right.requests === 0 ? left.p90LatencyMs : null,
+    p90_latency_ms: p90LatencyMs,
     max_latency_ms: max.length ? Math.max(...max) : null }, 'service_requests');
 }
 
@@ -174,41 +178,73 @@ function getRequestServiceDefinition(row) {
   return fallbackService(row.service_category);
 }
 
-function buildServiceSnapshot(serviceRows, apiRows) {
-  const providers = new Map();
+function ensureService(providers, providerName, definition) {
+  if (!providers.has(providerName)) {
+    providers.set(providerName, { name: providerName, services: new Map() });
+  }
 
-  const ensureService = (providerName, definition) => {
-    if (!providers.has(providerName)) {
-      providers.set(providerName, { name: providerName, services: new Map() });
-    }
+  const services = providers.get(providerName).services;
+  if (!services.has(definition.key)) {
+    services.set(definition.key, {
+      ...definition,
+      metrics: null,
+      apis: [],
+      serviceCategories: [],
+      providerEndpoints: [],
+      providerMethods: [],
+    });
+  }
+  return services.get(definition.key);
+}
 
-    const services = providers.get(providerName).services;
-    if (!services.has(definition.key)) {
-      services.set(definition.key, {
-        ...definition,
-        metrics: null,
-        apis: [],
-        serviceCategories: [],
-        providerEndpoints: [],
-        providerMethods: [],
-      });
-    }
-    return services.get(definition.key);
-  };
-
+function appendServiceRows(providers, serviceRows) {
   for (const row of serviceRows) {
     const providerName = PROVIDERS[row.source_service];
     if (!providerName) continue;
 
     const canonical = Object.values(SERVICE_CATEGORIES[row.source_service] || {})
       .find(definition => definition.key === row.service_key);
-    const service = ensureService(providerName, canonical || getRequestServiceDefinition(row));
+    const service = ensureService(providers, providerName, canonical || getRequestServiceDefinition(row));
     service.metrics = combineMetrics(service.metrics, toMetrics(row, "service_requests"));
     service.serviceCategories.push(...asArray(row.service_categories || row.service_category));
     service.providerEndpoints.push(...asArray(row.provider_endpoints));
     service.providerMethods.push(...asArray(row.provider_methods));
   }
+}
 
+function getApiRowServiceDefinition(row, definition, serviceCategories) {
+  const categoryDefinitions = serviceCategories
+    .map((category) => SERVICE_CATEGORIES[row.source_service]?.[category])
+    .filter(Boolean);
+  const distinctCategoryDefinitions = [...new Map(
+    categoryDefinitions.map((categoryDefinition) => [categoryDefinition.key, categoryDefinition])
+  ).values()];
+  const categoryDefinition = distinctCategoryDefinitions.length === 1 ? distinctCategoryDefinitions[0] : null;
+  // Shared common-data APIs describe their business service in their own
+  // outbound payload. That is more specific than a trace, which may contain
+  // several provider operations.
+  if (definition?.serviceKey === "service-locations" && categoryDefinition) return categoryDefinition;
+  if (definition) return getServiceDefinitionByKey(row.source_service, definition.serviceKey);
+  if (categoryDefinition) return categoryDefinition;
+
+  const parentProviderEndpoint = asArray(row.parent_provider_endpoints || row.parent_provider_endpoint)[0];
+  if (serviceCategories.includes("(unclassified)") && parentProviderEndpoint) {
+    return fallbackService(`Unclassified: ${parentProviderEndpoint}`);
+  }
+  return fallbackService("Unmapped service");
+}
+
+function compareScopeCategories(left, right) {
+  // Keep the original UTF-16 text order: these names are part of stable API
+  // group keys. Locale-dependent sorting would change existing drilldown keys.
+  const leftText = String(left);
+  const rightText = String(right);
+  if (leftText < rightText) return -1;
+  if (leftText > rightText) return 1;
+  return 0;
+}
+
+function appendApiRows(providers, apiRows) {
   for (const row of apiRows) {
     const providerName = PROVIDERS[row.source_service];
     if (!providerName) continue;
@@ -217,36 +253,14 @@ function buildServiceSnapshot(serviceRows, apiRows) {
     const serviceCategories = asArray(
       row.service_categories || row.service_category || row.parent_service_categories || row.parent_service_category
     );
-    const categoryDefinitions = serviceCategories
-      .map((category) => SERVICE_CATEGORIES[row.source_service]?.[category])
-      .filter(Boolean);
-    const distinctCategoryDefinitions = [...new Map(
-      categoryDefinitions.map((categoryDefinition) => [categoryDefinition.key, categoryDefinition])
-    ).values()];
-    const categoryDefinition = distinctCategoryDefinitions.length === 1 ? distinctCategoryDefinitions[0] : null;
-    const parentProviderEndpoint = asArray(
-      row.parent_provider_endpoints || row.parent_provider_endpoint
-    )[0];
-    // Shared common-data APIs describe their business service in their own
-    // outbound payload. That is more specific than a trace, which may contain
-    // several provider operations.
-    const serviceDefinition = definition?.serviceKey === "service-locations" && categoryDefinition
-      ? categoryDefinition
-      : definition
-        ? getServiceDefinitionByKey(row.source_service, definition.serviceKey)
-        : categoryDefinition
-          || (
-            serviceCategories.includes("(unclassified)") && parentProviderEndpoint
-              ? fallbackService(`Unclassified: ${parentProviderEndpoint}`)
-              : fallbackService("Unmapped service")
-          );
     const service = ensureService(
+      providers,
       providerName,
-      serviceDefinition
+      getApiRowServiceDefinition(row, definition, serviceCategories)
     );
 
     const scopeCategories = (definition?.serviceKey === 'service-locations' || !definition)
-      ? [...new Set(serviceCategories.filter(Boolean))].sort() : [];
+      ? [...new Set(serviceCategories.filter(Boolean))].sort(compareScopeCategories) : [];
     service.apis.push({
       key: scopeCategories.length ? JSON.stringify([row.method || '', row.endpoint_path, scopeCategories])
         : `${row.method || ""}-${row.endpoint_path}`,
@@ -260,13 +274,20 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       metrics: toMetrics(row, "api_requests"),
     });
   }
+}
 
+function buildServiceSnapshot(serviceRows, apiRows) {
+  const providers = new Map();
+  appendServiceRows(providers, serviceRows);
+  appendApiRows(providers, apiRows);
   const snapshot = Array.from(providers.values())
     .map((provider) => ({
       name: provider.name,
       services: Array.from(provider.services.values())
         .map((service) => {
-          if (!service.metrics) return null;
+          // Unknown categories and routes remain in Individual APIs, but do not
+          // constitute mapped business services in the performance overview.
+          if (!service.metrics || service.key.startsWith("unmapped-")) return null;
 
           if (!service.apis.length) {
             service.apis.push({

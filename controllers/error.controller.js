@@ -180,7 +180,7 @@ async function getErrorStats(search = "", startDate = null, endDate = null) {
 }
 
 function formatErrorData(errorItem) {
-  const eventTime = errorItem.ets === null || errorItem.ets === undefined ? NaN : Number(errorItem.ets);
+  const eventTime = errorItem.ets === null || errorItem.ets === undefined ? Number.NaN : Number(errorItem.ets);
   const istDateTime = Number.isFinite(eventTime) && !Number.isNaN(new Date(eventTime).getTime())
     ? formatUTCToISTDateTime(new Date(eventTime))
     : { date: null, time: null, fullDate: null };
@@ -445,7 +445,7 @@ const getErrorGraph = async (req, res) => {
     const { startDate, endDate } = req.query;
     const grouping = { hour: 'hour', hourly: 'hour', day: 'day', daily: 'day', week: 'week', weekly: 'week', month: 'month', monthly: 'month' };
     const requested = String(req.query.granularity || 'day').trim();
-    const granularity = Object.prototype.hasOwnProperty.call(grouping, requested) ? grouping[requested] : null;
+    const granularity = Object.hasOwn(grouping, requested) ? grouping[requested] : null;
     if (!granularity) return res.status(400).json({ error: 'Unsupported graph grouping' });
     const { startTimestamp, endTimestamp } = parseDateRange(startDate, endDate);
     if ((startDate && startTimestamp === null) || (endDate && endTimestamp === null)
