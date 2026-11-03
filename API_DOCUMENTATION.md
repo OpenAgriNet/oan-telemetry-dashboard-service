@@ -23,15 +23,16 @@ The response is `{ "services": [...], "filters": {...} }`. Each service includes
 "count": 3 }`, grouped per API within the same date/state filters and ordered by
 count descending. `rejectedTypes` includes only `outcome = "rejected"`; those
 requests remain excluded from `errorTypes`. The `errorType` field in
-`rejectedTypes` now contains the recorded rejection reason, with the `rejected:`
-prefix removed, whitespace normalized, and identifiers masked using the existing
-PII helper. Before grouping, `No Record Found...` is shortened to `No Record Found`,
+`rejectedTypes` contains a recognized short rejection label. The `rejected:`
+prefix is removed and whitespace normalized. Before grouping,
+`No Record Found...` is shortened to `No Record Found`,
 `Grievance already registered...` to `Grievance already registered.`, and
 exception messages to the class name, such as `System.IndexOutOfRangeException`.
 Stack traces and identifier-specific suffixes are not included in these labels.
-Identical shortened labels are merged per API after masking. Empty, `no message`, or
-`unknown` messages fall back to the recorded type or `unknown`. Raw messages are
-not returned as an additional field. Existing `errorTypes` still uses recorded
+Identical shortened labels are merged per API. All unmatched or missing messages
+use `unknown`, without falling back to the recorded rejection type. Thus invalid
+registration/OTP messages and unrecognized rejection codes are counted under
+`unknown`. Raw messages are not returned. Existing `errorTypes` still uses recorded
 types. For example, `rejectedTypes` may contain
 `[{ "errorType": "No Record Found", "count": 45 },
 { "errorType": "Grievance already registered.", "count": 1 },

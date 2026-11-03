@@ -94,7 +94,8 @@ test("stats and handler keep rejected types separate and apply identical filters
   const stats = await statsController.getExtApiCallStats({
     ...range, apiService: "voice_chat_completions", apiPrefix: "voice_",
   });
-  assert.equal(stats.rejectedTypes.length, 2);
+  assert.equal(stats.rejectedTypes.length, 1);
+  assert.equal(stats.rejectedTypes[0].errorType, "unknown");
   assert.equal(stats.rejectedTypes.reduce((sum, type) => sum + type.count, 0), counts.rejected);
   assert.equal(stats.errorTypes.length, 1);
   assert.equal(stats.errorTypes[0].count, 1);
@@ -125,9 +126,10 @@ test("stats and handler keep rejected types separate and apply identical filters
   }, res);
   assert.equal(status, 200);
   assert.equal(body.services.length, 1);
-  assert.equal(body.services[0].apis[0].rejectedTypes[0].count, 3);
-  assert.equal(body.services[0].apis[0].rejectedTypes[1].errorType, "unknown");
+  assert.equal(body.services[0].apis[0].rejectedTypes[0].count, 5);
+  assert.equal(body.services[0].apis[0].rejectedTypes[0].errorType, "unknown");
   assert.equal(body.services[0].apis[0].errorTypes[0].count, 1);
+  assert.equal(body.services[0].apis[0].errorTypes[0].errorType, "http_401");
 
   db.query = async () => ({ rows: [] });
   const empty = await statsController.getExtApiCallStats(range);
@@ -139,7 +141,7 @@ test("stats and handler keep rejected types separate and apply identical filters
   assert.equal(status, 500);
 });
 
-test("rejection messages become readable reasons, merge safely, and never alter error labels", async () => {
+test("unmatched rejection messages and missing messages merge as unknown without altering error labels", async () => {
   const rows = [
     { error_type: "unknown", rejection_message: "rejected: Grievance already registered", count: "3" },
     { error_type: "duplicate", rejection_message: "  REJECTED:  Grievance already registered  ", count: "2" },
@@ -165,13 +167,11 @@ test("rejection messages become readable reasons, merge safely, and never alter 
   });
   const stats = await controller.getExtApiCallStats({});
   const reasons = stats.rejectedTypes.filter((row) => row.apiService === "pmkisan_grievance_lodge");
-  assert.equal(reasons[0].errorType, "Grievance already registered.");
-  assert.equal(reasons[0].count, 5);
-  assert.equal(reasons[1].errorType, "Registration number wrong");
-  assert.equal(reasons[1].count, 4);
-  assert.equal(reasons.find((row) => row.errorType === "Invalid registration number [REDACTED_FARMER_ID]").count, 2);
-  assert.equal(reasons.find((row) => row.errorType === "http_401").count, 2);
-  assert.equal(reasons.find((row) => row.errorType === "unknown").count, 2);
+  assert.equal(reasons.length, 2);
+  assert.equal(reasons[0].errorType, "unknown");
+  assert.equal(reasons[0].count, 11);
+  assert.equal(reasons[1].errorType, "Grievance already registered.");
+  assert.equal(reasons[1].count, 5);
   assert.equal(reasons.reduce((sum, row) => sum + row.count, 0), 16);
   assert.equal(stats.rejectedTypes.find((row) => row.apiService === "pmkisan_verify_otp").count, 1);
   assert.equal(stats.errorTypes[0].errorType, "timeout");
@@ -180,8 +180,9 @@ test("rejection messages become readable reasons, merge safely, and never alter 
   for (const sensitive of ["UP123456789", "UP987654321", "123456", "farmer@example.test", "must not be displayed"]) {
     assert.ok(!output.includes(sensitive), sensitive);
   }
-  assert.ok(output.includes("[REDACTED_OTP]"));
-  assert.ok(output.includes("[REDACTED_EMAIL]"));
+  for (const detail of ["Registration number wrong", "Invalid registration number", "Invalid OTP", "http_401", "no message"]) {
+    assert.ok(!output.includes(detail), detail);
+  }
 });
 
 test("short rejection labels merge record-not-found counts and remove exception details without changing errors", async () => {
@@ -205,7 +206,7 @@ test("short rejection labels merge record-not-found counts and remove exception 
   const reasons = Object.fromEntries(stats.rejectedTypes.map((row) => [row.errorType, row.count]));
   assert.deepEqual(reasons, {
     "No Record Found": 45,
-    "Invalid registration number": 2,
+    unknown: 2,
     "Grievance already registered.": 1,
     "System.IndexOutOfRangeException": 1,
   });

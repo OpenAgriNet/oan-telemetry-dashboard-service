@@ -1,7 +1,6 @@
 const pool = require("../services/db");
 const { formatDateToIST, parseDateRange } = require("../utils/dateUtils");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
-const { maskStringValue } = require("../utils/piiMasking");
 
 /**
  * Distinct external API identity: METHOD + URL path without query string.
@@ -891,19 +890,15 @@ async function getExtApiCallStats({
     failureTypesRes.rows.filter((r) => r.is_rejected === rejected).forEach((r) => {
       let errorType = r.error_type;
       if (rejected) {
-        let message = (r.rejection_message || "")
+        const message = (r.rejection_message || "")
           .replace(/^\s*rejected:\s*/i, "").replace(/\s+/g, " ").trim();
         if (/^no record found\b/i.test(message)) {
-          message = "No Record Found";
+          errorType = "No Record Found";
         } else if (/^grievance already registered\b/i.test(message)) {
-          message = "Grievance already registered.";
+          errorType = "Grievance already registered.";
         } else {
-          message = message.match(/^((?:\w+\.)*\w*(?:Exception|Error))\b/)?.[1] || message;
+          errorType = message.match(/^((?:\w+\.)*\w*(?:Exception|Error))\b/)?.[1] || "unknown";
         }
-        errorType = maskStringValue(
-          message && !/^(no message|unknown)$/i.test(message) ? message : errorType,
-          { isConversationField: true },
-        );
       }
       const key = JSON.stringify([r.api_service, errorType]);
       if (!types.has(key)) {

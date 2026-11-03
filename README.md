@@ -7,18 +7,18 @@ and deployment configuration.
 ## Service Check
 
 Each API row includes separate `errorTypes` and `rejectedTypes` arrays, scoped to
-the selected date range and state. Rejection labels use the recorded rejection
-message (for example, "Grievance already registered" or "Registration number
-wrong"), with the `rejected:` prefix removed and identifiers masked using the
-existing PII helper. Counts are combined per API after masking. Missing messages
-fall back to the stored type or `unknown`; reasons are never inferred from status
-alone. This works on existing outcome records without a migration.
+the selected date range and state. Rejection labels are derived from recognized
+message patterns after removing the `rejected:` prefix. Unmatched or missing
+messages are grouped as `unknown`, even when a stored rejection type exists.
+This works on existing outcome records without a migration.
 
 Rejection labels are shortened before grouping: `No Record Found for this (...)`
 becomes `No Record Found`, duplicate-grievance messages become
 `Grievance already registered.`, and exception messages keep only their class
 (for example, `System.IndexOutOfRangeException`), not the stack trace. Variants
-share one count per API. Other reasons retain the existing masking behavior.
+share one count per API. Other reasons, including invalid registration/OTP
+messages and rejection codes such as `http_401`, contribute to `unknown`.
+Raw messages and identifiers are not displayed.
 The separate error types and counts are unchanged.
 
 `GET /v1/service-check` returns registered services, including PM-KISAN and
