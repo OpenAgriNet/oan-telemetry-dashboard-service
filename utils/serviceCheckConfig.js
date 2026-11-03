@@ -21,6 +21,14 @@ const SERVICE_CHECKS = [
       pmkisan_grievance_lodge: "Grievance Lodge",
     },
   },
+  {
+    id: "voice",
+    label: "Voice",
+    apiPrefix: "voice_",
+    apis: {
+      voice_chat_completions: "Chat Completions",
+    },
+  },
 ];
 
 function findServiceForApi(apiService) {

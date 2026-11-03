@@ -2,6 +2,57 @@
 
 This document provides an overview of the available API endpoints.
 
+## Service Check
+
+**Endpoint:** `GET /v1/service-check`
+
+Requires bearer authentication and an authorized `x-telemetry-state` header.
+Optional query parameters are `startDate`, `endDate`, and `service` (`pmkisan` or
+`voice`). Dates accept date-only IST days, explicitly zoned ISO timestamps, or
+Unix milliseconds. Invalid dates or reversed ranges return 400; absent state
+returns 400, forbidden state returns 403, and query failures return 500.
+
+The response is `{ "services": [...], "filters": {...} }`. Each service includes
+`id`, `label`, `toolCalls`, `totals`, and `apis`. Each API row includes:
+
+- `apiService`, `label`
+- `total`, `success`, `failed`, `rejected`, `error`, `unknown`, `successRate`
+- `avgLatencyMs`, `maxLatencyMs`, `lastCallAt`, `errorTypes`, `rejectedTypes`
+
+`errorTypes` and `rejectedTypes` are separate arrays of `{ "errorType": "...",
+"count": 3 }`, grouped per API within the same date/state filters and ordered by
+count descending. `rejectedTypes` includes only `outcome = "rejected"`; those
+requests remain excluded from `errorTypes`. The `errorType` field in
+`rejectedTypes` contains a recognized short rejection label. The `rejected:`
+prefix is removed and whitespace normalized. Before grouping,
+`No Record Found...` is shortened to `No Record Found`,
+`Grievance already registered...` to `Grievance already registered.`, and
+exception messages to the class name, such as `System.IndexOutOfRangeException`.
+Stack traces and identifier-specific suffixes are not included in these labels.
+Identical shortened labels are merged per API. All unmatched or missing messages
+use `unknown`, without falling back to the recorded rejection type. Thus invalid
+registration/OTP messages and unrecognized rejection codes are counted under
+`unknown`. Raw messages are not returned. Existing `errorTypes` still uses recorded
+types. For example, `rejectedTypes` may contain
+`[{ "errorType": "No Record Found", "count": 45 },
+{ "errorType": "Grievance already registered.", "count": 1 },
+{ "errorType": "System.IndexOutOfRangeException", "count": 1 }]`.
+No matching outcomes produces `[]`; existing stored messages work without backfill.
+The shared `GET /v1/beckn-ext/api-calls/stats` response also exposes
+`rejectedTypes`, with an additional `apiService` on each entry.
+
+`service=voice` selects **Voice / Chat Completions**
+(`apiService=voice_chat_completions`). `total` and `toolCalls` count recorded
+incoming voice requests, not underlying model calls or SSE chunks. A completed
+2xx response is successful; a completed 4xx response is rejected; server errors
+and unfinished/disconnected streams are errors, even after 200 stream headers.
+`failed` is rejected + error; `successRate` is rounded to a whole percentage.
+Configured API rows remain present with zeros and `lastCallAt=null` without data.
+
+Voice events use channel `BharatVistaar-voice` and appear in Bharat Vistaar.
+Metrics start after deploying the voice outcome producer and updated processor;
+historical voice turns have no reliable request-outcome data.
+
 ## Feedback API (`controllers/feedback.controller.js`)
 
 ### 1. Get All Feedback
