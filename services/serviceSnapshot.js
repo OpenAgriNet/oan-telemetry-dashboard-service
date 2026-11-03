@@ -9,7 +9,6 @@ const SERVICE_CATEGORIES = {
     "schemes-agri": { key: "scheme-information", name: "Scheme information", description: "Agricultural scheme information" },
     "dbt-application-status": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
     "farmer-details-info": { key: "dbt-application-status", name: "MahaDBT application status", description: "MahaDBT application-status information" },
-    "smam-application-status": { key: "smam-application-status", name: "SMAM application status", description: "SMAM application-status information" },
     "agristack_farmer_info": { key: "farmer-agristack", name: "Farmer / Agristack", description: "Farmer and land information" },
     "Weather-Forecast": { key: "weather-forecast", name: "Weather – Forecast", description: "IMD weather forecast for a location and date range" },
     "Weather-Historical": { key: "weather-historical", name: "Weather – Historical", description: "Historical and daily weather for a location and date range" },
@@ -286,7 +285,9 @@ function buildServiceSnapshot(serviceRows, apiRows) {
       name: provider.name,
       services: Array.from(provider.services.values())
         .map((service) => {
-          if (!service.metrics) return null;
+          // Unknown categories and routes remain in Individual APIs, but do not
+          // constitute mapped business services in the performance overview.
+          if (!service.metrics || service.key.startsWith("unmapped-")) return null;
 
           if (!service.apis.length) {
             service.apis.push({
