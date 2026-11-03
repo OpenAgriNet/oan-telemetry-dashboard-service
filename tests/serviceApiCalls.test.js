@@ -40,18 +40,16 @@ test("scopes a fallback provider operation using its own service category", () =
   assert.match(parts.where, /direct_event\.request_payload/);
   assert.doesNotMatch(parts.from, /LEFT JOIN LATERAL/);
   assert.deepEqual(parts.values.at(-1), ["(unclassified)"]);
+  assert.match(parts.where, /advisory-agri-qdrant/);
+  assert.match(parts.where, /\{message,intent,provider,id\}/);
 });
 
-test("scopes SMAM fallback calls by the same specific classification used in the summary", () => {
+test("does not apply the provider-operation exclusions to direct API calls", () => {
   const scope = buildScope({ query: {
-    sourceService: "mh-provider-backend", endpoint: "/mh-vistaar/search", method: "POST",
-    kind: "fallback", categories: JSON.stringify(["smam-application-status"]),
+    sourceService: "mh-provider-backend", endpoint: "/webservices/example", method: "POST", kind: "direct",
   } });
   const parts = scopedQueryParts({ scope, range: { startTimestamp: null, endTimestamp: null }, outcome: "" });
-  assert.match(parts.where, /direct_event\.service = 'mh-provider-backend'/);
-  assert.match(parts.where, /\{message,intent,provider,id\}.*= 'smam'/);
-  assert.match(parts.where, /\{message,intent,item,descriptor,code\}.*= 'application_status'/);
-  assert.deepEqual(parts.values.at(-1), ["smam-application-status"]);
+  assert.doesNotMatch(parts.where, /advisory-agri-qdrant|\{message,intent,provider,id\}/);
 });
 
 test("rejects invalid scoped API inputs", () => {

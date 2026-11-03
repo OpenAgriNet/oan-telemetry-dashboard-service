@@ -1,7 +1,7 @@
 const pool = require("../services/db");
 const { parseDateRange } = require("../utils/dateUtils");
 const { sanitizeApiCall } = require('../utils/telemetryPrivacy');
-const { categoryExpression } = require('../services/serviceCategory');
+const { categoryExpression, includeProviderRequestExpression } = require('../services/serviceCategory');
 
 const PAGE_SIZE = 10;
 const SOURCE_SERVICES = new Set([
@@ -83,6 +83,10 @@ function scopedQueryParts({ scope, range, outcome }) {
     "NULLIF(TRIM(direct_event.method), '') IS NOT DISTINCT FROM $4",
   ];
   let from = "external_api_events direct_event";
+
+  if (scope.kind === "fallback") {
+    where.push(includeProviderRequestExpression("direct_event."));
+  }
 
   if (scope.categories.length) {
     if (scope.kind === "fallback") {
