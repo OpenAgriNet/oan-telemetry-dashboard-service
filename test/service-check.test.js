@@ -165,7 +165,7 @@ test("rejection messages become readable reasons, merge safely, and never alter 
   });
   const stats = await controller.getExtApiCallStats({});
   const reasons = stats.rejectedTypes.filter((row) => row.apiService === "pmkisan_grievance_lodge");
-  assert.equal(reasons[0].errorType, "Grievance already registered");
+  assert.equal(reasons[0].errorType, "Grievance already registered.");
   assert.equal(reasons[0].count, 5);
   assert.equal(reasons[1].errorType, "Registration number wrong");
   assert.equal(reasons[1].count, 4);
@@ -182,4 +182,38 @@ test("rejection messages become readable reasons, merge safely, and never alter 
   }
   assert.ok(output.includes("[REDACTED_OTP]"));
   assert.ok(output.includes("[REDACTED_EMAIL]"));
+});
+
+test("short rejection labels merge record-not-found counts and remove exception details without changing errors", async () => {
+  const rows = [
+    { rejection_message: "rejected: No Record Found for this (TN111111111) Aadhar/Ben_id/Mobile.", count: "20" },
+    { rejection_message: "rejected: no record found for this (TN222222222) Aadhar/Ben_id/Mobile.", count: "25" },
+    { rejection_message: "rejected: Grievance already registered.", count: "1" },
+    { rejection_message: "rejected: System.IndexOutOfRangeException: Cannot find table 0. at System.Data.DataTableCollection.get_Item(Int32 index)\n at GrievanceServiceTest.GrievanceStatusCheck() in e:\\server\\App_Code.cs:line 626", count: "1" },
+    { rejection_message: "rejected: Invalid registration number", count: "2" },
+  ].map((row) => ({
+    api_service: "pmkisan_grievance_status", is_rejected: true, error_type: "unknown", ...row,
+  }));
+  rows.push({
+    api_service: "pmkisan_grievance_status", is_rejected: false,
+    error_type: "http_error", rejection_message: null, count: "7",
+  });
+  const controller = loadController("becknExt.controller", {
+    "../services/db": { query: async (sql) => ({ rows: sql.includes("AS is_rejected") ? rows : [] }) },
+  });
+  const stats = await controller.getExtApiCallStats({});
+  const reasons = Object.fromEntries(stats.rejectedTypes.map((row) => [row.errorType, row.count]));
+  assert.deepEqual(reasons, {
+    "No Record Found": 45,
+    "Invalid registration number": 2,
+    "Grievance already registered.": 1,
+    "System.IndexOutOfRangeException": 1,
+  });
+  assert.equal(stats.rejectedTypes.reduce((sum, row) => sum + row.count, 0), 49);
+  assert.equal(stats.errorTypes[0].errorType, "http_error");
+  assert.equal(stats.errorTypes[0].count, 7);
+  const output = JSON.stringify(stats);
+  for (const detail of ["TN111111111", "TN222222222", "Aadhar/Ben_id/Mobile", "Cannot find table", "GrievanceServiceTest", "App_Code", "626"]) {
+    assert.ok(!output.includes(detail), detail);
+  }
 });

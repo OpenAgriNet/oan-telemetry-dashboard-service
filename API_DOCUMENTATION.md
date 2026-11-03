@@ -25,12 +25,17 @@ count descending. `rejectedTypes` includes only `outcome = "rejected"`; those
 requests remain excluded from `errorTypes`. The `errorType` field in
 `rejectedTypes` now contains the recorded rejection reason, with the `rejected:`
 prefix removed, whitespace normalized, and identifiers masked using the existing
-PII helper. Identical labels are merged after masking. Empty, `no message`, or
+PII helper. Before grouping, `No Record Found...` is shortened to `No Record Found`,
+`Grievance already registered...` to `Grievance already registered.`, and
+exception messages to the class name, such as `System.IndexOutOfRangeException`.
+Stack traces and identifier-specific suffixes are not included in these labels.
+Identical shortened labels are merged per API after masking. Empty, `no message`, or
 `unknown` messages fall back to the recorded type or `unknown`. Raw messages are
 not returned as an additional field. Existing `errorTypes` still uses recorded
 types. For example, `rejectedTypes` may contain
-`[{ "errorType": "Grievance already registered", "count": 3 },
-{ "errorType": "Registration number wrong", "count": 2 }]`.
+`[{ "errorType": "No Record Found", "count": 45 },
+{ "errorType": "Grievance already registered.", "count": 1 },
+{ "errorType": "System.IndexOutOfRangeException", "count": 1 }]`.
 No matching outcomes produces `[]`; existing stored messages work without backfill.
 The shared `GET /v1/beckn-ext/api-calls/stats` response also exposes
 `rejectedTypes`, with an additional `apiService` on each entry.
