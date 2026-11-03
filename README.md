@@ -6,6 +6,14 @@ and deployment configuration.
 
 ## Service Check
 
+Each API row includes separate `errorTypes` and `rejectedTypes` arrays, scoped to
+the selected date range and state. Rejection labels use the recorded rejection
+message (for example, "Grievance already registered" or "Registration number
+wrong"), with the `rejected:` prefix removed and identifiers masked using the
+existing PII helper. Counts are combined per API after masking. Missing messages
+fall back to the stored type or `unknown`; reasons are never inferred from status
+alone. This works on existing outcome records without a migration.
+
 `GET /v1/service-check` returns registered services, including PM-KISAN and
 **Voice**, using `ext_api_calls`. It requires the existing bearer authentication
 and authorized `x-telemetry-state` header. Optional filters: `startDate`,

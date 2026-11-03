@@ -30,7 +30,7 @@ function withRates(counts) {
  * Group per-API call counts into services (see utils/serviceCheckConfig.js).
  * Configured services are always listed, even with zero calls in the range.
  */
-function groupByService(apis, errorTypes) {
+function groupByService(apis, errorTypes, rejectedTypes = []) {
   const services = new Map();
   const ensure = (service) => {
     if (!services.has(service.id)) {
@@ -46,10 +46,16 @@ function groupByService(apis, errorTypes) {
 
   SERVICE_CHECKS.forEach(ensure);
 
-  const errorTypesByApi = {};
-  errorTypes.forEach(({ apiService, errorType, count }) => {
-    (errorTypesByApi[apiService] ||= []).push({ errorType, count });
-  });
+  const groupTypesByApi = (types) => {
+    const byApi = new Map();
+    types.forEach(({ apiService, errorType, count }) => {
+      if (!byApi.has(apiService)) byApi.set(apiService, []);
+      byApi.get(apiService).push({ errorType, count });
+    });
+    return byApi;
+  };
+  const errorTypesByApi = groupTypesByApi(errorTypes);
+  const rejectedTypesByApi = groupTypesByApi(rejectedTypes);
 
   apis.forEach((api) => {
     const service = findServiceForApi(api.apiService);
@@ -64,7 +70,8 @@ function groupByService(apis, errorTypes) {
       avgLatencyMs: api.avgLatencyMs,
       maxLatencyMs: api.maxLatencyMs,
       lastCallAt: api.lastCallAt,
-      errorTypes: errorTypesByApi[api.apiService] || [],
+      errorTypes: errorTypesByApi.get(api.apiService) || [],
+      rejectedTypes: rejectedTypesByApi.get(api.apiService) || [],
     });
   });
 
@@ -81,6 +88,7 @@ function groupByService(apis, errorTypes) {
           maxLatencyMs: 0,
           lastCallAt: null,
           errorTypes: [],
+          rejectedTypes: [],
         });
       }
     });
@@ -183,7 +191,7 @@ const getServiceCheckHandler = async (req, res) => {
       }),
     ]);
 
-    let services = groupByService(stats.apis, stats.errorTypes).map((s) => ({
+    let services = groupByService(stats.apis, stats.errorTypes, stats.rejectedTypes).map((s) => ({
       ...s,
       toolCalls: toolCalls[s.id] || 0,
     }));

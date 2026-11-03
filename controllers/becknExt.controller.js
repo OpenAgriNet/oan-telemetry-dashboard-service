@@ -1,6 +1,7 @@
 const pool = require("../services/db");
 const { formatDateToIST, parseDateRange } = require("../utils/dateUtils");
 const { buildChannelFilterClause } = require("../utils/stateAccess");
+const { maskStringValue } = require("../utils/piiMasking");
 
 /**
  * Distinct external API identity: METHOD + URL path without query string.
@@ -867,21 +868,46 @@ async function getExtApiCallStats({
     ORDER BY total DESC, api_service ASC
   `;
 
-  const errorTypesQuery = `
-    SELECT api_service, COALESCE(error_type, 'unknown') AS error_type, COUNT(*)::int AS count
+  const failureTypesQuery = `
+    SELECT api_service, COALESCE(NULLIF(BTRIM(error_type), ''), 'unknown') AS error_type,
+           COALESCE(outcome = 'rejected', false) AS is_rejected,
+           CASE WHEN outcome = 'rejected' THEN error END AS rejection_message,
+           COUNT(*)::int AS count
     FROM ext_api_calls
     ${where}
-      AND success IS FALSE
-      AND outcome IS DISTINCT FROM 'rejected'
-    GROUP BY api_service, COALESCE(error_type, 'unknown')
-    ORDER BY count DESC
+      AND (success IS FALSE OR outcome = 'rejected')
+    GROUP BY api_service, COALESCE(NULLIF(BTRIM(error_type), ''), 'unknown'), is_rejected, rejection_message
+    ORDER BY count DESC, error_type ASC
   `;
 
-  const [totalsRes, perApiRes, errorTypesRes] = await Promise.all([
+  const [totalsRes, perApiRes, failureTypesRes] = await Promise.all([
     pool.query(totalsQuery, queryParams),
     pool.query(perApiQuery, queryParams),
-    pool.query(errorTypesQuery, queryParams),
+    pool.query(failureTypesQuery, queryParams),
   ]);
+
+  const typesForOutcome = (rejected) => {
+    const types = new Map();
+    failureTypesRes.rows.filter((r) => r.is_rejected === rejected).forEach((r) => {
+      let errorType = r.error_type;
+      if (rejected) {
+        const message = (r.rejection_message || "")
+          .replace(/^\s*rejected:\s*/i, "").replace(/\s+/g, " ").trim();
+        errorType = maskStringValue(
+          message && !/^(no message|unknown)$/i.test(message) ? message : errorType,
+          { isConversationField: true },
+        );
+      }
+      const key = JSON.stringify([r.api_service, errorType]);
+      if (!types.has(key)) {
+        types.set(key, { apiService: r.api_service, errorType, count: 0 });
+      }
+      types.get(key).count += parseInt(r.count, 10) || 0;
+    });
+    return Array.from(types.values()).sort(
+      (a, b) => b.count - a.count || a.errorType.localeCompare(b.errorType),
+    );
+  };
 
   const toCounts = (row = {}) => {
     const total = parseInt(row.total, 10) || 0;
@@ -908,11 +934,8 @@ async function getExtApiCallStats({
         ? formatDateToIST(new Date(r.last_call_at).toISOString())
         : null,
     })),
-    errorTypes: errorTypesRes.rows.map((r) => ({
-      apiService: r.api_service,
-      errorType: r.error_type,
-      count: parseInt(r.count, 10) || 0,
-    })),
+    errorTypes: typesForOutcome(false),
+    rejectedTypes: typesForOutcome(true),
     filters: {
       startDate,
       endDate,

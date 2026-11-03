@@ -17,7 +17,23 @@ The response is `{ "services": [...], "filters": {...} }`. Each service includes
 
 - `apiService`, `label`
 - `total`, `success`, `failed`, `rejected`, `error`, `unknown`, `successRate`
-- `avgLatencyMs`, `maxLatencyMs`, `lastCallAt`, `errorTypes`
+- `avgLatencyMs`, `maxLatencyMs`, `lastCallAt`, `errorTypes`, `rejectedTypes`
+
+`errorTypes` and `rejectedTypes` are separate arrays of `{ "errorType": "...",
+"count": 3 }`, grouped per API within the same date/state filters and ordered by
+count descending. `rejectedTypes` includes only `outcome = "rejected"`; those
+requests remain excluded from `errorTypes`. The `errorType` field in
+`rejectedTypes` now contains the recorded rejection reason, with the `rejected:`
+prefix removed, whitespace normalized, and identifiers masked using the existing
+PII helper. Identical labels are merged after masking. Empty, `no message`, or
+`unknown` messages fall back to the recorded type or `unknown`. Raw messages are
+not returned as an additional field. Existing `errorTypes` still uses recorded
+types. For example, `rejectedTypes` may contain
+`[{ "errorType": "Grievance already registered", "count": 3 },
+{ "errorType": "Registration number wrong", "count": 2 }]`.
+No matching outcomes produces `[]`; existing stored messages work without backfill.
+The shared `GET /v1/beckn-ext/api-calls/stats` response also exposes
+`rejectedTypes`, with an additional `apiService` on each entry.
 
 `service=voice` selects **Voice / Chat Completions**
 (`apiService=voice_chat_completions`). `total` and `toolCalls` count recorded
