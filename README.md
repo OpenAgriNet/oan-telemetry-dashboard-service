@@ -42,3 +42,24 @@ API. No database migration is required.
 ```sh
 node --test test/service-check.test.js
 ```
+
+## PM-KISAN daily email
+
+The daily health-check email includes **Rejection reasons** and **Error types**
+for each API, in both the HTML table and plain-text message. It reuses the
+Service Check aggregation and short labels, for example
+`No Record Found (45), unknown (2)` and `timeout (3)`. Rejections and errors
+remain separate; arbitrary rejection text and stack traces are not included.
+Empty breakdowns display `—`. Breakdown counts are per API; the Total row
+retains its numeric totals and shows `—` in the two breakdown columns.
+
+The existing rolling 24-hour IST report window, API labels/exclusions,
+recipients, schedule, and on/off controls are unchanged. Compare with the
+dashboard using the same state and time range. Deploy the query-service update
+for future scheduled and manually sent reports; no database migration is needed.
+
+Run the isolated email and Service Check tests (no database or SMTP connection):
+
+```sh
+node --test test/daily-report.test.js test/service-check.test.js
+```
