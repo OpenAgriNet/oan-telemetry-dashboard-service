@@ -111,6 +111,9 @@ async function buildReportData(report, endMs = Date.now()) {
       .sort(),
   ];
 
+  const typesForApi = (types, apiService) => types
+    .filter((type) => type.apiService === apiService)
+    .map(({ errorType, count }) => ({ errorType, count }));
   const excluded = new Set(report.excludeApis || []);
   const rows = apiServices.filter((a) => !excluded.has(a)).map((apiService) => {
     const label = (
@@ -129,6 +132,8 @@ async function buildReportData(report, endMs = Date.now()) {
       failed: (api.rejected || 0) + (api.error || 0),
       successRate: requests > 0 ? (completed / requests) * 100 : null,
       avgLatencyMs: api.avgLatencyMs || 0,
+      rejectedTypes: typesForApi(stats.rejectedTypes, apiService),
+      errorTypes: typesForApi(stats.errorTypes, apiService),
     };
   });
 
@@ -188,6 +193,10 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;");
 }
 
+function formatTypes(types = []) {
+  return types.map(({ errorType, count }) => `${errorType} (${count})`).join(", ") || "—";
+}
+
 /** Email-safe HTML: tables + inline styles only (clients strip <style>). */
 function renderHtml(data) {
   const { report, startMs, endMs, toolCalls, rows, total } = data;
@@ -209,13 +218,15 @@ function renderHtml(data) {
           ${r.failed.toLocaleString("en-IN")}
           <div style="font-size:11px;font-weight:400;color:#6b7280;">${r.rejected} rejected · ${r.error} error</div>
         </td>
+        <td style="${cell}${weight}vertical-align:top;overflow-wrap:break-word;">${escapeHtml(formatTypes(r.rejectedTypes))}</td>
+        <td style="${cell}${weight}vertical-align:top;overflow-wrap:break-word;">${escapeHtml(formatTypes(r.errorTypes))}</td>
       </tr>`;
   };
 
   return `<!doctype html>
 <html>
   <body style="margin:0;padding:12px;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:760px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:1120px;margin:0 auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
       <tr>
         <td style="padding:20px;background:#14532d;color:#ffffff;">
           <div style="font-size:18px;font-weight:700;">${escapeHtml(report.title)}</div>
@@ -244,6 +255,8 @@ function renderHtml(data) {
               <th align="right" style="${head}">Success %</th>
               <th align="right" style="${head}">Avg latency</th>
               <th align="right" style="${head}">Failed</th>
+              <th align="left" style="${head}">Rejection reasons</th>
+              <th align="left" style="${head}">Error types</th>
             </tr>
             ${rows.map((r) => renderRow(r)).join("")}
             ${renderRow(total, true)}
@@ -269,7 +282,11 @@ function renderText(data) {
     `Number of tool calls: ${toolCalls}`,
     "",
     `${"API".padEnd(width)} ${"Requests".padStart(8)} ${"Success %".padStart(10)} ${"Avg latency".padStart(12)}`,
-    ...rows.map(line),
+    ...rows.flatMap((r) => [
+      line(r),
+      `  Rejection reasons: ${formatTypes(r.rejectedTypes)}`,
+      `  Error types: ${formatTypes(r.errorTypes)}`,
+    ]),
     line(total),
   ].join("\n");
 }
